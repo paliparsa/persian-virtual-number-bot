@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.3.1"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.3.2"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -1755,7 +1755,7 @@ async function handleCallback(env, cq, baseUrl) {
 // v1.3.0: the bot only creates a dollar payment session (30-minute deadline);
 // the method is chosen here on the page, and only the chosen method's wallet
 // and exact amount are shown. Design v2 (v1.8.0): professional minimal — pure black,
-// white text, hairline dividers, Vazirmatn, countdown ring + auto polling.
+// white text, hairline dividers, Yekan Bakh, countdown ring + auto polling.
 const COIN_TICKER = { USDT_TRC20: "USDT", USDT_BEP20: "USDT", USDT_ERC20: "USDT", TRX: "TRX", BTC: "BTC", TON: "TON", LTC: "LTC", ETH: "ETH" };
 
 async function settleTopupLazy(env, topup, force = false) {
@@ -1846,11 +1846,11 @@ function payShell(body, script = "") {
 <meta name="theme-color" content="#000000">
 <title>پرداخت — فروشگاه شماره مجازی</title>
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
-<link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet">
+<link href="https://fonts.cdnfonts.com/css/yekan-bakh" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 html{background:#000}
-body{background:#000;color:#fff;font-family:Vazirmatn,Tahoma,Arial,sans-serif;-webkit-font-smoothing:antialiased;line-height:1.9}
+body{background:#000;color:#fff;font-family:'Yekan Bakh',Tahoma,Arial,sans-serif;-webkit-font-smoothing:antialiased;line-height:1.9}
 body:before{content:"";position:fixed;inset:0;background:radial-gradient(640px 300px at 50% -80px,rgba(255,255,255,.07),transparent 65%);pointer-events:none}
 main{max-width:560px;margin:0 auto;padding:44px 22px 60px;animation:up .45s ease both}
 @keyframes up{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
@@ -2012,10 +2012,10 @@ function termsPage(cfg) {
 <html lang="fa" dir="rtl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>قوانین و مقررات — BlueGate</title>
-<link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet">
+<link href="https://fonts.cdnfonts.com/css/yekan-bakh" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#000;color:#fff;font-family:Vazirmatn,Tahoma,sans-serif;padding:28px 16px 48px;line-height:1.9}
+body{background:#000;color:#fff;font-family:'Yekan Bakh',Tahoma,sans-serif;padding:28px 16px 48px;line-height:1.9}
 .wrap{max-width:620px;margin:0 auto}
 .brand{color:#8e8e93;font-size:13px;letter-spacing:.5px}
 h1{font-size:24px;font-weight:800;margin:4px 0 6px}
@@ -2248,10 +2248,10 @@ async function appPage(env, cfg) {
 <html lang="fa" dir="rtl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BlueGate — شماره مجازی</title>
-<link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet">
+<link href="https://fonts.cdnfonts.com/css/yekan-bakh" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#000;color:#fff;font-family:Vazirmatn,Tahoma,sans-serif;min-height:100vh}
+body{background:#000;color:#fff;font-family:'Yekan Bakh',Tahoma,sans-serif;min-height:100vh}
 .wrap{max-width:430px;margin:0 auto;padding:22px 20px 122px;position:relative}
 .wrap:before{content:"";position:absolute;top:-120px;left:50%;transform:translateX(-50%);width:340px;height:220px;background:radial-gradient(closest-side,rgba(255,255,255,.09),transparent);pointer-events:none}
 .brandrow{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;position:relative}
