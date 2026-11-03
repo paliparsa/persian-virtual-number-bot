@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.2.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.3.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -448,7 +448,12 @@ async function findCryptoCandidates(env, topup) {
       const txs = await r.json().catch(() => []);
       for (const tx of Array.isArray(txs) ? txs : []) {
         const sat = (tx.vout || []).filter((o) => o.scriptpubkey_address === addr).reduce((a, o) => a + Number(o.value || 0), 0);
-        if (sat > 0) out.push({ txid: tx.txid, amount: sat / 1e8, ts: tx.status?.block_time || Math.floor(now() / 1000), confirmed: !!tx.status?.confirmed });
+        if (sat <= 0) continue;
+        // A confirmed block from before this payment existed can never be
+        // this payment (the wallet may receive unrelated transfers too).
+        const bt = tx.status?.block_time;
+        if (bt && bt < sinceSec - 3600) continue;
+        out.push({ txid: tx.txid, amount: sat / 1e8, ts: bt || Math.floor(now() / 1000), confirmed: !!tx.status?.confirmed });
       }
     } else if (topup.crypto === "TON") {
       const r = await fetch(`https://toncenter.com/api/v2/getTransactions?address=${encodeURIComponent(addr)}&limit=30&archival=false`);
@@ -916,6 +921,13 @@ async function actAction(env, userId, id, action) {
 }
 
 async function refreshActivation(env, chatId, msgId, id, cbId = null) {
+  // The view shows the phone number and the SMS code — the product itself —
+  // so it enforces the same ownership rule as the actions (actAction).
+  const recOwn = await kvGet(env, `act:${id}`);
+  if (!recOwn || recOwn.userId !== String(chatId)) {
+    if (cbId) await answerCb(env, cbId, "سفارش یافت نشد", true);
+    return;
+  }
   // Checking must never look frozen: instant toast, and the result message
   // always changes because it carries a fresh "last check" line.
   if (cbId) await answerCb(env, cbId, "🔄 در حال بررسی کد…");
@@ -1006,8 +1018,19 @@ function expectedCryptoAmount(code, creditUsd, price) {
 // Caption sent to the admin with every card receipt (bot or web upload):
 // the receipt photo itself + user id + the order (payment) details, with the
 // apr:/rej: approve-reject buttons attached by the caller.
-function receiptCaption(topup, via) {
-  return `🧾 <b>رسید جدید</b> (${via})\nکاربر: ${faDigits(topup.userId)}\nشناسه پرداخت: <code>${esc(topup.id)}</code>\nمبلغ کارت: ${faInt(topup.amountToman)} تومان\nشارژ درخواستی: $${faNum(topupCredit(topup))}${topup.rateUsed ? ` (با نرخ تتر ${faInt(topup.rateUsed)} تومان)` : ""}${topup.receiptCount > 1 ? `\n♻️ رسید جایگزین (شماره ${faDigits(topup.receiptCount)})` : ""}`;
+// Receipts are indexed the first time they are seen (bot path: Telegram
+// file_id, stable per file; web path: SHA-256 of the uploaded bytes). A
+// receipt that shows up for a SECOND payment is still forwarded — the admin
+// decides — but its caption carries a loud duplicate warning.
+async function noteReceiptSeen(env, key, topupId) {
+  const prev = await kvGet(env, key);
+  if (prev && prev.topupId !== topupId) return prev.topupId;
+  await kvPut(env, key, { topupId, at: now() }, 90 * 24 * 3600);
+  return null;
+}
+
+function receiptCaption(topup, via, dupOf) {
+  return `🧾 <b>رسید جدید</b> (${via})\nکاربر: ${faDigits(topup.userId)}\nشناسه پرداخت: <code>${esc(topup.id)}</code>\nمبلغ کارت: ${faInt(topup.amountToman)} تومان\nشارژ درخواستی: $${faNum(topupCredit(topup))}${topup.rateUsed ? ` (با نرخ تتر ${faInt(topup.rateUsed)} تومان)` : ""}${topup.receiptCount > 1 ? `\n♻️ رسید جایگزین (شماره ${faDigits(topup.receiptCount)})` : ""}${dupOf ? `\n\n🔴 <b>هشدار:</b> این رسید قبلاً برای پرداخت دیگری ارسال شده است (<code>${esc(dupOf)}</code>). قبل از تأیید، هر دو پرداخت را مقایسه کنید.` : ""}`;
 }
 
 // Upload a user-supplied image file to a Telegram chat (multipart sendPhoto).
@@ -1049,9 +1072,14 @@ async function handlePayReceipt(env, request) {
   if (file.size > 8 * 1024 * 1024) return json({ ok: false, error: "حجم عکس باید کمتر از ۸ مگابایت باشد" });
   topup.receiptCount = (topup.receiptCount || 0) + 1;
   const adminKb = kb([[btn("✅ تأیید و شارژ", `apr:${topup.id}`), btn("❌ رد رسید", `rej:${topup.id}`)]]);
+  let dupOf = null;
+  try {
+    const hex = bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", await file.arrayBuffer())));
+    dupOf = await noteReceiptSeen(env, `rcpt:sha:${hex}`, topup.id);
+  } catch (_) {}
   let fileId;
   try {
-    fileId = await tgUploadPhoto(env, env.ADMIN_CHAT_ID, file, file.name || "receipt.jpg", receiptCaption(topup, "از صفحه پرداخت"), adminKb);
+    fileId = await tgUploadPhoto(env, env.ADMIN_CHAT_ID, file, file.name || "receipt.jpg", receiptCaption(topup, "از صفحه پرداخت", dupOf), adminKb);
   } catch (_) {
     return json({ ok: false, error: "ارسال رسید ناموفق بود؛ رسید را داخل ربات بفرستید" });
   }
@@ -1443,8 +1471,13 @@ async function handleMessage(env, msg, baseUrl) {
       configGroupKb(cfg, group));
   }
 
+  // Receipts are photos only (the web upload is images-only too): a document
+  // can be any file at all, including one the admin should never be sent.
+  if (user.state === "await_card_receipt" && msg.document && !msg.photo) {
+    return send(env, chatId, "📎 رسید را به‌صورت «عکس» بفرستید، نه فایل یا داکیومنت. این مرحله تا وقتی عکس نفرستید باز می‌ماند.", backKb);
+  }
   // Receipt photo for a pending card top-up
-  if (user.state === "await_card_receipt" && (msg.photo || msg.document)) {
+  if (user.state === "await_card_receipt" && msg.photo) {
     const topup = await kvGet(env, `topup:${user.stateData}`);
     if (!topup) { user.state = null; await saveUser(env, user); return send(env, chatId, "درخواست شارژ پیدا نشد. دوباره تلاش کنید.", backKb); }
     const cfgV = await getConfig(env);
@@ -1462,7 +1495,8 @@ async function handleMessage(env, msg, baseUrl) {
     await saveUser(env, user);
     await send(env, chatId, "🧾 رسید شما دریافت شد و برای تأیید نزد مدیر ارسال شد. پس از تأیید، موجودی‌تان شارژ می‌شود.", mainMenuKb(env, await getConfig(env), chatId));
     // Forward receipt to admin with approve/reject buttons
-    const cap = receiptCaption(topup, "از ربات");
+    const dupOf = await noteReceiptSeen(env, `rcpt:fid:${topup.receiptFileId}`, topup.id);
+    const cap = receiptCaption(topup, "از ربات", dupOf);
     const adminKb = kb([[btn("✅ تأیید و شارژ", `apr:${topup.id}`), btn("❌ رد رسید", `rej:${topup.id}`)]]);
     if (msg.photo) await tg(env, "sendPhoto", { chat_id: env.ADMIN_CHAT_ID, photo: topup.receiptFileId, caption: cap, parse_mode: "HTML", reply_markup: adminKb });
     else await tg(env, "sendDocument", { chat_id: env.ADMIN_CHAT_ID, document: topup.receiptFileId, caption: cap, parse_mode: "HTML", reply_markup: adminKb });
@@ -1766,6 +1800,26 @@ async function settleTopupLazy(env, topup, force = false) {
   }
   return topup;
 }
+async function handlePayCancel(env, request) {
+  const body = await request.json().catch(() => ({}));
+  const topup = body.t ? await kvGet(env, `topup:${body.t}`) : null;
+  if (!topup || topup.status !== "pending") return Response.json({ ok: false, error: "این پرداخت فعال نیست" }, { status: 400 });
+  if (topup.seenAt) return Response.json({ ok: false, error: "تراکنش این پرداخت در شبکه دیده شده و دیگر قابل لغو نیست؛ برای پیگیری با پشتیبانی در تماس باشید" }, { status: 400 });
+  if (!(await throttle(env, `cxl:${clientIp(request)}`, 20, 3600))) return Response.json({ ok: false, error: "تلاش بیش از حد" }, { status: 429 });
+  const done = await withKvLock(env, `topup:${topup.id}`, async () => {
+    const fresh = await kvGet(env, `topup:${topup.id}`);
+    if (!fresh || fresh.status !== "pending") return false;
+    fresh.status = "cancelled"; fresh.resolvedAt = now();
+    await kvPut(env, `topup:${fresh.id}`, fresh, 7 * 24 * 3600);
+    const u = await getUser(env, fresh.userId);
+    if (u.state === "await_card_receipt" && u.stateData === fresh.id) { u.state = null; u.stateData = null; await saveUser(env, u); }
+    const cfg = await getConfig(env);
+    await send(env, fresh.userId, `🚫 <b>پرداخت لغو شد</b>\n\nدرخواست شارژ $${faNum(topupCredit(fresh))} از صفحه پرداخت لغو شد.`, mainMenuKb(env, cfg, fresh.userId));
+    return true;
+  });
+  return Response.json({ ok: !!done });
+}
+
 async function handlePaySelect(env, request) {
   const body = await request.json().catch(() => ({}));
   if (!(await throttle(env, `sel:${clientIp(request)}`, 60, 3600)) || (body.t && !(await throttle(env, `sel:t:${body.t}`, 30, 3600))))
@@ -1904,6 +1958,9 @@ footer a{color:#a3a3a3}
 #toast{position:fixed;bottom:26px;left:50%;transform:translate(-50%,16px);background:#fff;color:#000;font-size:13px;font-weight:700;padding:8px 20px;border-radius:999px;opacity:0;pointer-events:none;transition:all .25s;z-index:9;max-width:88vw;text-align:center}
 #toast.show{opacity:1;transform:translate(-50%,0)}
 @media (max-width:480px){.amtbox .amt span{font-size:23px}h1{font-size:21px}.method .ap{display:none}}
+.payfoot{display:flex;gap:10px;margin-top:26px;padding-top:18px;border-top:1px solid #1c1c1e}
+.footbtn{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:7px;background:transparent;color:#d6d6da;border:1px solid #2c2c31;border-radius:12px;padding:11px 10px;font-family:inherit;font-size:13.5px;cursor:pointer;text-decoration:none}
+.footbtn.danger{color:#ff6b61;border-color:#3d1d1a}
 </style></head>
 <body><main>
 <header class="brand"><div class="mark">S</div><div><b>فروشگاه شماره مجازی</b><span>درگاه پرداخت</span></div><div class="secure">پرداخت امن</div></header>
@@ -1971,9 +2028,11 @@ p,li{color:#c9c9ce;font-size:14.5px}
 ul{padding-right:18px}
 a{color:#fff}
 .foot{color:#8e8e93;font-size:13px;margin-top:22px}
+.backbtn{display:inline-flex;align-items:center;gap:6px;background:transparent;color:#d6d6da;border:1px solid #2c2c31;border-radius:11px;padding:8px 14px;font-family:inherit;font-size:13.5px;cursor:pointer;margin-bottom:16px}
 </style></head><body><div class="wrap">
 <div class="brand">BlueGate</div>
-<h1>📜 قوانین و مقررات</h1>
+<button class="backbtn" onclick="if(history.length>1){history.back()}else{location.href='/app'}">‹ بازگشت</button>
+<h1><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-4px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/></svg> قوانین و مقررات</h1>
 <p class="intro">استفاده از ربات و خدمات BlueGate به‌معنای خواندن و پذیرفتن این قوانین است. اگر با هر بخش مخالفید، از خدمات استفاده نکنید.</p>
 <hr>
 <section><h2>۱) ماهیت سرویس</h2><p>BlueGate شماره‌های مجازی <b>موقت</b> برای دریافت پیامک ارائه می‌کند. ارسال و تحویل پیامک به اپراتورها، زیرساخت مخابراتی و سیاست‌های سرویس مقصد بستگی دارد؛ بنابراین تحویل پیامک در همه موارد قابل تضمین نیست.</p></section>
@@ -1996,7 +2055,7 @@ a{color:#fff}
 <section><h2>۱۱) حریم خصوصی</h2><p>اطلاعات و سوابق فنی لازم برای ارائه سرویس، امنیت، جلوگیری از تقلب و پشتیبانی نگهداری می‌شوند و فقط در مواردی که قانون مقرر کند در اختیار مراجع ذی‌صلاح قرار می‌گیرند.</p></section>
 <section><h2>۱۲) پشتیبانی و پیگیری</h2><p>برای پیگیری هر مشکل، آیدی عددی، زمان خرید، شرح مشکل و در صورت نیاز رسید پرداخت یا تصویر/ویدیو را برای پشتیبانی ارسال کنید؛ اطلاعات ناقص، بررسی را به تأخیر می‌اندازد.</p>${support ? `<p style="margin-top:8px">پشتیبانی: <a href="https://t.me/${esc(support)}">@${esc(support)}</a></p>` : ""}</section>
 <section><h2>۱۳) تغییر قوانین</h2><p>این قوانین ممکن است به‌روزرسانی شوند. نسخه معتبر همیشه در همین صفحه منتشر می‌شود و ادامه استفاده از ربات به‌معنای پذیرش نسخه جدید است.</p></section>
-<p class="foot">BlueGate — دروازه‌ای امن به دنیای پرسرعت</p>
+<p class="foot">BlueGate — دروازه‌ای امن به دنیای پرسرعت<br><a href="/app">بازگشت به صفحه اصلی فروشگاه</a></p>
 </div></body></html>`;
 }
 
@@ -2048,6 +2107,7 @@ async function getSession(env, request) {
   const sess = await kvGet(env, `sess:${t}`);
   return sess ? { token: t, ...sess } : null;
 }
+const HTML_SEC = { "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", "x-frame-options": "DENY" };
 const sessionCookie = (token) => `bg_sess=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_TTL}`;
 async function botUsername(env) {
   const cached = await kvGet(env, "sys:botinfo");
@@ -2192,7 +2252,7 @@ async function appPage(env, cfg) {
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#000;color:#fff;font-family:Vazirmatn,Tahoma,sans-serif;min-height:100vh}
-.wrap{max-width:430px;margin:0 auto;padding:22px 20px 96px;position:relative}
+.wrap{max-width:430px;margin:0 auto;padding:22px 20px 122px;position:relative}
 .wrap:before{content:"";position:absolute;top:-120px;left:50%;transform:translateX(-50%);width:340px;height:220px;background:radial-gradient(closest-side,rgba(255,255,255,.09),transparent);pointer-events:none}
 .brandrow{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;position:relative}
 .logo{font-weight:800;font-size:17px}
@@ -2223,9 +2283,12 @@ body{background:#000;color:#fff;font-family:Vazirmatn,Tahoma,sans-serif;min-heig
 .country{border:1px solid #232328;border-radius:14px;padding:13px 12px;cursor:pointer;background:#0c0c0e;text-align:right;font-family:inherit;color:#fff;width:100%}
 .country .nm{font-size:15px;font-weight:700;margin-top:4px}
 .country .fl{font-size:21px}
-.nav{position:fixed;bottom:0;right:50%;transform:translateX(50%);width:100%;max-width:430px;background:rgba(0,0,0,.92);backdrop-filter:blur(8px);border-top:1px solid #1b1b1f;padding:11px 4px calc(11px + env(safe-area-inset-bottom));display:flex;justify-content:space-around;z-index:5}
-.nav button,.nav a{background:none;border:none;color:#8e8e93;font-size:12px;font-family:inherit;cursor:pointer;text-decoration:none}
-.nav .on{color:#fff;font-weight:700}
+.nav{position:fixed;bottom:calc(12px + env(safe-area-inset-bottom));right:50%;transform:translateX(50%);width:calc(100% - 28px);max-width:402px;background:rgba(23,23,27,.55);-webkit-backdrop-filter:blur(22px) saturate(180%);backdrop-filter:blur(22px) saturate(180%);border:1px solid rgba(255,255,255,.14);border-radius:26px;box-shadow:0 18px 50px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.09);padding:7px;display:flex;gap:4px;z-index:5}
+.nav button,.nav a{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:none;color:#b9b9c0;font-size:11px;font-family:inherit;cursor:pointer;text-decoration:none;padding:7px 2px 6px;border-radius:19px;transition:background .2s,color .2s}
+.nav .on{background:rgba(255,255,255,.94);color:#000;font-weight:700}
+.icn{flex:none;vertical-align:-4px}
+h2.title .icn{vertical-align:-5px;margin-left:2px}
+.feats .icn{vertical-align:-5px;margin-left:7px}
 .back{color:#9a9aa2;font-size:13.5px;cursor:pointer;margin-bottom:10px;background:none;border:none;font-family:inherit;padding:0}
 .svc{display:flex;align-items:center;justify-content:space-between;width:100%;padding:13px 2px;border-bottom:1px solid #1b1b1f;cursor:pointer;background:none;border-top:none;border-left:none;border-right:none;color:#fff;font-family:inherit;text-align:right}
 .svc.sel{background:#101013}
@@ -2258,7 +2321,7 @@ body{background:#000;color:#fff;font-family:Vazirmatn,Tahoma,sans-serif;min-heig
 .chips button{flex:1;background:#141416;color:#c9c9ce;border:1px solid #26262b;border-radius:12px;padding:10px;font-family:inherit;font-size:14px;cursor:pointer}
 .chips button.on{background:#fff;color:#000;font-weight:700}
 .amtin{width:100%;background:#101012;border:1px solid #26262b;border-radius:12px;color:#fff;padding:13px 14px;font-family:inherit;font-size:17px;margin-bottom:12px;text-align:center}
-#toast{position:fixed;bottom:86px;right:50%;transform:translateX(50%) translateY(16px);background:#fff;color:#000;border-radius:999px;padding:9px 18px;font-size:13.5px;font-weight:700;opacity:0;pointer-events:none;transition:.25s;z-index:9;max-width:92vw;text-align:center}
+#toast{position:fixed;bottom:108px;right:50%;transform:translateX(50%) translateY(16px);background:#fff;color:#000;border-radius:999px;padding:9px 18px;font-size:13.5px;font-weight:700;opacity:0;pointer-events:none;transition:.25s;z-index:9;max-width:92vw;text-align:center}
 #toast.show{opacity:1;transform:translateX(50%) translateY(0)}
 .view{display:none}.view.on{display:block;animation:in .3s ease}
 @keyframes in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
@@ -2270,15 +2333,15 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
   <div id="viewLogin">
     <div class="brandrow"><div class="logo">BlueGate<span>دروازه‌ای امن به دنیای پرسرعت</span></div></div>
     <div class="hero">
-      <div class="big">شماره مجازی،<br>بدون مرز 🌍</div>
+      <div class="big">شماره مجازی،<br>بدون مرز <svg class="icn" width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>
       <p class="slogan">خرید شماره از سراسر دنیا و دریافت آنی کد پیامک —<br>همان حساب و موجودی ربات تلگرام شما.</p>
       <div class="tgwrap">${widget}</div>
       <p class="small" id="loginErr" style="color:#ff9f43;min-height:18px"></p>
       <p class="small">اگر دکمه ورود نمایش داده نشد، چند ثانیه صبر کنید یا صفحه را تازه کنید.</p>
       <div class="feats">
-        <div>✅ بدون ثبت‌نام و رمز عبور — ورود رسمی تلگرام</div>
-        <div>💰 موجودی مشترک با ربات؛ شارژ از هرجا، خرج از هرجا</div>
-        <div>⚡ کد به‌صورت خودکار و زنده روی صفحه می‌آید</div>
+        <div><svg class="icn" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>بدون ثبت‌نام و رمز عبور — ورود رسمی تلگرام</div>
+        <div><svg class="icn" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/></svg>موجودی مشترک با ربات؛ شارژ از هرجا، خرج از هرجا</div>
+        <div><svg class="icn" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>کد به‌صورت خودکار و زنده روی صفحه می‌آید</div>
       </div>
     </div>
     <p class="foot">با ورود، <a href="/terms">قوانین و مقررات</a> BlueGate را می‌پذیرید.</p>
@@ -2288,7 +2351,7 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
     <div class="brandrow">
       <div class="logo">BlueGate</div>
       <div class="userchip">
-        <button class="balpill" id="hdrBal" onclick="showView('topup')">💰 …</button>
+        <button class="balpill" id="hdrBal" onclick="showView('topup')">…</button>
         <button class="avatar" id="hdrAva" title="خروج" onclick="logout()">؟</button>
       </div>
     </div>
@@ -2299,18 +2362,18 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
         <div class="amt" id="balAmt">…</div>
         <div class="tmn" id="balTmn"></div>
         <div style="margin-top:12px;display:flex;gap:8px">
-          <button class="wbtn" onclick="showView('topup')">💳 افزایش موجودی</button>
+          <button class="wbtn" onclick="showView('topup')"><svg class="icn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg> افزایش موجودی</button>
           <button class="gbtn" onclick="logout()">خروج</button>
         </div>
       </div>
-      <input class="search" id="cSearch" placeholder="🔍 جستجوی کشور…">
+      <input class="search" id="cSearch" placeholder="جستجوی کشور…">
       <div class="grid" id="cGrid"><div class="loading">در حال بارگذاری کشورها…</div></div>
     </section>
 
     <section class="view" id="v-services">
       <button class="back" onclick="showView('shop')">‹ بازگشت به کشورها</button>
       <h2 class="title" id="svcTitle">سرویس‌ها</h2>
-      <input class="search" id="sSearch" placeholder="🔍 جستجوی سرویس…">
+      <input class="search" id="sSearch" placeholder="جستجوی سرویس…">
       <div id="svcList"><div class="loading">در حال بارگذاری…</div></div>
       <div id="confirmCard"></div>
     </section>
@@ -2321,15 +2384,15 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
     </section>
 
     <section class="view" id="v-orders">
-      <h2 class="title">📱 سفارش‌های من</h2>
+      <h2 class="title"><svg class="icn" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3.5 6h.01"/><path d="M3.5 12h.01"/><path d="M3.5 18h.01"/></svg> سفارش‌های من</h2>
       <div id="ordList"><div class="loading">در حال بارگذاری…</div></div>
     </section>
 
     <section class="view" id="v-topup">
-      <h2 class="title">💳 افزایش موجودی</h2>
+      <h2 class="title"><svg class="icn" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg> افزایش موجودی</h2>
       <div class="chips">
-        <button id="chipUsd" class="on" onclick="setTopupMode('usd')">💵 مبلغ به دلار</button>
-        <button id="chipTmn" onclick="setTopupMode('tmn')">🇮🇷 مبلغ به تومان</button>
+        <button id="chipUsd" class="on" onclick="setTopupMode('usd')"><svg class="icn" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/><path d="M6 12h.01"/><path d="M18 12h.01"/></svg> مبلغ به دلار</button>
+        <button id="chipTmn" onclick="setTopupMode('tmn')">مبلغ به تومان</button>
       </div>
       <input class="amtin" id="tpAmt" inputmode="numeric" placeholder="$ مبلغ">
       <p class="small" id="tpHint">مبلغ بین ۱ تا ۵۰۰۰ دلار. بعد از ساخت، به صفحه پرداخت می‌روید و روش پرداخت (رمزارز یا کارت‌به‌کارت) را آنجا انتخاب می‌کنید.</p>
@@ -2338,10 +2401,10 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
     </section>
 
     <nav class="nav">
-      <button data-nav="shop" class="on" onclick="showView('shop')">🛒 فروشگاه</button>
-      <button data-nav="orders" onclick="showView('orders')">📱 سفارش‌ها</button>
-      <button data-nav="topup" onclick="showView('topup')">💳 شارژ</button>
-      <a href="/terms">📜 قوانین</a>
+      <button data-nav="shop" class="on" onclick="showView('shop')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>فروشگاه</button>
+      <button data-nav="orders" onclick="showView('orders')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3.5 6h.01"/><path d="M3.5 12h.01"/><path d="M3.5 18h.01"/></svg>سفارش‌ها</button>
+      <button data-nav="topup" onclick="showView('topup')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>شارژ</button>
+      <a href="/terms"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>قوانین</a>
     </nav>
   </div>
 </div>
@@ -2354,6 +2417,14 @@ function faUsd(v){ return '$' + Number(v||0).toLocaleString('fa-IR',{minimumFrac
 function faTmn(v){ return Math.round(Number(v||0)).toLocaleString('fa-IR') + ' تومان'; }
 function faN(v){ return Number(v||0).toLocaleString('fa-IR'); }
 function escH(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+var ICONS = {
+  wallet: '<path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/>',
+  flag: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>',
+  send: '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>',
+  xc: '<circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/>',
+  list: '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3.5 6h.01"/><path d="M3.5 12h.01"/><path d="M3.5 18h.01"/>'
+};
+function ico(n, sz){ return '<svg class="icn" width="' + (sz||19) + '" height="' + (sz||19) + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + (ICONS[n]||'') + '</svg>'; }
 var toastTimer=null;
 function toast(msg){ var t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer=setTimeout(function(){ t.classList.remove('show'); }, 3600); }
 function api(path, opts){
@@ -2397,10 +2468,10 @@ function boot(tries){
 }
 function renderMe(){
   if (!S.me) return;
-  $('hdrBal').textContent = '💰 ' + faUsd(S.me.balance);
+  $('hdrBal').innerHTML = ico('wallet', 14) + ' ' + faUsd(S.me.balance);
   $('balAmt').textContent = faUsd(S.me.balance);
   $('balTmn').textContent = S.me.rate ? '≈ ' + faTmn(S.me.balance * S.me.rate) : '';
-  $('greetName').textContent = S.me.name ? ('سلام، ' + S.me.name + ' 👋 — موجودی شما') : 'موجودی شما';
+  $('greetName').textContent = S.me.name ? ('سلام، ' + S.me.name + ' — موجودی شما') : 'موجودی شما';
   var ava = $('hdrAva');
   if (S.me.photoUrl) ava.innerHTML = '<img src="' + escH(S.me.photoUrl) + '" alt="">';
   else ava.textContent = (S.me.name || '؟').charAt(0);
@@ -2473,7 +2544,7 @@ function doBuy(){
 var STATUS_FA = { waitingSms:'در انتظار پیامک', resendRequested:'درخواست پیامک مجدد ثبت شد', codeReceived:'کد دریافت شد', finished:'پایان‌یافته', cancelled:'لغو شده', expired:'منقضی شده', refunded:'برگشت‌وجه‌شده' };
 function statusPill(a){
   if (a.status === 'codeReceived') return '<span class="pill ok">✓ کد دریافت شد</span>';
-  if (a.status === 'finished') return '<span class="pill ok">🏁 پایان‌یافته</span>';
+  if (a.status === 'finished') return '<span class="pill ok">' + ico('flag', 13) + ' پایان‌یافته</span>';
   if (['cancelled','expired','refunded'].indexOf(a.status) !== -1) return '<span class="pill bad">' + (STATUS_FA[a.status]||a.status) + '</span>';
   return '<span class="pill"><span class="dot"></span>' + (STATUS_FA[a.status]||'در انتظار پیامک') + '</span>';
 }
@@ -2514,16 +2585,16 @@ function renderAct(){
     html += '<div class=\"codeboxes\" id=\"codeBoxes\">' + boxes + '</div>';
     html += '<p class="small" style="color:#c9c9ce">کد را در سرویس مقصد وارد کنید — برای کپی روی کد بزنید.</p>';
     if (a.status === 'codeReceived') {
-      html += '<div class=\"btnrow\"><button class=\"wbtn\" onclick=\"actDo(&#39;finish&#39;)\">🏁 اتمام کار</button><button class=\"gbtn\" onclick=\"actDo(&#39;resend&#39;)\">📩 پیامک مجدد</button></div>';
+      html += '<div class=\"btnrow\"><button class=\"wbtn\" onclick=\"actDo(&#39;finish&#39;)\">' + ico('flag') + ' اتمام کار</button><button class=\"gbtn\" onclick=\"actDo(&#39;resend&#39;)\">' + ico('send') + ' پیامک مجدد</button></div>';
       html += '<p class="small">با دریافت کد، امکان لغو این سفارش به پایان رسیده است.</p>';
     }
   } else if (['waitingSms','resendRequested'].indexOf(a.status) !== -1) {
-    html += '<div class="codezone">در حال گوش دادن به پیامک… 📩<br>به‌محض رسیدن، کد به‌صورت <b style="color:#fff">خودکار</b> اینجا نمایش داده می‌شود؛ نیازی به رفرش نیست.</div>';
-    html += '<div class=\"btnrow\"><button class=\"gbtn\" onclick=\"actDo(&#39;resend&#39;)\">📩 پیامک مجدد</button><button class=\"gbtn\" onclick=\"actDo(&#39;cancel&#39;)\">🚫 لغو سفارش</button></div>';
+    html += '<div class="codezone">در حال گوش دادن به پیامک… ' + ico('send', 15) + '<br>به‌محض رسیدن، کد به‌صورت <b style="color:#fff">خودکار</b> اینجا نمایش داده می‌شود؛ نیازی به رفرش نیست.</div>';
+    html += '<div class=\"btnrow\"><button class=\"gbtn\" onclick=\"actDo(&#39;resend&#39;)\">' + ico('send') + ' پیامک مجدد</button><button class=\"gbtn\" onclick=\"actDo(&#39;cancel&#39;)\">' + ico('xc') + ' لغو سفارش</button></div>';
     html += '<p class="small">طبق محدودیت تأمین‌کننده، لغو در ۲ دقیقه اول ممکن نیست؛ اگر کدی نرسد و سفارش لغو یا منقضی شود، مبلغ خودکار به موجودی برمی‌گردد.</p>';
   } else {
     html += '<p class="small">این سفارش به پایان رسیده است (' + escH(STATUS_FA[a.status]||a.status) + '). اگر کدی دریافت نشده بود، مبلغ به موجودی شما برگشته است.</p>';
-    html += '<div class=\"btnrow\"><button class=\"gbtn\" onclick=\"showView(&#39;orders&#39;)\">📱 سفارش‌های من</button></div>';
+    html += '<div class=\"btnrow\"><button class=\"gbtn\" onclick=\"showView(&#39;orders&#39;)\">' + ico('list') + ' سفارش‌های من</button></div>';
   }
   $('actBox').innerHTML = html;
   var nc = $('numCard'); if (nc) nc.onclick = function(){ copyTxt(S.act.phone); };
@@ -2600,6 +2671,10 @@ async function payPage(env, cfg, topup) {
   const summary = `<div class="summary"><div><div class="k">مبلغ شارژ</div><div class="v">$${esc(credit)}</div><div class="vt">${tomanText}</div></div>
     <div class="timer"><div class="cd">30:00</div><div class="k">مهلت باقی‌مانده</div></div></div><div class="timebar"><i id="timebar"></i></div>`;
   const script = payScript(topup, topup.method === "crypto" || topup.method === "card");
+  const icoX = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>';
+  const icoHome = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5 12 3l9 6.5V20a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22v-8h6v8"/></svg>';
+  const actions = `<div class="payfoot"><button class="footbtn danger" onclick="cancelPay(this)">${icoX} لغو پرداخت</button><a class="footbtn" href="/app">${icoHome} بازگشت به صفحه اصلی</a></div>
+  <script>async function cancelPay(btn){if(!confirm('این پرداخت لغو شود؟ اگر مبلغی واریز کرده‌اید، پیش از لغو با پشتیبانی هماهنگ کنید.'))return;btn.disabled=true;try{var r=await fetch('/pay/cancel',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({t:'${topup.id}'})});var d=await r.json();if(d.ok){location.reload()}else{toast(d.error||'خطا در لغو');btn.disabled=false}}catch(e){toast('خطای شبکه');btn.disabled=false}}</script>`;
 
   if (topup.status === "approved") {
     const user = await getUser(env, topup.userId);
@@ -2621,6 +2696,13 @@ async function payPage(env, cfg, topup) {
       <div class="state"><div class="circ red">✕</div>
       <h1 class="red">پرداخت رد شد</h1>
       <p>رسید ارسالی توسط ادمین تأیید نشد. اگر مبلغی واریز کرده‌اید، برای پیگیری با پشتیبانی در تماس باشید یا داخل ربات یک پرداخت تازه بسازید.</p></div>`);
+  }
+  if (topup.status === "cancelled") {
+    return payShell(`${head(2)}
+      <div class="state"><div class="circ">✕</div>
+      <h1>پرداخت لغو شد</h1>
+      <p>این درخواست پرداخت لغو و بسته شد. برای شارژ حساب، داخل ربات یا فروشگاه وب یک پرداخت جدید بسازید.</p>
+      <p style="margin-top:18px"><a class="footbtn" style="display:inline-flex;flex:none;padding:11px 20px" href="/app">${icoHome} بازگشت به صفحه اصلی</a></p></div>`);
   }
   if (topup.status !== "pending") {
     return payShell(`${head(2)}
@@ -2653,7 +2735,8 @@ async function payPage(env, cfg, topup) {
       <h1>روش پرداخت را انتخاب کنید</h1>
       <p class="sub">بعد از انتخاب، فقط ولت و مبلغ دقیق همان روش نمایش داده می‌شود.</p>
       ${summary}
-      ${rows.join("\n")}`, script);
+      ${rows.join("\n")}
+      ${actions}`, script);
   }
 
   // --- phone-verification view (card selected, verification pending) ---
@@ -2671,7 +2754,8 @@ async function payPage(env, cfg, topup) {
       </ul>
       ${deep ? `<a href="${deep}" style="display:block;text-align:center;background:#fff;color:#000;border-radius:14px;padding:14px 18px;font-weight:800;text-decoration:none;margin:16px 0">📱 رفتن به ربات و احراز شماره</a>` : `<p class="sub">از داخل ربات روی لینک پرداخت همین سفارش بزنید و مراحل احراز را انجام دهید.</p>`}
       <p class="sub">همین صفحه را باز نگه دارید؛ بعد از احراز موفق، خودش به‌روز می‌شود.</p>
-      <script>setInterval(async()=>{try{const r=await fetch('/pay/status?t=${topup.id}&_='+Date.now(),{cache:'no-store'});const d=await r.json();if(d.status!=='pending'||(d.method&&d.method!=='card_verify'))location.reload()}catch(e){}},4000)</script>`, script);
+      <script>setInterval(async()=>{try{const r=await fetch('/pay/status?t=${topup.id}&_='+Date.now(),{cache:'no-store'});const d=await r.json();if(d.status!=='pending'||(d.method&&d.method!=='card_verify'))location.reload()}catch(e){}},4000)</script>
+      ${actions}`, script);
   }
 
   // --- card view ---
@@ -2701,7 +2785,8 @@ async function payPage(env, cfg, topup) {
         <p class="sub">رسید برای ادمین ارسال شده است؛ پس از تأیید، موجودی شما شارژ می‌شود و همین صفحه به‌صورت خودکار به‌روز می‌شود.</p>
         ${summary}
         <div class="btnrow"><button class="btn" onclick="checkStatusBtn(this)">🔄 بررسی وضعیت</button><button class="btn ghost" onclick="document.getElementById('reUp').style.display='block';this.style.display='none'">ارسال رسید جایگزین</button></div>
-        <div id="reUp" style="display:none">${uploadBlock}</div>`, script);
+        <div id="reUp" style="display:none">${uploadBlock}</div>
+        ${actions}`, script);
     }
     return payShell(`${head(2)}
       <h1>کارت به کارت</h1>
@@ -2716,7 +2801,8 @@ async function payPage(env, cfg, topup) {
         <li><b>۲</b> عکس رسید را همین‌جا آپلود و «ثبت رسید» را بزنید (یا عکس رسید را داخل ربات بفرستید).</li>
         <li><b>۳</b> رسید برای ادمین ارسال می‌شود؛ پس از تأیید، موجودی‌تان شارژ می‌شود.</li>
       </ul>
-      <div class="btnrow"><button class="btn ghost" onclick="selectMethod('')">تغییر روش پرداخت</button></div>`, script);
+      <div class="btnrow"><button class="btn ghost" onclick="selectMethod('')">تغییر روش پرداخت</button></div>
+      ${actions}`, script);
   }
 
   // --- crypto payment view: only the chosen wallet + amount ---
@@ -2740,7 +2826,8 @@ async function payPage(env, cfg, topup) {
       <li><b>شبکه</b> واریز از شبکه دیگری به این آدرس، قابل شناسایی نیست.</li>
       <li><b>مبلغ دقیق</b> کمتر یا بیشتر از مبلغ بالا واریز نکنید؛ سیستم با همین مبلغ پرداخت شما را پیدا می‌کند.</li>
     </ul>
-    <div class="btnrow"><button class="btn" onclick="checkNow(this)">🔄 بررسی پرداخت</button><button class="btn ghost" onclick="selectMethod('')">تغییر روش پرداخت</button></div>`, script);
+    <div class="btnrow"><button class="btn" onclick="checkNow(this)">🔄 بررسی پرداخت</button><button class="btn ghost" onclick="selectMethod('')">تغییر روش پرداخت</button></div>
+      ${actions}`, script);
 }
 
 // ---------- Worker entry ----------
@@ -2764,6 +2851,9 @@ export default {
     if (url.pathname === "/pay/select" && request.method === "POST") {
       return handlePaySelect(env, request);
     }
+    if (url.pathname === "/pay/cancel" && request.method === "POST") {
+      return handlePayCancel(env, request);
+    }
     if (url.pathname === "/pay/receipt" && request.method === "POST") {
       return handlePayReceipt(env, request);
     }
@@ -2777,11 +2867,11 @@ export default {
     if (url.pathname.startsWith("/api/")) return handleApi(env, request, url);
     if (url.pathname === "/app") {
       const cfgApp = await getConfig(env);
-      return new Response(await appPage(env, cfgApp), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+      return new Response(await appPage(env, cfgApp), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...HTML_SEC } });
     }
     if (url.pathname === "/terms") {
       const cfgTerms = await getConfig(env);
-      return new Response(termsPage(cfgTerms), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+      return new Response(termsPage(cfgTerms), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...HTML_SEC } });
     }
     if (url.pathname === "/pay") {
       const t = url.searchParams.get("t");
@@ -2789,7 +2879,7 @@ export default {
       if (topup) topup = await settleTopupLazy(env, topup);
       const cfg = await getConfig(env);
       const html = await payPage(env, cfg, topup);
-      return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+      return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...HTML_SEC } });
     }
     if (url.pathname === "/health") {
       if (!diagKeyOk(env, url)) return Response.json({ ok: true, version: BOT_VERSION });
