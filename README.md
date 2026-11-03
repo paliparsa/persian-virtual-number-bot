@@ -31,6 +31,7 @@ refunded automatically (the provider only charges on a finished activation with 
   closed by the cron. Crypto payments keep a **unique exact amount** on your
   shared wallet address and are checked automatically (button + page + cron every
   2 minutes). On a match it tops up the user automatically.
+   Confirmation hardening (v1.3.1): BTC requires a confirmed transaction (mempool.space `status.confirmed`) and LTC requires >= 1 BlockCypher confirmation before crediting; a seen-but-unconfirmed BTC/LTC payment is marked seen, the user is notified, and its deadline extends to 24h after first sighting instead of expiring at 30 minutes. The TRX check verifies the recipient exactly (TronGrid hex to_address vs the Base58 wallet decoded to hex), same as USDT-TRC20.
   Auto-check supports USDT-TRC20, TRX, BTC, TON, LTC, USDT-BEP20 (read keylessly from BSC public RPC nodes via Transfer logs; BSC USDT has 18 decimals), and ETH / USDT-ERC20
   (ERC20 needs a free `ETHERSCAN_API_KEY`). Crypto USD prices are fetched redundantly — CoinGecko → Coinbase → Wallex-derived, with USDT fixed at $1 and a stale-cache last resort — because CoinGecko's free API aggressively rate-limits Cloudflare Workers' shared IPs, which used to abort top-ups with “price unavailable”.
 

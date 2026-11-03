@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "1.3.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "1.3.1"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -254,8 +254,38 @@ const CRYPTOS = {
 const configuredCryptos = (cfg) =>
   Object.entries(CRYPTOS).filter(([, c]) => cfg?.[c.envKey]);
 
-// Returns true when a matching incoming transfer is found on-chain.
-async function checkCryptoPaid(env, topup) {
+// ---------- on-chain payment state ----------
+// Returns "paid" (safe to credit), "seen" (a matching transaction exists on
+// chain but is not confirmed yet — BTC/LTC only), or "none".
+// Hardening (v1.3.1): BTC needs tx.status.confirmed (mempool.space) and LTC
+// needs >= 1 BlockCypher confirmation before crediting, so an unconfirmed /
+// replaceable transaction never tops a user up. TRX recipient is verified
+// strictly: TronGrid reports to_address as hex (0x41-prefixed), so the
+// wallet's Base58 address is decoded to hex and compared exactly — the same
+// strictness the USDT-TRC20 branch has always had (t.to === addr).
+const B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+function tronBase58ToHex(addr) {
+  try {
+    let n = 0n;
+    for (const ch of String(addr || "").trim()) {
+      const i = B58_ALPHABET.indexOf(ch);
+      if (i < 0) return null;
+      n = n * 58n + BigInt(i);
+    }
+    let hex = n.toString(16);
+    if (hex.length % 2) hex = "0" + hex;
+    const body = [];
+    if (n !== 0n) for (let i = 0; i < hex.length; i += 2) body.push(parseInt(hex.slice(i, i + 2), 16));
+    let zeros = 0;
+    const str = String(addr || "").trim();
+    while (zeros < str.length && str[zeros] === "1") zeros++;
+    const bytes = [...Array(zeros).fill(0), ...body];
+    if (bytes.length !== 25) return null; // 21-byte payload + 4-byte checksum
+    return bytes.slice(0, 21).map((b) => b.toString(16).padStart(2, "0")).join("");
+  } catch (_) { return null; }
+}
+
+async function checkCryptoState(env, topup) {
   const addr = topup.walletAddress;
   const sinceSec = Math.floor(topup.createdAt / 1000) - 120;
   const want = Number(topup.expectedCrypto);
@@ -269,25 +299,29 @@ async function checkCryptoPaid(env, topup) {
         return (d.data || []).some(
           (t) => t.to === addr && Number(t.value) / 1e6 >= want - 1e-6 &&
             Math.floor(t.block_timestamp / 1000) >= sinceSec
-        );
+        ) ? "paid" : "none";
       }
+      const wantHex = tronBase58ToHex(addr);
       const r = await fetch(`https://api.trongrid.io/v1/accounts/${addr}/transactions?limit=50`);
       const d = await r.json().catch(() => ({}));
       return (d.data || []).some((t) => {
         const c = t.raw_data?.contract?.[0];
         const v = c?.parameter?.value;
-        return v?.to_address && t.ret?.[0]?.contractRet === "SUCCESS" &&
+        return wantHex && String(v?.to_address || "").toLowerCase() === wantHex &&
+          t.ret?.[0]?.contractRet === "SUCCESS" &&
           Number(v.amount || 0) / 1e6 >= want - 1e-3 &&
           Math.floor(t.block_timestamp / 1000) >= sinceSec;
-      });
+      }) ? "paid" : "none";
     }
     if (topup.crypto === "BTC") {
       const r = await fetch(`https://mempool.space/api/address/${addr}/txs`);
       const txs = await r.json().catch(() => []);
-      return (Array.isArray(txs) ? txs : []).some((tx) =>
+      const match = (Array.isArray(txs) ? txs : []).find((tx) =>
         (tx.vout || []).some((o) => o.scriptpubkey_address === addr && o.value >= Math.round(want * 1e8) - 10) &&
         (tx.status?.block_time || Math.floor(now() / 1000)) >= sinceSec - 3600
       );
+      if (!match) return "none";
+      return match.status?.confirmed ? "paid" : "seen";
     }
     if (topup.crypto === "TON") {
       const r = await fetch(
@@ -297,7 +331,7 @@ async function checkCryptoPaid(env, topup) {
       return (d.result || []).some((tx) => {
         const msg = tx.in_msg;
         return msg && Number(msg.value || 0) / 1e9 >= want - 1e-4 && Number(tx.utime) >= sinceSec;
-      });
+      }) ? "paid" : "none";
     }
     if (topup.crypto === "USDT_BEP20") {
       // Keyless: read Transfer logs straight from BSC public RPC nodes.
@@ -324,11 +358,11 @@ async function checkCryptoPaid(env, topup) {
             topics: [transferTopic, null, toTopic],
           }]);
           if (Array.isArray(logs)) {
-            return logs.some((l) => Number(BigInt(l.data)) / 1e18 >= want - 1e-4);
+            return logs.some((l) => Number(BigInt(l.data)) / 1e18 >= want - 1e-4) ? "paid" : "none";
           }
         } catch (_) { /* try the next RPC node */ }
       }
-      return false;
+      return "none";
     }
     if ((topup.crypto === "ETH" || topup.crypto === "USDT_ERC20") && env.ETHERSCAN_API_KEY) {
       const isToken = topup.crypto === "USDT_ERC20";
@@ -342,19 +376,22 @@ async function checkCryptoPaid(env, topup) {
         String(tx.to).toLowerCase() === addr.toLowerCase() &&
         Number(tx.value) / (isToken ? 1e6 : 1e18) >= want - 1e-4 &&
         Number(tx.timeStamp) >= sinceSec
-      );
+      ) ? "paid" : "none";
     }
     if (topup.crypto === "LTC") {
       const r = await fetch(`https://api.blockcypher.com/v1/ltc/main/addrs/${addr}/full?limit=50`);
       const d = await r.json().catch(() => ({}));
-      return (d.txs || []).some((tx) =>
+      const match = (d.txs || []).find((tx) =>
         (tx.outputs || []).some((o) => (o.addresses || []).includes(addr) && o.value >= Math.round(want * 1e8) - 100) &&
         (!tx.received || new Date(tx.received).getTime() / 1000 >= sinceSec - 3600)
       );
+      if (!match) return "none";
+      return Number(match.confirmations || 0) >= 1 ? "paid" : "seen";
     }
   } catch (_) { /* network hiccup: stay pending, cron retries */ }
-  return false;
+  return "none";
 }
+const checkCryptoPaid = async (env, topup) => (await checkCryptoState(env, topup)) === "paid";
 
 async function creditTopup(env, topup, note) {
   const fresh = await kvGet(env, `topup:${topup.id}`);
@@ -545,7 +582,12 @@ async function refreshActivation(env, chatId, msgId, id) {
 // page the user picks the method (a crypto, or card-to-card); only then are
 // the wallet, the exact amount and (for card) the Toman total fixed.
 const PAY_TTL_MS = 30 * 60 * 1000;
-const topupExpiresAt = (t) => Number(t.expiresAt || (t.createdAt + PAY_TTL_MS));
+// A payment whose transaction was seen on-chain but is not confirmed yet
+// (BTC/LTC) is NOT cut off by the 30-minute deadline: it stays pending until
+// confirmation, up to 24h after it was first seen.
+const topupExpiresAt = (t) =>
+  t.seenAt ? Number(t.seenAt) + 24 * 3600 * 1000
+            : Number(t.expiresAt || (t.createdAt + PAY_TTL_MS));
 const topupIsExpired = (t) => t.status === "pending" && now() > topupExpiresAt(t);
 
 async function expireTopup(env, t) {
@@ -646,10 +688,13 @@ async function applyPayMethod(env, topup, method) {
 async function paySessionMessage(env, topup, baseUrl) {
   const tmn = await usdtTomanRate(env);
   const mins = Math.max(0, Math.ceil((topupExpiresAt(topup) - now()) / 60000));
+  const timeLine = topup.seenAt
+    ? "👀 تراکنش دیده شده و در انتظار تأیید شبکه است؛ به‌محض تأیید، خودکار شارژ می‌شود."
+    : `⏰ مهلت پرداخت: ${faDigits(mins)} دقیقه`;
   let methodLine = "روش پرداخت: هنوز انتخاب نشده — داخل صفحه پرداخت انتخابش کنید.";
   if (topup.method === "crypto") methodLine = `روش پرداخت: ${esc(CRYPTOS[topup.crypto]?.label || "")} — مبلغ دقیق: <code>${esc(topup.expectedCrypto)}</code>`;
   if (topup.method === "card") methodLine = `روش پرداخت: کارت‌به‌کارت — مبلغ: ${faInt(topup.amountToman)} تومان. رسید را همین‌جا در ربات بفرستید.`;
-  const text = `💵 <b>پرداخت شما ساخته شد</b>\n\nمبلغ شارژ: ${usdText(tmn, topupCredit(topup))}\n${methodLine}\n⏰ مهلت پرداخت: ${faDigits(mins)} دقیقه\n\nاز دکمه زیر صفحه پرداخت را باز کنید:`;
+  const text = `💵 <b>پرداخت شما ساخته شد</b>\n\nمبلغ شارژ: ${usdText(tmn, topupCredit(topup))}\n${methodLine}\n${timeLine}\n\nاز دکمه زیر صفحه پرداخت را باز کنید:`;
   const rows = [[urlBtn("🌐 باز کردن صفحه پرداخت", `${baseUrl}/pay?t=${topup.id}`)]];
   if (topup.method === "crypto") rows.push([btn("🔄 بررسی پرداخت", `chk:${topup.id}`)]);
   rows.push([btn("❌ لغو این پرداخت", `ses_cancel:${topup.id}`)]);
@@ -911,10 +956,11 @@ async function handleCallback(env, cq, baseUrl) {
     if (head === "chk") {
       const topup = await kvGet(env, `topup:${a}`);
       if (!topup || topup.status !== "pending") { await answerCb(env, cq.id, "این پرداخت قبلاً تعیین‌تکلیف شده است"); return; }
-      if (topupIsExpired(topup)) { await expireTopup(env, topup); await answerCb(env, cq.id, "⏰ مهلت این پرداخت (۳۰ دقیقه) تمام شده است", true); return; }
       if (topup.method !== "crypto") { await answerCb(env, cq.id, "اول از صفحه پرداخت، روش پرداخت را انتخاب کنید", true); return; }
-      const paid = await checkCryptoPaid(env, topup);
-      if (paid) { await creditTopup(env, topup, "auto-chain"); await answerCb(env, cq.id, "پرداخت تأیید و حساب شارژ شد ✅"); return showHome(env, chatId, msgId); }
+      const fresh = await settleTopupLazy(env, topup);
+      if (fresh.status === "approved") { await answerCb(env, cq.id, "پرداخت تأیید و حساب شارژ شد ✅"); return showHome(env, chatId, msgId); }
+      if (fresh.status === "expired") { await answerCb(env, cq.id, "⏰ مهلت این پرداخت تمام شده است", true); return; }
+      if (fresh.seenAt) { await answerCb(env, cq.id, "👀 تراکنش دیده شد و در انتظار تأیید شبکه است؛ به محض تأیید، خودکار شارژ می‌شود.", true); return; }
       await answerCb(env, cq.id, "هنوز واریزی با مبلغ دقیق پیدا نشد. اگر تازه واریز کرده‌اید چند دقیقه صبر کنید.", true);
       return;
     }
@@ -976,12 +1022,25 @@ const COIN_TICKER = { USDT_TRC20: "USDT", USDT_BEP20: "USDT", USDT_ERC20: "USDT"
 
 async function settleTopupLazy(env, topup) {
   if (!topup || topup.status !== "pending") return topup;
+  if (topup.method === "crypto") {
+    const st = await checkCryptoState(env, topup);
+    if (st === "paid") {
+      await creditTopup(env, topup, "auto-chain");
+      return (await kvGet(env, `topup:${topup.id}`)) || topup;
+    }
+    if (st === "seen" && !topup.seenAt) {
+      // Transaction is on-chain but unconfirmed: keep the payment alive past
+      // the 30-minute deadline (topupExpiresAt now counts from seenAt).
+      topup.seenAt = now();
+      await kvPut(env, `topup:${topup.id}`, topup, 7 * 24 * 3600);
+      const cfg = await getConfig(env);
+      await send(env, topup.userId,
+        `👀 <b>تراکنش شما دیده شد</b>\n\nپرداخت $${faNum(topupCredit(topup))} در شبکه پیدا شد و در انتظار تأیید (کانفرم) است. به محض تأیید، موجودی‌تان به‌صورت خودکار شارژ می‌شود و مهلت پرداخت‌تان تا آن زمان تمدید شد.`,
+        mainMenuKb(env, cfg, topup.userId));
+    }
+  }
   if (topupIsExpired(topup)) {
     await expireTopup(env, topup);
-    return (await kvGet(env, `topup:${topup.id}`)) || topup;
-  }
-  if (topup.method === "crypto" && (await checkCryptoPaid(env, topup))) {
-    await creditTopup(env, topup, "auto-chain-page");
     return (await kvGet(env, `topup:${topup.id}`)) || topup;
   }
   return topup;
@@ -1222,10 +1281,13 @@ async function payPage(env, cfg, topup) {
   return payShell(`${head(2)}
     <h1>پرداخت ${esc(c.label || "")}</h1>
     <p class="sub">فقط از همین شبکه و دقیقاً همین مبلغ را واریز کنید.</p>
-    <div class="paywrap">
+    ${topup.seenAt ? `<div class="paywrap">
+      <div class="ring" style="display:grid;place-items:center;border:1px solid #2c2c2c;border-radius:50%;font-size:24px">⏳</div>
+      <div><div class="st"><span class="pulse"></span><b>تراکنش دیده شد — در انتظار تأیید شبکه</b></div><div class="st">مبلغ شارژ: $${esc(credit)} ${tomanText}</div><div class="st">تراکنش شما در شبکه پیدا شده و منتظر تأیید (کانفرم) است. به محض تأیید، شارژ خودکار انجام و این صفحه به‌روز می‌شود. مهلت پرداخت شما تا آن زمان تمدید شده است.</div></div>
+    </div>` : `<div class="paywrap">
       <div class="ring"><svg width="66" height="66"><circle cx="33" cy="33" r="26" stroke="#222" stroke-width="3" fill="none"/><circle id="ringfg" cx="33" cy="33" r="26" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" stroke-dasharray="163.36" stroke-dashoffset="0"/></svg><div class="rc cd">30:00</div></div>
       <div><div class="st"><span class="pulse"></span><b>در انتظار پرداخت</b></div><div class="st">مبلغ شارژ: $${esc(credit)} ${tomanText}</div><div class="st">پس از دیده‌شدن تراکنش در شبکه، شارژ خودکار انجام و این صفحه به‌روز می‌شود.</div></div>
-    </div>
+    </div>`}
     <div class="amtbox"><div class="k">مبلغ دقیق پرداختی — ${esc(c.label || "")}</div>
       <div class="amt"><span>${esc(topup.expectedCrypto)}</span><button class="copy" onclick="copyText('${esc(topup.expectedCrypto)}')">کپی مبلغ</button></div></div>
     <div class="addr-box"><code class="addr">${esc(addr)}</code><button class="copy" onclick="copyText('${esc(addr)}')">کپی آدرس</button></div>
@@ -1295,11 +1357,7 @@ export default {
       const origin = cfgCron.WORKER_BASE_URL || storedOrigin?.origin;
       if (origin) await ensureWebhook(env, origin);
       for (const t of await kvList(env, "topup:")) {
-        if (t.status !== "pending") continue;
-        if (topupIsExpired(t)) { await expireTopup(env, t); continue; }
-        if (t.method === "crypto" && (await checkCryptoPaid(env, t))) {
-          await creditTopup(env, t, "auto-chain-cron");
-        }
+        if (t.status === "pending") await settleTopupLazy(env, t);
       }
     })();
     ctx.waitUntil(work);
