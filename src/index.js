@@ -75,6 +75,38 @@ const kb = (rows) => ({ inline_keyboard: rows });
 const btn = (text, callback_data) => ({ text, callback_data });
 const urlBtn = (text, url) => ({ text, url });
 
+// ---------- automatic Telegram webhook setup ----------
+// Sets the webhook to https://<this-worker's-domain>/webhook by itself.
+// Runs when any non-webhook page is opened (/, /pay, /health, /setup) and
+// again from the cron job using the last seen / configured public origin,
+// so a changed domain or a deleted webhook heals without manual curl calls.
+async function ensureWebhook(env, origin) {
+  if (!env.TELEGRAM_BOT_TOKEN) return { ok: false, reason: "TELEGRAM_BOT_TOKEN is not set" };
+  if (!origin) return { ok: false, reason: "public origin unknown yet" };
+  const target = `${String(origin).replace(/\/+$/, "")}/webhook`;
+  try {
+    const cached = await kvGet(env, "sys:webhook");
+    if (cached?.url === target && now() - cached.at < 6 * 3600 * 1000) {
+      return { ok: true, url: target, cached: true };
+    }
+    const info = await tg(env, "getWebhookInfo", {});
+    if (info?.result?.url !== target) {
+      const body = { url: target, allowed_updates: ["message", "callback_query"] };
+      if (env.WEBHOOK_SECRET) body.secret_token = env.WEBHOOK_SECRET;
+      const res = await tg(env, "setWebhook", body);
+      if (!res?.ok) return { ok: false, url: target, telegram: res };
+    }
+    try { await kvPut(env, "sys:webhook", { url: target, at: now() }); } catch (_) {}
+    return { ok: true, url: target };
+  } catch (e) {
+    return { ok: false, url: target, error: String(e?.message || e) };
+  }
+}
+async function rememberOriginAndWebhook(env, origin) {
+  try { await kvPut(env, "sys:origin", { origin, at: now() }); } catch (_) {}
+  await ensureWebhook(env, origin);
+}
+
 // ---------- SmsFull API ----------
 async function smsfull(env, path, opts = {}) {
   const r = await fetch(`${env.SMSFULL_BASE_URL || SMSFULL_BASE}${path}`, {
@@ -625,6 +657,13 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const baseUrl = url.origin;
+    // Self-setup: any visit to this Worker (re)registers the Telegram webhook
+    // in the background — no manual setWebhook call is needed after deploy.
+    if (url.pathname !== "/webhook") ctx.waitUntil(rememberOriginAndWebhook(env, url.origin));
+    if (url.pathname === "/setup") {
+      const webhook = await ensureWebhook(env, env.WORKER_BASE_URL || url.origin);
+      return Response.json({ ok: webhook.ok, kv: !!env.STORE, webhook });
+    }
     if (url.pathname === "/" ) return Response.redirect(`${url.origin}/pay`, 302);
     if (url.pathname === "/pay") {
       const t = url.searchParams.get("t");
@@ -650,6 +689,11 @@ export default {
   // Auto-check pending crypto top-ups (set a cron trigger in wrangler.toml / dashboard).
   async scheduled(event, env, ctx) {
     const work = (async () => {
+      // Keep the Telegram webhook pointed at this Worker (uses the configured
+      // public URL, or the last origin seen from a real visit).
+      const storedOrigin = await kvGet(env, "sys:origin");
+      const origin = env.WORKER_BASE_URL || storedOrigin?.origin;
+      if (origin) await ensureWebhook(env, origin);
       const pending = (await kvList(env, "topup:")).filter(
         (t) => t.method === "crypto" && t.status === "pending" && t.expiresAt > now());
       for (const t of pending) {

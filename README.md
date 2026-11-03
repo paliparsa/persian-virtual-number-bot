@@ -32,12 +32,18 @@ refunded automatically (the provider only charges on a finished activation with 
    deploy command `npx wrangler deploy` (the default for Workers Git integration).
 2. Every push to `main` now redeploys the Worker automatically.
 
-## 2. Add storage (KV)
+## 2. Storage (KV) — automatic ✅
 
-Worker → **Settings → Bindings → Add → KV namespace**:
+Nothing to do. `wrangler.toml` declares a KV binding named exactly **`STORE`**
+with **no namespace id**, and the repo pins Wrangler v4, so on the first deploy
+Cloudflare **automatically creates the KV namespace and binds it** to the Worker
+(automatic resource provisioning). Its generated id shows in the dashboard under
+Worker → Settings → Bindings; it is not written back to this repo, and the
+binding stays linked on later deploys.
 
-- Create a namespace (e.g. `persian-bot-store`)
-- Variable name: **`STORE`** ← must be exactly this
+Fallback (only if auto-provisioning is unavailable on your account): create a KV
+namespace manually and add its `id = "…"` under the `[[kv_namespaces]]` block in
+`wrangler.toml`, then redeploy.
 
 ## 3. Set variables & secrets
 
@@ -55,14 +61,26 @@ Worker → **Settings → Variables and Secrets**:
 | `WALLET_USDT_TRC20`, `WALLET_TRX`, `WALLET_BTC`, `WALLET_TON`, `WALLET_LTC`, `WALLET_ETH`, `WALLET_USDT_ERC20` | Text | Your wallet addresses; only set the ones you accept. They are shown publicly on `/pay` |
 | `ETHERSCAN_API_KEY` | Secret | Only for ETH / USDT-ERC20 auto-check |
 | `SUPPORT_USERNAME` | Text | Telegram username (no @) for the support button |
+| `WORKER_BASE_URL` | Text | Optional: your public Worker URL. Lets the cron job restore the webhook even before anyone opens the Worker page |
 
 Public URL note: wallet addresses and card details are *meant* to be shown to
 customers, which is why they are plain variables — never put the bot token or the
 SmsFull key anywhere except Secrets.
 
-## 4. Point Telegram at the Worker (webhook)
+## 4. Telegram webhook — automatic ✅
 
-After the first deploy, run once (replace the values):
+Nothing to run. The Worker sets its own webhook to
+`https://<your-worker-domain>/webhook`:
+
+- The first time anyone opens the Worker URL (the root page, `/pay`, `/health`
+  or `/setup`), it registers the webhook in the background.
+- The cron job (every 2 minutes) re-checks it using the last seen public
+  origin — or `WORKER_BASE_URL` if you set that variable — and fixes it if the
+  domain changed or the webhook was deleted.
+- Open `https://<your-worker-domain>/setup` to see the live result as JSON.
+
+Notes: the bot token (and `WEBHOOK_SECRET`, if you set one) must already be in
+the Worker secrets for this to work. Manual fallback if you ever need it:
 
 ```bash
 curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<YOUR-WORKER-DOMAIN>/webhook&secret_token=<WEBHOOK_SECRET>"
@@ -103,7 +121,7 @@ approve/reject card receipts, review pending crypto payments and force a chain c
 ## راهنمای کوتاه فارسی
 
 ۱. همین مخزن را در Cloudflare از بخش Workers & Pages به گیت‌هاب وصل کنید تا با هر پوش، خودش دیپلوی شود.
-۲. یک KV بسازید و با نام `STORE` به ورکر وصل کنید.
+۲. فضای KV با نام `STORE` هنگام اولین دیپلوی به‌صورت خودکار ساخته و وصل می‌شود؛ کاری لازم نیست.
 ۳. توکن ربات، شناسه عددی مدیر و کلید SmsFull را فقط در Secrets کلودفلر بگذارید — هرگز داخل گیت‌هاب نگذارید.
 ۴. شماره کارت و آدرس کیف‌پول‌ها را در Variables بگذارید تا در ربات و صفحه پرداخت (`/pay`) نشان داده شوند.
-۵. وبهوک تلگرام را با دستور مرحله ۴ روی آدرس ورکر تنظیم کنید و با `/start` تست بگیرید.
+۵. وبهوک تلگرام هم خودکار تنظیم می‌شود: فقط کافی است یک‌بار آدرس ورکر را باز کنید (یا `/setup` را ببینید)، بعد با `/start` تست بگیرید.

@@ -2,19 +2,27 @@ name = "persian-virtual-number-bot"
 main = "src/index.js"
 compatibility_date = "2024-11-01"
 
-# Cron: auto-check pending crypto payments every 2 minutes.
+# Cron: auto-check pending crypto payments every 2 minutes,
+# and re-check that the Telegram webhook still points at this Worker.
 [triggers]
 crons = ["*/2 * * * *"]
 
-# KV storage is added in the Cloudflare dashboard (recommended for Git deploys):
-#   Worker > Settings > Bindings > Add > KV namespace > Variable name: STORE
-# If you deploy with wrangler instead, uncomment and put your namespace id:
-# [[kv_namespaces]]
-# binding = "STORE"
-# id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+# KV storage — AUTOMATIC PROVISIONING:
+# This binding intentionally has NO namespace id. With Wrangler v4
+# (see package.json) the first deploy automatically creates the KV
+# namespace and binds it to this Worker as STORE. When deploying from
+# the Cloudflare dashboard / GitHub, the created namespace id is visible
+# in the dashboard (Settings > Bindings) instead of being written back
+# to this file — the binding stays linked on later deploys either way.
+# Fallback if auto-provisioning is unavailable on your account:
+# create a KV namespace manually, then add its id under this binding:
+#   id = "YOUR_KV_NAMESPACE_ID"
+[[kv_namespaces]]
+binding = "STORE"
 
 [vars]
 PRICE_MARKUP_PERCENT = "20"
+# WORKER_BASE_URL = ""       # optional: your public Worker URL, e.g. https://persian-virtual-number-bot.<you>.workers.dev — lets the cron job re-set the webhook even before anyone opens the Worker URL.
 # TOMAN_PER_BRL = "0"        # set as a dashboard variable/secret: Toman for 1 BRL credit
 # CARD_NUMBER = ""           # set in dashboard (shown to users)
 # CARD_HOLDER = ""
