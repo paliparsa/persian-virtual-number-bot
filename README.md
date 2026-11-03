@@ -17,8 +17,10 @@ refunded automatically (the provider only charges on a finished activation with 
 - **Every dollar amount is also shown in Toman**, converted automatically with the
   live USDT/TMN rate from the **Wallex API** (`api.wallex.ir/v1/markets`, cached 5 min).
 - **Card (کارت به کارت):** your card details are shown in the bot. The user enters the
-  Toman amount, sends a receipt photo, and you approve/reject it from the admin panel
-  inside the bot (you also get the receipt forwarded with Approve/Reject buttons).
+  Toman amount, and uploads the receipt right on the payment page (or sends the
+  receipt photo in the bot); either way you get the receipt with the user id, the
+  payment details and Approve/Reject buttons, and the user is told the receipt
+  awaits admin approval.
   The Toman → USD credit conversion is automatic using the Wallex USDT rate
   (the rate used is stored on each top-up and shown to the admin).
 - **Payment sessions (v1.3.0, Toman entry added v1.5.0):** the user enters the top-up amount in the bot in USD, or in Toman — converted to USD at the live USDT/TMN rate, with the entered Toman and the rate shown on the session;
