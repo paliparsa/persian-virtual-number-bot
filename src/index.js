@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "1.4.2"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "1.5.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -770,7 +770,7 @@ async function findActiveSession(env, userId) {
 }
 
 function topupMenuText() {
-  return `💳 <b>افزایش موجودی</b>\n\nمبلغ شارژ را به <b>دلار</b> مشخص می‌کنید و یک <b>لینک پرداخت</b> می‌گیرید. داخل صفحه پرداخت، روش را انتخاب می‌کنید (ارز دیجیتال یا کارت‌به‌کارت) و فقط همان روش به شما نشان داده می‌شود.\n\n⏰ هر پرداخت <b>۳۰ دقیقه</b> مهلت دارد.`;
+  return `💳 <b>افزایش موجودی</b>\n\nمبلغ شارژ را به <b>دلار</b> یا <b>تومان</b> مشخص می‌کنید (مبلغ تومانی با نرخ لحظه‌ای تتر به دلار تبدیل می‌شود) و یک <b>لینک پرداخت</b> می‌گیرید. داخل صفحه پرداخت، روش را انتخاب می‌کنید (ارز دیجیتال یا کارت‌به‌کارت) و فقط همان روش به شما نشان داده می‌شود.\n\n⏰ هر پرداخت <b>۳۰ دقیقه</b> مهلت دارد.`;
 }
 async function showTopup(env, chatId, msgId, baseUrl) {
   const cfg = await getConfig(env);
@@ -786,10 +786,11 @@ async function showTopup(env, chatId, msgId, baseUrl) {
     kb([[btn("💵 ساخت لینک پرداخت", "link_new")], [btn("⬅️ منوی اصلی", "home")]]));
 }
 
-async function createPaySession(env, chatId, creditUsd) {
+async function createPaySession(env, chatId, creditUsd, extra = {}) {
   const topup = {
     id: uid(), userId: String(chatId), method: "session",
     creditUsd, status: "pending", createdAt: now(), expiresAt: now() + PAY_TTL_MS,
+    ...extra,
   };
   await kvPut(env, `topup:${topup.id}`, topup, 7 * 24 * 3600);
   return topup;
@@ -851,7 +852,8 @@ async function paySessionMessage(env, topup, baseUrl) {
   let methodLine = "روش پرداخت: هنوز انتخاب نشده — داخل صفحه پرداخت انتخابش کنید.";
   if (topup.method === "crypto") methodLine = `روش پرداخت: ${esc(CRYPTOS[topup.crypto]?.label || "")} — مبلغ دقیق: <code>${esc(topup.expectedCrypto)}</code>`;
   if (topup.method === "card") methodLine = `روش پرداخت: کارت‌به‌کارت — مبلغ: ${faInt(topup.amountToman)} تومان. رسید را همین‌جا در ربات بفرستید.`;
-  const text = `💵 <b>پرداخت شما ساخته شد</b>\n\nمبلغ شارژ: ${usdText(tmn, topupCredit(topup))}\n${methodLine}\n${timeLine}\n\nاز دکمه زیر صفحه پرداخت را باز کنید:`;
+  const inputLine = topup.inputToman ? `\nمبلغ واردشده: ${faInt(topup.inputToman)} تومان ≈ $${faNum(topupCredit(topup))} (با نرخ تتر ${faInt(topup.inputRate)} تومان)` : "";
+  const text = `💵 <b>پرداخت شما ساخته شد</b>\n\nمبلغ شارژ: ${usdText(tmn, topupCredit(topup))}${inputLine}\n${methodLine}\n${timeLine}\n\nاز دکمه زیر صفحه پرداخت را باز کنید:`;
   const rows = [[urlBtn("🌐 باز کردن صفحه پرداخت", `${baseUrl}/pay?t=${topup.id}`)]];
   if (topup.method === "crypto") rows.push([btn("🔄 بررسی پرداخت", `chk:${topup.id}`)]);
   rows.push([btn("❌ لغو این پرداخت", `ses_cancel:${topup.id}`)]);
@@ -1060,6 +1062,23 @@ async function handleMessage(env, msg, baseUrl) {
     return send(env, chatId, m.text, m.markup);
   }
 
+  if (user.state === "await_link_amount_tmn" && /^[0-9][0-9,]*$/.test(text)) {
+    const tmnAmount = Number(text.replace(/,/g, ""));
+    user.state = null;
+    await saveUser(env, user);
+    const rate = await usdtTomanRate(env);
+    if (!rate) {
+      return send(env, chatId, "⚠️ نرخ تتر در حال حاضر در دسترس نیست؛ مبلغ را به دلار وارد کنید یا چند دقیقه دیگر تلاش کنید.", backKb);
+    }
+    const creditUsd = Math.round((tmnAmount / rate) * 100) / 100;
+    if (!(creditUsd >= 1 && creditUsd <= 5000)) {
+      return send(env, chatId, `مبلغ تومانی باید معادل ۱ تا ۵۰۰۰ دلار باشد (با نرخ فعلی تتر، حدود ${faInt(rate)} تا ${faInt(rate * 5000)} تومان). از منوی «افزایش موجودی» دوباره تلاش کنید.`, backKb);
+    }
+    const topup = await createPaySession(env, chatId, creditUsd, { inputToman: tmnAmount, inputRate: rate });
+    const m = await paySessionMessage(env, topup, baseUrl);
+    return send(env, chatId, m.text, m.markup);
+  }
+
   user.state = null;
   await saveUser(env, user);
   return showHome(env, chatId);
@@ -1124,12 +1143,30 @@ async function handleCallback(env, cq, baseUrl) {
         const m = await paySessionMessage(env, active, baseUrl);
         return edit(env, chatId, msgId, m.text, m.markup);
       }
+      return edit(env, chatId, msgId,
+        `💵 <b>ساخت لینک پرداخت</b>\n\nمبلغ شارژ را با کدام واحد وارد می‌کنید؟\n\n💵 <b>دلار:</b> مبلغ شارژ را مستقیم به دلار می‌نویسید.\n🇮🇷 <b>تومان:</b> مبلغ را به تومان می‌نویسید و با نرخ لحظه‌ای تتر به دلار تبدیل می‌شود.`,
+        kb([[btn("💵 مبلغ به دلار", "link_cur:USD")], [btn("🇮🇷 مبلغ به تومان", "link_cur:TMN")], [btn("⬅️ بازگشت", "topup")]]));
+    }
+    if (head === "link_cur") {
       const user = await getUser(env, chatId);
+      if (a === "TMN") {
+        const rate = await usdtTomanRate(env);
+        if (!rate) {
+          return edit(env, chatId, msgId,
+            "⚠️ در حال حاضر نرخ تتر در دسترس نیست؛ مبلغ را به دلار وارد کنید یا چند دقیقه دیگر تلاش کنید.",
+            kb([[btn("💵 مبلغ به دلار", "link_cur:USD")], [btn("⬅️ بازگشت", "topup")]]));
+        }
+        user.state = "await_link_amount_tmn";
+        await saveUser(env, user);
+        return edit(env, chatId, msgId,
+          `🇮🇷 <b>ساخت لینک پرداخت — تومان</b>\n\n✍️ مبلغ شارژ را به <b>تومان</b> بنویسید (فقط عدد، مثال: 5000000):\n\nنرخ لحظه‌ای تتر: هر تتر <b>${faInt(rate)} تومان</b> — مبلغ شما با همین نرخ به دلار تبدیل می‌شود (معادل ۱ تا ۵۰۰۰ دلار).\n\nروش پرداخت را بعداً داخل صفحه پرداخت انتخاب می‌کنید و هر پرداخت ۳۰ دقیقه مهلت دارد.`,
+          kb([[btn("⬅️ بازگشت", "link_new")]]));
+      }
       user.state = "await_link_amount";
       await saveUser(env, user);
       return edit(env, chatId, msgId,
-        `💵 <b>ساخت لینک پرداخت</b>\n\n✍️ مبلغ شارژی را که می‌خواهید به <b>دلار</b> بنویسید (فقط عدد، مثال: 50):\n\nروش پرداخت را بعداً داخل صفحه پرداخت انتخاب می‌کنید و هر پرداخت ۳۰ دقیقه مهلت دارد.`,
-        kb([[btn("⬅️ بازگشت", "topup")]]));
+        `💵 <b>ساخت لینک پرداخت — دلار</b>\n\n✍️ مبلغ شارژی را که می‌خواهید به <b>دلار</b> بنویسید (فقط عدد، مثال: 50):\n\nروش پرداخت را بعداً داخل صفحه پرداخت انتخاب می‌کنید و هر پرداخت ۳۰ دقیقه مهلت دارد.`,
+        kb([[btn("⬅️ بازگشت", "link_new")]]));
     }
     if (head === "ses_cancel") {
       const topup = await kvGet(env, `topup:${a}`);
