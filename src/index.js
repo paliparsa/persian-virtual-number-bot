@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "1.4.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "1.4.1"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -160,17 +160,72 @@ async function smsfull(env, path, opts = {}) {
 // Shop currency is USD. Provider (SmsFull) prices arrive in BRL and are
 // converted with a free daily FX rate. Toman equivalents come from Wallex:
 // the USDT/TMN market (1 USDT ~= 1 USD), fetched live and cached 5 minutes.
+const saveTmnDiag = async (env, diag) => { try { await kvPut(env, "diag:tmn", diag, 3600); } catch (_) {} };
+// USDT/TMN rate. Primary: Wallex /v1/markets (lastPrice). Fallback: Wallex
+// /v1/depth for USDTTMN (tiny payload — survives cases where the ~450KB
+// markets response fails). Every outcome is recorded in diag:tmn and exposed
+// via /health so a missing Toman price can be diagnosed from outside.
 async function usdtTomanRate(env) {
   const cached = await kvGet(env, "rate:usdt_tmn");
   if (cached && now() - cached.at < 5 * 60 * 1000) return cached.v;
+  const diag = { at: now() };
   try {
     const r = await fetch("https://api.wallex.ir/v1/markets");
-    const d = await r.json();
+    diag.marketsHttp = r.status;
+    const d = await r.json().catch(() => ({}));
     const st = d?.result?.symbols?.USDTTMN?.stats || {};
     const v = Number(st.lastPrice || st.askPrice || st.bidPrice);
-    if (v > 0) { await kvPut(env, "rate:usdt_tmn", { v, at: now() }, 900); return v; }
-  } catch (_) {}
+    if (v > 0) {
+      diag.src = "wallex-markets"; diag.rate = v;
+      await saveTmnDiag(env, diag);
+      await kvPut(env, "rate:usdt_tmn", { v, at: now(), src: diag.src }, 900);
+      return v;
+    }
+    diag.marketsError = "USDTTMN price missing in response";
+  } catch (e) { diag.marketsError = String(e?.message || e); }
+  try {
+    const r = await fetch("https://api.wallex.ir/v1/depth?symbol=USDTTMN");
+    diag.depthHttp = r.status;
+    const d = await r.json().catch(() => ({}));
+    const ask = Number(d?.result?.ask?.[0]?.price);
+    const bid = Number(d?.result?.bid?.[0]?.price);
+    const v = ask > 0 && bid > 0 ? Math.round((ask + bid) / 2) : (ask || bid);
+    if (v > 0) {
+      diag.src = "wallex-depth"; diag.rate = v;
+      await saveTmnDiag(env, diag);
+      await kvPut(env, "rate:usdt_tmn", { v, at: now(), src: diag.src }, 900);
+      return v;
+    }
+    diag.depthError = "USDTTMN depth missing in response";
+  } catch (e) { diag.depthError = String(e?.message || e); }
+  diag.src = cached?.v ? "stale-cache" : "none";
+  if (cached?.v) diag.rate = cached.v;
+  await saveTmnDiag(env, diag);
   return cached?.v || null;
+}
+
+// Live Wallex reachability probe for /health (bypasses the rate cache).
+async function probeWallex() {
+  const probe = async (url, pick) => {
+    const t0 = Date.now();
+    try {
+      const r = await fetch(url);
+      const d = await r.json().catch(() => null);
+      const v = d ? pick(d) : null;
+      return { ok: r.ok && !!v, http: r.status, rate: v || null, ms: Date.now() - t0 };
+    } catch (e) { return { ok: false, error: String(e?.message || e), ms: Date.now() - t0 }; }
+  };
+  const [markets, depth] = await Promise.all([
+    probe("https://api.wallex.ir/v1/markets", (d) => {
+      const v = Number(d?.result?.symbols?.USDTTMN?.stats?.lastPrice);
+      return v > 0 ? v : null;
+    }),
+    probe("https://api.wallex.ir/v1/depth?symbol=USDTTMN", (d) => {
+      const v = Number(d?.result?.ask?.[0]?.price);
+      return v > 0 ? v : null;
+    }),
+  ]);
+  return { markets, depth };
 }
 async function brlToUsdRate(env) {
   const cached = await kvGet(env, "rate:brl_usd");
@@ -1434,7 +1489,12 @@ export default {
       const html = await payPage(env, cfg, topup);
       return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
     }
-    if (url.pathname === "/health") return Response.json({ ok: true, kv: !!env.STORE, version: BOT_VERSION });
+    if (url.pathname === "/health") {
+      const wallex = await probeWallex();
+      const usdtToman = await usdtTomanRate(env);
+      const tmnDiag = await kvGet(env, "diag:tmn");
+      return Response.json({ ok: true, kv: !!env.STORE, version: BOT_VERSION, usdtTomanRate: usdtToman, wallex, tmnDiag });
+    }
     if (url.pathname === "/webhook" && request.method === "POST") {
       if (env.WEBHOOK_SECRET) {
         const secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token");

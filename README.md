@@ -107,6 +107,7 @@ curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=https://<Y
 
 Check it works: open `https://<YOUR-WORKER-DOMAIN>/health` → `{"ok":true,"kv":true}`
 and `https://<YOUR-WORKER-DOMAIN>/pay` → the Persian wallet page.
+- `GET /health` also reports the bot version plus a live Wallex probe (markets + depth endpoints, HTTP status, parsed USDT/TMN rate) and the last Toman-rate diagnostic — if Toman equivalents ever go missing in the bot, this shows whether Wallex is reachable from the Worker. The Toman rate itself falls back from Wallex /markets to the lightweight Wallex /depth order book.
 Then send `/start` to your bot.
 
 ## 5. Test in sandbox first
