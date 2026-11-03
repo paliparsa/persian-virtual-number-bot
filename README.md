@@ -11,18 +11,22 @@ refunded automatically (the provider only charges on a finished activation with 
 
 ## How the money works
 
-- Provider prices are in **BRL**. The bot sells at `provider price × (1 + PRICE_MARKUP_PERCENT/100)`.
-- User balance is kept in BRL credits in Cloudflare KV.
+- **Shop currency is USD.** Provider (SmsFull) prices arrive in BRL and are converted
+  automatically (daily FX rate from open.er-api.com), then sold at
+  `USD price × (1 + markup/100)`. User balances are kept in USD in Cloudflare KV.
+- **Every dollar amount is also shown in Toman**, converted automatically with the
+  live USDT/TMN rate from the **Wallex API** (`api.wallex.ir/v1/markets`, cached 5 min).
 - **Card (کارت به کارت):** your card details are shown in the bot. The user enters the
   Toman amount, sends a receipt photo, and you approve/reject it from the admin panel
   inside the bot (you also get the receipt forwarded with Approve/Reject buttons).
-  Set `TOMAN_PER_BRL` so the bot can convert Toman → BRL credits automatically.
+  The Toman → USD credit conversion is automatic using the Wallex USDT rate
+  (the rate used is stored on each top-up and shown to the admin).
 - **Crypto:** the bot creates a payment with a **unique exact amount** on your shared
   wallet address, links the user to the wallet page on the bot's own domain
   (`/pay?t=<topup-id>`), and checks the chain automatically (button + cron every
   2 minutes). On a match it tops up the user automatically.
   Auto-check supports USDT-TRC20, TRX, BTC, TON, LTC, and ETH / USDT-ERC20
-  (ERC20 needs a free `ETHERSCAN_API_KEY`). Prices in BRL come from CoinGecko.
+  (ERC20 needs a free `ETHERSCAN_API_KEY`). Crypto prices in USD come from CoinGecko.
 
 ## 1. Deploy from GitHub to Cloudflare (no code changes needed)
 
@@ -65,7 +69,6 @@ Worker → **Settings → Variables and Secrets**:
 | `SMSFULL_API_KEY` | Secret | SmsFull key: `smsfull_test_…` for sandbox, `smsfull_live_…` for real numbers |
 | `WEBHOOK_SECRET` | Secret | Any random string; must match step 4 (optional but recommended) |
 | `PRICE_MARKUP_PERCENT` | Text | e.g. `20` |
-| `TOMAN_PER_BRL` | Text | Toman price of 1 BRL credit (needed for automatic card credit) |
 | `CARD_NUMBER`, `CARD_HOLDER`, `CARD_BANK` | Text | Shown to users for کارت به کارت |
 | `WALLET_USDT_TRC20`, `WALLET_TRX`, `WALLET_BTC`, `WALLET_TON`, `WALLET_LTC`, `WALLET_ETH`, `WALLET_USDT_ERC20` | Text | Your wallet addresses; only set the ones you accept. They are shown publicly on `/pay` |
 | `ETHERSCAN_API_KEY` | Secret | Only for ETH / USDT-ERC20 auto-check |
@@ -117,9 +120,12 @@ Base: `https://core.smsfullbot.com/api/v1`, header `Authorization: Bearer <key>`
 
 Send `/start` as the admin (or open «پنل مدیریت»): see provider balance,
 approve/reject card receipts, review pending crypto payments and force a chain check,
-and open **⚙️ تنظیمات فروشگاه** — a full button panel with three groups:
+and open **⚙️ تنظیمات فروشگاه** (also directly in the admin's main menu, or by sending `/settings`).
+The admin panel shows the bot version — if the settings button is missing, your Worker is
+still running an older deploy; check the latest deployment in Cloudflare and redeploy.
+`GET /health` also reports `version`. — a full button panel with three groups:
 
-- **💳 پرداخت کارتی:** card number, card holder, bank name, Toman-per-BRL rate
+- **💳 پرداخت کارتی:** card number, card holder, bank name (the Toman rate is automatic via Wallex — nothing to set)
 - **🪙 کیف‌پول‌های کریپتو:** one editable wallet address per crypto (USDT-TRC20, TRX, BTC, TON, LTC, ETH, USDT-ERC20)
 - **🧰 عمومی:** markup %, support username, public Worker URL
 

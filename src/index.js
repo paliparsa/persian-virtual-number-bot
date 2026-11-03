@@ -5,11 +5,12 @@
 // Required secrets (Cloudflare dashboard > Worker > Settings > Variables):
 //   TELEGRAM_BOT_TOKEN, ADMIN_CHAT_ID, SMSFULL_API_KEY
 // Optional: WEBHOOK_SECRET, PRICE_MARKUP_PERCENT (default 20),
-//   TOMAN_PER_BRL (card top-up rate), CARD_NUMBER, CARD_HOLDER, CARD_BANK,
+//   CARD_NUMBER, CARD_HOLDER, CARD_BANK (Toman rate is automatic via Wallex),
 //   WALLET_USDT_TRC20, WALLET_TRX, WALLET_BTC, WALLET_TON, WALLET_LTC,
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
+const BOT_VERSION = "1.2.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 
 // ---------- small helpers ----------
@@ -153,20 +154,61 @@ async function smsfull(env, path, opts = {}) {
   return data;
 }
 
+// ---------- exchange rates ----------
+// Shop currency is USD. Provider (SmsFull) prices arrive in BRL and are
+// converted with a free daily FX rate. Toman equivalents come from Wallex:
+// the USDT/TMN market (1 USDT ~= 1 USD), fetched live and cached 5 minutes.
+async function usdtTomanRate(env) {
+  const cached = await kvGet(env, "rate:usdt_tmn");
+  if (cached && now() - cached.at < 5 * 60 * 1000) return cached.v;
+  try {
+    const r = await fetch("https://api.wallex.ir/v1/markets");
+    const d = await r.json();
+    const st = d?.result?.symbols?.USDTTMN?.stats || {};
+    const v = Number(st.lastPrice || st.askPrice || st.bidPrice);
+    if (v > 0) { await kvPut(env, "rate:usdt_tmn", { v, at: now() }, 900); return v; }
+  } catch (_) {}
+  return cached?.v || null;
+}
+async function brlToUsdRate(env) {
+  const cached = await kvGet(env, "rate:brl_usd");
+  if (cached && now() - cached.at < 6 * 3600 * 1000) return cached.v;
+  try {
+    const r = await fetch("https://open.er-api.com/v6/latest/BRL");
+    const d = await r.json();
+    const v = Number(d?.rates?.USD);
+    if (v > 0) { await kvPut(env, "rate:brl_usd", { v, at: now() }, 12 * 3600); return v; }
+  } catch (_) {}
+  return cached?.v || null;
+}
+const tomanOfUsd = (tmnRate, usd) => (tmnRate ? Math.round(Number(usd) * tmnRate) : null);
+const faCompactToman = (t) => {
+  if (t === null || t === undefined) return "";
+  if (t >= 1e6) return `${faNum(t / 1e6)} میلیون تومان`;
+  if (t >= 1e3) return `${faInt(Math.round(t / 1e3))} هزار تومان`;
+  return `${faInt(t)} تومان`;
+};
+// "$3.20" plus, when the Wallex rate is known, " ≈ ۸۶۸ هزار تومان"
+const usdText = (tmnRate, usd) => {
+  const t = tomanOfUsd(tmnRate, usd);
+  return `$${faNum(usd)}${t ? ` ≈ ${faCompactToman(t)}` : ""}`;
+};
+const topupCredit = (t) => Number(t.creditUsd ?? t.creditBrl ?? 0);
+
 // ---------- crypto prices & on-chain checks ----------
-// CoinGecko free endpoint (no key) for BRL prices, cached in KV for 5 minutes.
-async function cryptoPriceBrl(env, coingeckoId) {
-  const cacheKey = `price:${coingeckoId}`;
+// CoinGecko free endpoint (no key) for USD prices, cached in KV for 5 minutes.
+async function cryptoPriceUsd(env, coingeckoId) {
+  const cacheKey = `priceUsd:${coingeckoId}`;
   const cached = await kvGet(env, cacheKey);
-  if (cached && now() - cached.at < 5 * 60 * 1000) return cached.brl;
+  if (cached && now() - cached.at < 5 * 60 * 1000) return cached.usd;
   const r = await fetch(
-    `https://api.coingecko.com/api/v3/simple/price?ids=${coingeckoId}&vs_currencies=brl`
+    `https://api.coingecko.com/api/v3/simple/price?ids=${coingeckoId}&vs_currencies=usd`
   );
   const d = await r.json().catch(() => ({}));
-  const brl = d?.[coingeckoId]?.brl;
-  if (!brl) throw new Error("priceUnavailable");
-  await kvPut(env, cacheKey, { brl, at: now() }, 600);
-  return brl;
+  const usd = d?.[coingeckoId]?.usd;
+  if (!usd) throw new Error("priceUnavailable");
+  await kvPut(env, cacheKey, { usd, at: now() }, 600);
+  return usd;
 }
 
 const CRYPTOS = {
@@ -260,11 +302,13 @@ async function creditTopup(env, topup, note) {
   if (note) fresh.note = note;
   await kvPut(env, `topup:${topup.id}`, fresh);
   const user = await getUser(env, fresh.userId);
-  user.balance = Math.round((Number(user.balance) + Number(fresh.creditBrl)) * 100) / 100;
+  const credit = topupCredit(fresh);
+  user.balance = Math.round((Number(user.balance) + credit) * 100) / 100;
   await saveUser(env, user);
   const cfg = await getConfig(env);
+  const tmn = await usdtTomanRate(env);
   await send(env, fresh.userId,
-    `✅ <b>موجودی شما افزایش یافت</b>\n\nمبلغ ${faNum(fresh.creditBrl)} واحد (BRL) به حساب شما اضافه شد.\nموجودی فعلی: ${faNum(user.balance)}`,
+    `✅ <b>موجودی شما افزایش یافت</b>\n\nمبلغ ${usdText(tmn, credit)} به حساب شما اضافه شد.\nموجودی فعلی: ${usdText(tmn, user.balance)}`,
     mainMenuKb(env, cfg, fresh.userId));
   return true;
 }
@@ -277,7 +321,10 @@ function mainMenuKb(env, cfg, userId) {
     [btn("📱 سفارش‌های من", "orders")],
   ];
   if (cfg?.SUPPORT_USERNAME) rows.push([urlBtn("🎧 پشتیبانی", `https://t.me/${cfg.SUPPORT_USERNAME}`)]);
-  if (isAdmin(env, userId)) rows.push([btn("🛠 پنل مدیریت", "admin")]);
+  if (isAdmin(env, userId)) {
+    rows.push([btn("🛠 پنل مدیریت", "admin")]);
+    rows.push([btn("⚙️ تنظیمات فروشگاه", "cfg")]);
+  }
   return kb(rows);
 }
 const backKb = kb([[btn("⬅️ منوی اصلی", "home")]]);
@@ -285,7 +332,8 @@ const backKb = kb([[btn("⬅️ منوی اصلی", "home")]]);
 async function showHome(env, chatId, editMsgId) {
   const user = await getUser(env, chatId);
   const cfg = await getConfig(env);
-  const text = `سلام 👋\nبه فروشگاه <b>شماره مجازی</b> خوش آمدید.\n\n💰 موجودی شما: <b>${faNum(user.balance)}</b> واحد\n\nبرای خرید، ابتدا کشور و سپس سرویس موردنظر را انتخاب کنید. کد پیامک به‌صورت خودکار همین‌جا نمایش داده می‌شود.`;
+  const tmn = await usdtTomanRate(env);
+  const text = `سلام 👋\nبه فروشگاه <b>شماره مجازی</b> خوش آمدید.\n\n💰 موجودی شما: <b>${usdText(tmn, user.balance)}</b>\n\nبرای خرید، ابتدا کشور و سپس سرویس موردنظر را انتخاب کنید. کد پیامک به‌صورت خودکار همین‌جا نمایش داده می‌شود.`;
   if (editMsgId) return edit(env, chatId, editMsgId, text, mainMenuKb(env, cfg, chatId));
   return send(env, chatId, text, mainMenuKb(env, cfg, chatId));
 }
@@ -312,14 +360,15 @@ async function showCountries(env, chatId, msgId, page) {
 
 async function showServices(env, chatId, msgId, countryId, page) {
   const cfg = await getConfig(env);
+  const [fx, tmn] = await Promise.all([brlToUsdRate(env), usdtTomanRate(env)]);
   const services = await smsfull(env, `/services?countryId=${countryId}`);
   const avail = services.filter((s) => s.available > 0);
   const items = avail.map((s) => ({
-    label: `${s.name} — ${faNum(sellPrice(cfg, s.price))} | موجود: ${faInt(s.available)}`,
+    label: `${s.name} — ${usdText(tmn, fx ? sellPrice(cfg, s.price * fx) : s.price)} | موجود: ${faInt(s.available)}`,
     id: s.id,
   }));
   const text = items.length
-    ? `📲 <b>سرویس را انتخاب کنید:</b>\nقیمت‌ها با احتساب کارمزد فروشگاه و به واحد BRL است.`
+    ? `📲 <b>سرویس را انتخاب کنید:</b>\nقیمت‌ها <b>دلاری</b> و با احتساب سود فروشگاه است${tmn ? ` — نرخ تتر (والکس): ${faInt(tmn)} تومان` : ""}.`
     : `در حال حاضر برای این کشور شماره‌ای موجود نیست. لطفاً بعداً دوباره تلاش کنید.`;
   return edit(env, chatId, msgId, text,
     pageKb(items, page, 10, (it, p) => it ? `confirm:${countryId}:${it.id}` : `services:${countryId}:${p}`, "countries:0"));
@@ -330,9 +379,10 @@ async function showConfirm(env, chatId, msgId, countryId, serviceId) {
   const s = services.find((x) => x.id === Number(serviceId));
   if (!s) return edit(env, chatId, msgId, "این سرویس دیگر موجود نیست.", backKb);
   const cfg = await getConfig(env);
-  const price = sellPrice(cfg, s.price);
+  const [fx, tmn] = await Promise.all([brlToUsdRate(env), usdtTomanRate(env)]);
+  const price = fx ? sellPrice(cfg, s.price * fx) : s.price;
   const user = await getUser(env, chatId);
-  const text = `🧾 <b>تأیید خرید</b>\n\nسرویس: <b>${esc(s.name)}</b>\nقیمت: <b>${faNum(price)}</b> واحد\nموجودی شما: ${faNum(user.balance)} واحد\nموجودی لحظه‌ای: ${faInt(s.available)} شماره\n\nپس از خرید، شماره نمایش داده می‌شود و تا ${faDigits(20)} دقیقه منتظر کد پیامک می‌ماند. اگر کدی نیاید، مبلغی از موجودی کسر نخواهد شد.`;
+  const text = `🧾 <b>تأیید خرید</b>\n\nسرویس: <b>${esc(s.name)}</b>\nقیمت: <b>${usdText(tmn, price)}</b>\nموجودی شما: ${usdText(tmn, user.balance)}\nموجودی لحظه‌ای: ${faInt(s.available)} شماره\n\nپس از خرید، شماره نمایش داده می‌شود و تا ${faDigits(20)} دقیقه منتظر کد پیامک می‌ماند. اگر کدی نیاید، مبلغی از موجودی کسر نخواهد شد.`;
   return edit(env, chatId, msgId, text, kb([
     [btn("✅ تأیید و خرید", `buy:${countryId}:${serviceId}`)],
     [btn("⬅️ بازگشت", `services:${countryId}:0`)],
@@ -344,12 +394,15 @@ async function doBuy(env, chatId, msgId, countryId, serviceId, cbId) {
   const s = services.find((x) => x.id === Number(serviceId));
   if (!s) { await answerCb(env, cbId, "سرویس موجود نیست", true); return; }
   const cfg = await getConfig(env);
-  const price = sellPrice(cfg, s.price);
+  const fx = await brlToUsdRate(env);
+  if (!fx) { await answerCb(env, cbId, "نرخ تبدیل ارز در دسترس نیست؛ چند دقیقه دیگر تلاش کنید", true); return; }
+  const price = sellPrice(cfg, s.price * fx);
   const user = await getUser(env, chatId);
   if (Number(user.balance) < price) {
+    const tmn = await usdtTomanRate(env);
     await answerCb(env, cbId, "موجودی کافی نیست", true);
     return edit(env, chatId, msgId,
-      `❌ <b>موجودی کافی نیست.</b>\n\nقیمت: ${faNum(price)}\nموجودی شما: ${faNum(user.balance)}\n\nابتدا موجودی خود را افزایش دهید.`,
+      `❌ <b>موجودی کافی نیست.</b>\n\nقیمت: ${usdText(tmn, price)}\nموجودی شما: ${usdText(tmn, user.balance)}\n\nابتدا موجودی خود را افزایش دهید.`,
       kb([[btn("💳 افزایش موجودی", "topup")], [btn("⬅️ منوی اصلی", "home")]]));
   }
   await answerCb(env, cbId, "در حال خرید شماره…");
@@ -372,7 +425,7 @@ async function doBuy(env, chatId, msgId, countryId, serviceId, cbId) {
   user.balance = Math.round((Number(user.balance) - price) * 100) / 100;
   await saveUser(env, user);
   await kvPut(env, `act:${act.id}`, {
-    id: act.id, userId: String(chatId), price, providerPrice: act.price,
+    id: act.id, userId: String(chatId), price, providerPriceBrl: act.price,
     phoneNumber: act.phoneNumber, serviceName: act.service?.name || s.name,
     status: act.status, createdAt: now(), charged: true,
   });
@@ -419,7 +472,7 @@ async function refreshActivation(env, chatId, msgId, id) {
     rec.charged = false;
     await saveUser(env, user);
     await kvPut(env, `act:${id}`, rec);
-    await send(env, chatId, `↩️ مبلغ ${faNum(rec.price)} واحد بابت سفارش بدون پیامک به موجودی شما برگشت.`);
+    await send(env, chatId, `↩️ مبلغ ${usdText(await usdtTomanRate(env), rec.price)} بابت سفارش بدون پیامک به موجودی شما برگشت.`);
   }
   return showActivation(env, chatId, msgId, act);
 }
@@ -444,7 +497,8 @@ async function startCardTopup(env, chatId, msgId) {
   user.state = "await_card_amount";
   await saveUser(env, user);
   const cfg = await getConfig(env);
-  const rate = cfg.TOMAN_PER_BRL ? `نرخ فعلی: هر واحد = ${faInt(cfg.TOMAN_PER_BRL)} تومان` : "نرخ توسط مدیر هنگام تأیید محاسبه می‌شود.";
+  const tmn = await usdtTomanRate(env);
+  const rate = tmn ? `نرخ لحظه‌ای تتر (والکس): هر ۱ دلار شارژ = ${faInt(tmn)} تومان` : "نرخ تتر هنگام ثبت مبلغ، به‌صورت خودکار از والکس گرفته می‌شود.";
   return edit(env, chatId, msgId,
     `💳 <b>کارت به کارت</b>\n\nشماره کارت: <code>${esc(cfg.CARD_NUMBER)}</code>\nبه نام: ${esc(cfg.CARD_HOLDER || "")}${cfg.CARD_BANK ? `\nبانک: ${esc(cfg.CARD_BANK)}` : ""}\n\n${rate}\n\n✍️ مبلغی را که واریز می‌کنید به <b>تومان</b> بنویسید (فقط عدد):`,
     kb([[btn("⬅️ بازگشت", "topup")]]));
@@ -454,14 +508,14 @@ async function startCryptoTopup(env, chatId, msgId) {
   const cfg = await getConfig(env);
   const rows = configuredCryptos(cfg).map(([code, c]) => [btn(c.label, `crypto_new:${code}`)]);
   rows.push([btn("⬅️ بازگشت", "topup")]);
-  return edit(env, chatId, msgId, `🪙 <b>ارز را انتخاب کنید:</b>\n\nدر مرحله بعد مبلغ شارژ (به واحد BRL) را می‌نویسید و مبلغ دقیق ارزی و آدرس کیف‌پول به شما نشان داده می‌شود.`, kb(rows));
+  return edit(env, chatId, msgId, `🪙 <b>ارز را انتخاب کنید:</b>\n\nدر مرحله بعد مبلغ شارژ را به <b>دلار</b> می‌نویسید و مبلغ دقیق ارزی و آدرس کیف‌پول به شما نشان داده می‌شود.`, kb(rows));
 }
 
-async function createCryptoTopup(env, chatId, cryptoCode, creditBrl, baseUrl) {
+async function createCryptoTopup(env, chatId, cryptoCode, creditUsd, baseUrl) {
   const cfg = await getConfig(env);
   const c = CRYPTOS[cryptoCode];
-  const price = await cryptoPriceBrl(env, c.cg); // BRL per 1 coin
-  const base = creditBrl / price;
+  const price = await cryptoPriceUsd(env, c.cg); // USD per 1 coin
+  const base = creditUsd / price;
   // Unique tail so the exact amount identifies this top-up on a shared wallet.
   const tail = cryptoCode === "BTC"
     ? (Math.floor(Math.random() * 900) + 100) / 1e8
@@ -469,7 +523,7 @@ async function createCryptoTopup(env, chatId, cryptoCode, creditBrl, baseUrl) {
   const expected = Number((base + tail).toFixed(c.decimals));
   const topup = {
     id: uid(), userId: String(chatId), method: "crypto", crypto: cryptoCode,
-    walletAddress: cfg[c.envKey], creditBrl, expectedCrypto: expected,
+    walletAddress: cfg[c.envKey], creditUsd, expectedCrypto: expected,
     status: "pending", createdAt: now(), expiresAt: now() + 60 * 60 * 1000,
   };
   await kvPut(env, `topup:${topup.id}`, topup, 2 * 24 * 3600);
@@ -481,9 +535,10 @@ async function showAdmin(env, chatId, msgId) {
   let balText = "";
   try {
     const b = await smsfull(env, "/balance");
-    balText = `\n\n💼 موجودی نزد تأمین‌کننده: <b>${faNum(b.spendable)}</b> ${esc(b.currency)} (کل: ${faNum(b.balance)})`;
+    const fxA = await brlToUsdRate(env);
+    balText = `\n\n💼 موجودی نزد تأمین‌کننده: <b>${faNum(b.spendable)}</b> ${esc(b.currency)} (کل: ${faNum(b.balance)})${fxA ? `\n≈ قابل‌خرید به دلار: $${faNum(b.spendable * fxA)}` : ""}`;
   } catch (e) { balText = `\n\n⚠️ خطا در دریافت موجودی تأمین‌کننده: ${esc(e.message)}`; }
-  const text = `🛠 <b>پنل مدیریت</b>${balText}`;
+  const text = `🛠 <b>پنل مدیریت</b>${balText}\n\n📌 نسخه ربات: ${faDigits(BOT_VERSION)} — اگر دکمه «تنظیمات فروشگاه» را نمی‌بینید، ورکر هنوز روی نسخه قبلی است و باید در کلودفلر دوباره دیپلوی شود.`;
   const rows = [
     [btn("🧾 رسیدهای در انتظار تأیید", "adm_pending")],
     [btn("🪙 پرداخت‌های کریپتوی در انتظار", "adm_crypto_pending")],
@@ -500,9 +555,9 @@ async function showPending(env, chatId, msgId, method) {
   let text = method === "card" ? "🧾 <b>رسیدهای در انتظار:</b>\n" : "🪙 <b>پرداخت‌های کریپتوی در انتظار:</b>\n";
   const rows = [];
   for (const t of all.slice(0, 10)) {
-    text += `\n— کاربر ${faDigits(t.userId)} | شارژ: ${faNum(t.creditBrl)} واحد${t.method === "card" ? ` | مبلغ کارت: ${faInt(t.amountToman)} تومان` : ` | ${esc(t.crypto)}: ${faDigits(t.expectedCrypto)}`}`;
+    text += `\n— کاربر ${faDigits(t.userId)} | شارژ: $${faNum(topupCredit(t))}${t.method === "card" ? ` | مبلغ کارت: ${faInt(t.amountToman)} تومان` : ` | ${esc(t.crypto)}: ${faDigits(t.expectedCrypto)}`}`;
     rows.push([
-      btn(`✅ تأیید ${faNum(t.creditBrl)}`, `apr:${t.id}`),
+      btn(`✅ تأیید $${faNum(topupCredit(t))}`, `apr:${t.id}`),
       btn("❌ رد", `rej:${t.id}`),
     ]);
     if (t.method === "crypto") rows.push([btn("🔄 بررسی زنجیره", `chk:${t.id}`)]);
@@ -535,7 +590,7 @@ function settingHint(key) {
   return walletField(Object.keys(CRYPTOS).find((c) => CRYPTOS[c].envKey === key)).hint;
 }
 const CONFIG_GROUPS = {
-  card: { title: "💳 تنظیمات پرداخت کارتی", keys: ["CARD_NUMBER", "CARD_HOLDER", "CARD_BANK", "TOMAN_PER_BRL"] },
+  card: { title: "💳 تنظیمات پرداخت کارتی", keys: ["CARD_NUMBER", "CARD_HOLDER", "CARD_BANK"] },
   wallet: { title: "🪙 کیف‌پول‌های کریپتو", keys: Object.values(CRYPTOS).map((c) => c.envKey) },
   general: { title: "🧰 تنظیمات عمومی", keys: ["PRICE_MARKUP_PERCENT", "SUPPORT_USERNAME", "WORKER_BASE_URL"] },
 };
@@ -612,6 +667,7 @@ async function handleMessage(env, msg, baseUrl) {
 
   if (text === "/start") { user.state = null; await saveUser(env, user); return showHome(env, chatId); }
   if (text === "/admin" && isAdmin(env, chatId)) return showAdmin(env, chatId);
+  if ((text === "/settings" || text === "تنظیمات") && isAdmin(env, chatId)) return showConfigOverview(env, chatId);
 
   // Admin is editing a shop setting: this message is the new value.
   if (isAdmin(env, chatId) && user.state?.startsWith("setcfg:")) {
@@ -642,7 +698,7 @@ async function handleMessage(env, msg, baseUrl) {
     await saveUser(env, user);
     await send(env, chatId, "🧾 رسید شما دریافت شد و برای تأیید نزد مدیر ارسال شد. پس از تأیید، موجودی‌تان شارژ می‌شود.", mainMenuKb(env, await getConfig(env), chatId));
     // Forward receipt to admin with approve/reject buttons
-    const cap = `🧾 <b>رسید جدید</b>\nکاربر: ${faDigits(chatId)}\nمبلغ کارت: ${faInt(topup.amountToman)} تومان\nشارژ درخواستی: ${faNum(topup.creditBrl)} واحد`;
+    const cap = `🧾 <b>رسید جدید</b>\nکاربر: ${faDigits(chatId)}\nمبلغ کارت: ${faInt(topup.amountToman)} تومان\nشارژ درخواستی: $${faNum(topup.creditUsd)}${topup.rateUsed ? ` (با نرخ تتر ${faInt(topup.rateUsed)} تومان)` : ""}`;
     const adminKb = kb([[btn("✅ تأیید و شارژ", `apr:${topup.id}`), btn("❌ رد رسید", `rej:${topup.id}`)]]);
     if (msg.photo) await tg(env, "sendPhoto", { chat_id: env.ADMIN_CHAT_ID, photo: topup.receiptFileId, caption: cap, parse_mode: "HTML", reply_markup: adminKb });
     else await tg(env, "sendDocument", { chat_id: env.ADMIN_CHAT_ID, document: topup.receiptFileId, caption: cap, parse_mode: "HTML", reply_markup: adminKb });
@@ -651,28 +707,30 @@ async function handleMessage(env, msg, baseUrl) {
 
   if (user.state === "await_card_amount" && /^[0-9]+$/.test(text.replace(/[,٬]/g, ""))) {
     const amountToman = Number(text.replace(/[,٬]/g, ""));
-    const rate = Number((await getConfig(env)).TOMAN_PER_BRL || 0);
-    const creditBrl = rate > 0 ? Math.floor((amountToman / rate) * 100) / 100 : 0;
+    const rate = await usdtTomanRate(env); // Wallex USDT/TMN, automatic
+    if (!rate) return send(env, chatId, "⚠️ در حال حاضر نرخ تتر از والکس در دسترس نیست. چند دقیقه دیگر مبلغ را دوباره بفرستید.");
+    const creditUsd = Math.floor((amountToman / rate) * 100) / 100;
+    if (creditUsd < 0.5) return send(env, chatId, `حداقل مبلغ شارژ معادل نیم دلار است (حدود ${faInt(Math.ceil(rate / 2))} تومان). مبلغ بیشتری بفرستید.`);
     const topup = {
       id: uid(), userId: String(chatId), method: "card", amountToman,
-      creditBrl, status: "awaiting_receipt", createdAt: now(),
+      creditUsd, rateUsed: rate, status: "awaiting_receipt", createdAt: now(),
     };
     await kvPut(env, `topup:${topup.id}`, topup, 7 * 24 * 3600);
     user.state = "await_card_receipt"; user.stateData = topup.id;
     await saveUser(env, user);
     return send(env, chatId,
-      `مبلغ ${faInt(amountToman)} تومان ثبت شد.${rate > 0 ? `\nمعادل تقریبی شارژ: ${faNum(creditBrl)} واحد` : ""}\n\n📸 حالا <b>عکس رسید</b> واریز را همین‌جا بفرستید:`,
+      `مبلغ ${faInt(amountToman)} تومان ثبت شد.\n💵 معادل شارژ: <b>$${faNum(creditUsd)}</b> (با نرخ تتر والکس: ${faInt(rate)} تومان)\n\n📸 حالا <b>عکس رسید</b> واریز را همین‌جا بفرستید:`,
       kb([[btn("⬅️ منوی اصلی", "home")]]));
   }
 
   if (user.state?.startsWith("await_crypto_amount:") && /^[0-9]+(\.[0-9]+)?$/.test(text)) {
     const cryptoCode = user.state.split(":")[1];
-    const creditBrl = Number(text);
+    const creditUsd = Number(text);
     user.state = null;
     await saveUser(env, user);
-    if (creditBrl < 1) return send(env, chatId, "حداقل مبلغ شارژ ۱ واحد است.", backKb);
+    if (creditUsd < 1) return send(env, chatId, "حداقل مبلغ شارژ ۱ دلار است.", backKb);
     try {
-      const topup = await createCryptoTopup(env, chatId, cryptoCode, creditBrl, baseUrl);
+      const topup = await createCryptoTopup(env, chatId, cryptoCode, creditUsd, baseUrl);
       const c = CRYPTOS[cryptoCode];
       const payUrl = `${baseUrl}/pay?t=${topup.id}`;
       return send(env, chatId,
@@ -711,7 +769,8 @@ async function handleCallback(env, cq, baseUrl) {
     }
     if (data === "balance") {
       const user = await getUser(env, chatId);
-      return edit(env, chatId, msgId, `💰 <b>موجودی شما:</b> ${faNum(user.balance)} واحد (BRL)\n\nواحد موجودی معادل قیمت تأمین‌کننده به رئال برزیل (BRL) به‌همراه کارمزد فروشگاه است.`, kb([[btn("💳 افزایش موجودی", "topup")], [btn("⬅️ منوی اصلی", "home")]]));
+      const tmn = await usdtTomanRate(env);
+      return edit(env, chatId, msgId, `💰 <b>موجودی شما:</b> ${usdText(tmn, user.balance)}\n\nموجودی به دلار است؛ معادل تومانی با نرخ لحظه‌ای تتر در صرافی والکس محاسبه می‌شود${tmn ? ` (هر تتر: ${faInt(tmn)} تومان)` : ""}.`, kb([[btn("💳 افزایش موجودی", "topup")], [btn("⬅️ منوی اصلی", "home")]]));
     }
     if (data === "orders") {
       const mine = (await kvList(env, "act:")).filter((x) => x.userId === String(chatId))
@@ -728,7 +787,7 @@ async function handleCallback(env, cq, baseUrl) {
       const user = await getUser(env, chatId);
       user.state = `await_crypto_amount:${a}`;
       await saveUser(env, user);
-      return edit(env, chatId, msgId, `🪙 ${esc(CRYPTOS[a].label)} انتخاب شد.\n\n✍️ مبلغ شارژ را به <b>واحد BRL</b> بنویسید (فقط عدد، مثال: 50):`, kb([[btn("⬅️ بازگشت", "topup_crypto")]]));
+      return edit(env, chatId, msgId, `🪙 ${esc(CRYPTOS[a].label)} انتخاب شد.\n\n✍️ مبلغ شارژ را به <b>دلار</b> بنویسید (فقط عدد، مثال: 50):`, kb([[btn("⬅️ بازگشت", "topup_crypto")]]));
     }
     if (head === "chk") {
       const topup = await kvGet(env, `topup:${a}`);
@@ -766,8 +825,8 @@ async function handleCallback(env, cq, baseUrl) {
       const topup = await kvGet(env, `topup:${a}`);
       if (!topup || !["pending", "awaiting_receipt"].includes(topup.status)) { await answerCb(env, cq.id, "قبلاً تعیین‌تکلیف شده"); return; }
       if (head === "apr") {
-        if (topup.method === "card" && !(topup.creditBrl > 0)) {
-          await answerCb(env, cq.id, "نرخ TOMAN_PER_BRL تنظیم نشده؛ ابتدا نرخ را در تنظیمات Worker ست کنید، یا مبلغ شارژ را دستی اصلاح کنید.", true);
+        if (topup.method === "card" && !(topupCredit(topup) > 0)) {
+          await answerCb(env, cq.id, "مبلغ شارژ این رسید صفر ثبت شده (احتمالاً نرخ والکس هنگام ثبت در دسترس نبوده). این رسید را رد کنید و از کاربر بخواهید دوباره ثبت کند.", true);
           return;
         }
         topup.status = "pending"; // creditTopup expects pending
@@ -838,7 +897,7 @@ export default {
       const cfg = await getConfig(env);
       return new Response(walletPage(env, cfg, topup), { headers: { "content-type": "text/html; charset=utf-8" } });
     }
-    if (url.pathname === "/health") return Response.json({ ok: true, kv: !!env.STORE });
+    if (url.pathname === "/health") return Response.json({ ok: true, kv: !!env.STORE, version: BOT_VERSION });
     if (url.pathname === "/webhook" && request.method === "POST") {
       if (env.WEBHOOK_SECRET) {
         const secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
