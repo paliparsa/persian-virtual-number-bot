@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.6.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.7.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -574,12 +574,13 @@ async function creditTopup(env, topup, note) {
 }
 
 // ---------- bot UI (Persian) ----------
-function mainMenuKb(env, cfg, userId, origin) {
+function mainMenuKb(env, cfg, userId, origin, pendingCount = 0) {
   const rows = [
     [btn("🛒 خرید شماره مجازی", "countries:0")],
     [btn("💰 موجودی من", "balance"), btn("💳 افزایش موجودی", "topup")],
     [btn("📱 سفارش‌های من", "orders")],
   ];
+  if (pendingCount > 0) rows.push([btn("⏳ پرداخت‌های در انتظار (" + faDigits(pendingCount) + ")", "pays")]);
   rows.push(origin
     ? [urlBtn("📜 قوانین و مقررات", `${String(origin).replace(/\/+$/, "")}/terms`)]
     : [btn("📜 قوانین و مقررات", "terms")]);
@@ -598,8 +599,9 @@ async function showHome(env, chatId, editMsgId) {
   const tmn = await usdtTomanRate(env);
   const text = `سلام 👋\nبه فروشگاه <b>شماره مجازی</b> خوش آمدید.\n\n💰 موجودی شما: <b>${usdText(tmn, user.balance)}</b>\n\nبرای خرید، ابتدا کشور و سپس سرویس موردنظر را انتخاب کنید. کد پیامک به‌صورت خودکار همین‌جا نمایش داده می‌شود.`;
   const origin = cfg.WORKER_BASE_URL || (await kvGet(env, "sys:origin"))?.origin;
-  if (editMsgId) return edit(env, chatId, editMsgId, text, mainMenuKb(env, cfg, chatId, origin));
-  return send(env, chatId, text, mainMenuKb(env, cfg, chatId, origin));
+  const pendN = (await pendingTopupsOf(env, chatId)).length;
+  if (editMsgId) return edit(env, chatId, editMsgId, text, mainMenuKb(env, cfg, chatId, origin, pendN));
+  return send(env, chatId, text, mainMenuKb(env, cfg, chatId, origin, pendN));
 }
 
 function pageKb(items, page, perPage, makeCb, backTo, cols = 1, topRows = []) {
@@ -981,6 +983,12 @@ async function findActiveSession(env, userId) {
     .filter((t) => t.userId === String(userId) && t.status === "pending" && !topupIsExpired(t))
     .sort((x, y) => y.createdAt - x.createdAt);
   return mine[0] || null;
+}
+
+async function pendingTopupsOf(env, userId) {
+  return (await kvList(env, "topup:"))
+    .filter((t) => t.userId === String(userId) && t.status === "pending" && !topupIsExpired(t))
+    .sort((x, y) => y.createdAt - x.createdAt);
 }
 
 function topupMenuText() {
@@ -1645,6 +1653,17 @@ async function handleCallback(env, cq, baseUrl) {
       return edit(env, chatId, msgId, "📱 <b>سفارش‌های اخیر شما:</b>", kb(rows));
     }
     if (data === "topup") return showTopup(env, chatId, msgId, baseUrl);
+    if (data === "pays") {
+      const list = await pendingTopupsOf(env, chatId);
+      if (!list.length) { await answerCb(env, cq.id, "پرداخت بازی ندارید."); return showHome(env, chatId, msgId); }
+      await answerCb(env, cq.id);
+      await edit(env, chatId, msgId, `⏳ <b>پرداخت‌های در انتظار شما</b>\n\n${faDigits(list.length)} پرداخت باز دارید؛ جزئیات هرکدام در پیام جدا آمده است — از دکمه‌های همان پیام ادامه‌اش دهید یا لغوش کنید:`, kb([[btn("⬅️ منوی اصلی", "home")]]));
+      for (const t of list.slice(0, 5)) {
+        const m = await paySessionMessage(env, t, baseUrl);
+        await send(env, chatId, m.text, m.markup);
+      }
+      return;
+    }
     if (data === "link_new") {
       const active = await findActiveSession(env, chatId);
       if (active) {
@@ -1852,6 +1871,200 @@ async function handlePaySelect(env, request) {
   }
 }
 
+// ---------- QR codes (generated in-Worker: byte mode, EC level M, v1-8) ----------
+// Compact QR encoder: byte mode, EC level M, versions 1-8. For wallet addresses.
+const EC_M = {
+  1: [10, [[1, 16]]], 2: [16, [[1, 28]]], 3: [26, [[1, 44]]], 4: [18, [[2, 32]]],
+  5: [24, [[2, 43]]], 6: [16, [[4, 27]]], 7: [18, [[4, 31]]], 8: [22, [[2, 38], [2, 39]]],
+};
+const ALIGN = { 1: [], 2: [6, 18], 3: [6, 22], 4: [6, 26], 5: [6, 30], 6: [6, 34], 7: [6, 22, 38], 8: [6, 24, 42] };
+const REMAINDER = { 1: 0, 2: 7, 3: 7, 4: 7, 5: 7, 6: 7, 7: 0, 8: 0 };
+// GF(256) with primitive 0x11d
+const GF_EXP = new Array(512), GF_LOG = new Array(256);
+{ let x = 1; for (let i = 0; i < 255; i++) { GF_EXP[i] = x; GF_LOG[x] = i; x <<= 1; if (x & 0x100) x ^= 0x11d; } for (let i = 255; i < 512; i++) GF_EXP[i] = GF_EXP[i - 255]; }
+const gfMul = (a, b) => (a && b) ? GF_EXP[GF_LOG[a] + GF_LOG[b]] : 0;
+function rsGen(deg) {
+  let p = [1];
+  for (let i = 0; i < deg; i++) {
+    const a = GF_EXP[i];
+    const n = new Array(p.length + 1).fill(0);
+    for (let j = 0; j < p.length; j++) { n[j] ^= p[j]; n[j + 1] ^= gfMul(p[j], a); }
+    p = n;
+  }
+  return p;
+}
+function rsEc(data, gen) {
+  const res = new Array(gen.length - 1).fill(0);
+  for (const d of data) { const f = d ^ res.shift(); res.push(0); for (let i = 0; i < res.length; i++) res[i] ^= gfMul(gen[i + 1], f); }
+  return res;
+}
+function dataCodewords(bytes, version) {
+  const [ecLen, groups] = EC_M[version];
+  const totalData = groups.reduce((s, [n, l]) => s + n * l, 0);
+  const bits = [];
+  const push = (val, len) => { for (let i = len - 1; i >= 0; i--) bits.push((val >>> i) & 1); };
+  push(0b0100, 4); push(bytes.length, 8);
+  for (const b of bytes) push(b, 8);
+  const cap = totalData * 8;
+  for (let i = Math.min(4, cap - bits.length); i > 0; i--) bits.push(0);
+  while (bits.length % 8) bits.push(0);
+  const out = [];
+  for (let i = 0; i < bits.length; i += 8) out.push(parseInt(bits.slice(i, i + 8).join(""), 2));
+  const pads = [0xec, 0x11];
+  for (let i = 0; out.length < totalData; i++) out.push(pads[i % 2]);
+  return { data: out, ecLen, groups, totalData };
+}
+function interleave(bytes, version) {
+  const { data, ecLen, groups } = dataCodewords(bytes, version);
+  const gen = rsGen(ecLen);
+  const blocks = [], ecs = [];
+  let off = 0;
+  for (const [n, len] of groups) for (let i = 0; i < n; i++) { const blk = data.slice(off, off + len); off += len; blocks.push(blk); ecs.push(rsEc(blk, gen)); }
+  const bits = [];
+  const maxLen = Math.max(...blocks.map((b) => b.length));
+  for (let i = 0; i < maxLen; i++) for (const b of blocks) if (i < b.length) bits.push(...b[i].toString(2).padStart(8, "0").split("").map(Number));
+  for (let i = 0; i < ecLen; i++) for (const e of ecs) bits.push(...e[i].toString(2).padStart(8, "0").split("").map(Number));
+  for (let i = 0; i < REMAINDER[version]; i++) bits.push(0);
+  return bits;
+}
+const MASKS = [
+  (r, c) => (r + c) % 2 === 0, (r, c) => r % 2 === 0, (r, c) => c % 3 === 0, (r, c) => (r + c) % 3 === 0,
+  (r, c) => (Math.floor(r / 2) + Math.floor(c / 3)) % 2 === 0,
+  (r, c) => (r * c) % 2 + (r * c) % 3 === 0,
+  (r, c) => ((r * c) % 2 + (r * c) % 3) % 2 === 0,
+  (r, c) => ((r + c) % 2 + (r * c) % 3) % 2 === 0,
+];
+function baseMatrix(version) {
+  const size = 17 + 4 * version;
+  const m = Array.from({ length: size }, () => new Array(size).fill(null));
+  const set = (r, c, v) => { if (r >= 0 && r < size && c >= 0 && c < size) m[r][c] = v; };
+  const finder = (r0, c0) => {
+    for (let r = -1; r < 8; r++) for (let c = -1; c < 8; c++) {
+      const edge = r === -1 || r === 7 || c === -1 || c === 7;
+      const inner = r >= 2 && r <= 4 && c >= 2 && c <= 4;
+      set(r0 + r, c0 + c, (edge ? 0 : (r === 0 || r === 6 || c === 0 || c === 6 || inner) ? 1 : 0));
+    }
+  };
+  finder(0, 0); finder(0, size - 7); finder(size - 7, 0);
+  for (let i = 8; i < size - 8; i++) { m[6][i] = m[i][6] = i % 2 === 0 ? 1 : 0; }
+  const pos = ALIGN[version];
+  for (const r of pos) for (const c of pos) {
+    if ((r === 6 && c === 6) || (r === 6 && c === size - 7) || (r === size - 7 && c === 6)) continue;
+    for (let dr = -2; dr <= 2; dr++) for (let dc = -2; dc <= 2; dc++)
+      set(r + dr, c + dc, (Math.max(Math.abs(dr), Math.abs(dc)) === 2 || (dr === 0 && dc === 0)) ? 1 : 0);
+  }
+  m[4 * version + 9][8] = 1; // dark module
+  // reserve format areas
+  for (let i = 0; i < 9; i++) { if (m[8][i] === null) m[8][i] = -1; if (m[i][8] === null) m[i][8] = -1; }
+  for (let i = 0; i < 8; i++) { if (m[8][size - 1 - i] === null) m[8][size - 1 - i] = -1; if (m[size - 1 - i][8] === null) m[size - 1 - i][8] = -1; }
+  return { m, size };
+}
+function versionBits(version) {
+  let rem = version;
+  for (let i = 0; i < 12; i++) rem = (rem << 1) ^ (((rem >>> 11) & 1) ? 0x1f25 : 0);
+  return ((version << 12) | (rem & 0xfff)) & 0x3ffff;
+}
+function placeVersion(m, size, version) {
+  if (version < 7) return;
+  const bits = versionBits(version);
+  for (let i = 0; i < 18; i++) {
+    const bit = (bits >>> i) & 1;
+    const r = Math.floor(i / 3), c = i % 3;
+    m[r][size - 11 + c] = bit; m[size - 11 + c][r] = bit;
+  }
+}
+function formatBits(mask) {
+  const data = mask; // EC level M bits = 00 -> (00 << 3) | mask
+  let d = data << 10;
+  const GENER = 0x537;
+  let rem = data;
+  for (let i = 0; i < 10; i++) rem = (rem << 1) ^ ((rem >>> 9 & 1) ? GENER : 0);
+  return (((data << 10) | (rem & 0x3ff)) ^ 0x5412) & 0x7fff;
+}
+function placeFormat(m, size, mask) {
+  const bits = formatBits(mask);
+  const get = (i) => (bits >>> i) & 1;
+  const pos1 = [[8,0],[8,1],[8,2],[8,3],[8,4],[8,5],[8,7],[8,8],[7,8],[5,8],[4,8],[3,8],[2,8],[1,8],[0,8]];
+  pos1.forEach(([r, c], idx) => { m[r][c] = get(14 - idx); });
+  for (let i = 0; i < 7; i++) m[size - 1 - i][8] = get(14 - i);
+  for (let i = 0; i < 8; i++) m[8][size - 8 + i] = get(7 - i);
+}
+function qrBuildMatrix(text, forceVersion, forceMask) {
+  const bytes = [...new TextEncoder().encode(text)];
+  let version = forceVersion;
+  if (!version) { version = 1; while (version <= 8 && bytes.length > (EC_M[version][1].reduce((s, [n, l]) => s + n * l, 0) - 2)) version++; }
+  if (version > 8) throw new Error("payload too long");
+  const bits = interleave(bytes, version);
+  const tryMask = (mask) => {
+    const { m, size } = baseMatrix(version);
+    placeVersion(m, size, version);
+    let i = 0;
+    let upward = true;
+    for (let col = size - 1; col > 0; col -= 2) {
+      if (col === 6) col--;
+      for (let k = 0; k < size; k++) {
+        const row = upward ? size - 1 - k : k;
+        for (const dc of [0, 1]) {
+          const c = col - dc;
+          if (m[row][c] === null) {
+            let bit = i < bits.length ? bits[i++] : 0;
+            if (MASKS[mask](row, c)) bit ^= 1;
+            m[row][c] = bit;
+          }
+        }
+      }
+      upward = !upward;
+    }
+    placeFormat(m, size, mask);
+    return m.map((row) => row.map((v) => (v === 1 ? 1 : 0)));
+  };
+  if (forceMask !== undefined && forceMask !== null) return { matrix: tryMask(forceMask), version };
+  let best = null, bestScore = Infinity;
+  for (let mask = 0; mask < 8; mask++) {
+    const mat = tryMask(mask);
+    const s = penalty(mat);
+    if (s < bestScore) { bestScore = s; best = { matrix: mat, version, mask }; }
+  }
+  return best;
+}
+function penalty(m) {
+  const size = m.length;
+  let score = 0;
+  const lines = [];
+  for (let i = 0; i < size; i++) { lines.push(m[i]); lines.push(m.map((r) => r[i])); }
+  for (const line of lines) {
+    let run = 1;
+    for (let i = 1; i <= size; i++) {
+      if (i < size && line[i] === line[i - 1]) run++;
+      else { if (run >= 5) score += 3 + (run - 5); run = 1; }
+    }
+    for (let i = 0; i + 11 <= size; i++) {
+      const w = line.slice(i, i + 11).join("");
+      if (w === "10111010000" || w === "00001011101") score += 40;
+    }
+  }
+  for (let r = 0; r < size - 1; r++) for (let c = 0; c < size - 1; c++)
+    if (m[r][c] === m[r][c + 1] && m[r][c] === m[r + 1][c] && m[r][c] === m[r + 1][c + 1]) score += 3;
+  let dark = 0;
+  for (const row of m) for (const v of row) dark += v;
+  const pct = (dark * 100) / (size * size);
+  const lo = Math.floor(pct / 5) * 5, hi = Math.ceil(pct / 5) * 5;
+  score += Math.min(Math.abs(lo - 50), Math.abs(hi - 50)) / 5 * 10;
+  return score;
+}
+
+function qrSvg(text, px) {
+  px = px || 140;
+  try {
+    if (!text) return "";
+    const built = qrBuildMatrix(String(text));
+    const matrix = built.matrix, n = matrix.length, q = 4, total = n + q * 2;
+    let d = "";
+    for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (matrix[r][c]) d += "M" + (c + q) + " " + (r + q) + "h1v1h-1z";
+    return '<svg width="' + px + '" height="' + px + '" viewBox="0 0 ' + total + " " + total + '" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="QR"><rect width="' + total + '" height="' + total + '" fill="#fff"/><path d="' + d + '" fill="#000"/></svg>';
+  } catch (_) { return ""; }
+}
+
 function payShell(body, script = "") {
   return `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1881,10 +2094,11 @@ main{max-width:560px;margin:0 auto;padding:44px 22px 60px;animation:up .45s ease
 .steps .line{flex:1;height:1px;background:#1e1e1e;min-width:14px}
 h1{font-size:24px;font-weight:800;letter-spacing:-.01em}
 .sub{color:#a3a3a3;font-size:13.5px;margin:6px 0 22px}
-.summary{display:flex;align-items:center;gap:14px;background:#0a0a0a;border:1px solid #232323;border-radius:20px;padding:16px 20px;margin-bottom:8px}
+.summary{display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:#0a0a0a;border:1px solid #232323;border-radius:20px;padding:16px 20px;margin-bottom:8px}
+.summary .sum-main{flex:1;min-width:0}
 .summary .k{font-size:11.5px;color:#8a8a8a}
 .summary .v{font-size:32px;font-weight:800;direction:ltr;font-variant-numeric:tabular-nums;line-height:1.25}
-.summary .vt{font-size:12px;color:#a3a3a3}
+.summary .vt{font-size:12.5px;color:#a3a3a3;overflow-wrap:anywhere;line-height:1.9}
 .timer{margin-inline-start:auto;text-align:center}
 .timer .cd{font-size:19px;font-weight:800;direction:ltr;font-variant-numeric:tabular-nums;line-height:1.3}
 .timer .k{font-size:10.5px;color:#8a8a8a}
@@ -1897,14 +2111,15 @@ h1{font-size:24px;font-weight:800;letter-spacing:-.01em}
 .method:hover{background:#0d0d0d}
 .method .tick{width:46px;height:46px;flex:none;border:1px solid #2c2c2c;border-radius:13px;display:grid;place-items:center;font-size:10.5px;font-weight:800;letter-spacing:.04em;background:#0a0a0a}
 .method .nm{font-size:15px;font-weight:700;line-height:1.6}
-.method .ap{font-size:12px;color:#8a8a8a;direction:ltr;text-align:left;font-variant-numeric:tabular-nums}
+.method .ap{font-size:12px;color:#8a8a8a;text-align:left;font-variant-numeric:tabular-nums;min-width:0;overflow-wrap:anywhere;line-height:1.7}
 .method .ch{margin-inline-start:auto;color:#5c5c5c;font-size:19px;flex:none}
-.method .inf{flex:1}
+.method .inf{flex:1;min-width:0}
 .paywrap{display:flex;gap:18px;align-items:center;background:#0a0a0a;border:1px solid #232323;border-radius:20px;padding:18px;margin:4px 0 14px}
 .ring{position:relative;width:66px;height:66px;flex:none}
 .ring svg{transform:rotate(-90deg)}
 .ring .rc{position:absolute;inset:0;display:grid;place-items:center;font-size:13.5px;font-weight:800;direction:ltr;font-variant-numeric:tabular-nums}
-.paywrap .st{font-size:12px;color:#a3a3a3}
+.paywrap>div{min-width:0}
+.paywrap .st{font-size:12px;color:#a3a3a3;overflow-wrap:anywhere;line-height:1.9}
 .paywrap .st b{color:#fff;font-size:14px}
 .pulse{display:inline-block;width:7px;height:7px;border-radius:50%;background:#fff;margin-inline-end:6px;animation:pl 1.6s infinite}
 .pill{display:inline-flex;align-items:center;gap:8px;border:1px solid #3a2a12;background:rgba(255,159,67,.08);color:#ff9f43;border-radius:999px;padding:5px 14px;font-size:12.5px;font-weight:700}
@@ -1913,14 +2128,15 @@ h1{font-size:24px;font-weight:800;letter-spacing:-.01em}
 .amtbox{border:1px solid #fff;border-radius:20px;padding:20px;margin-bottom:14px}
 .amtbox .k{font-size:12px;color:#a3a3a3;margin-bottom:4px}
 .amtbox .amt{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.amtbox .amt span{font-size:30px;font-weight:800;direction:ltr;font-variant-numeric:tabular-nums;letter-spacing:.01em}
+.amtbox .amt span{font-size:clamp(19px,6.4vw,30px);font-weight:800;direction:ltr;font-variant-numeric:tabular-nums;letter-spacing:.01em;min-width:0;overflow-wrap:anywhere;line-height:1.4}
 .addr-box{display:flex;align-items:center;gap:10px;background:#0a0a0a;border:1px solid #262626;border-radius:13px;padding:11px 13px;margin-bottom:6px}
 .addr{flex:1;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;word-break:break-all;direction:ltr;text-align:left;color:#e5e5e5}
 .copy{flex:none;background:transparent;color:#fff;border:1px solid #3f3f3f;border-radius:999px;padding:5px 14px;font-family:inherit;font-size:12.5px;cursor:pointer;transition:all .15s}
 .copy:hover{background:#fff;color:#000;border-color:#fff}
 .copy.done{background:#fff;color:#000;border-color:#fff}
 .qrwrap{display:flex;justify-content:center;padding:10px 0 2px}
-.qr{background:#fff;border-radius:14px;padding:7px}
+.qr{background:#fff;border-radius:14px;padding:7px;line-height:0}
+.qr svg{display:block}
 .notes{margin:14px 0 20px}
 .notes li{list-style:none;color:#a3a3a3;font-size:13px;padding:7px 0;border-top:1px solid #161616;display:flex;gap:10px}
 .notes li b{color:#fff;font-weight:700}
@@ -2009,7 +2225,7 @@ async function selectMethod(m){toast('در حال ثبت روش پرداخت…'
 async function checkNow(btn){btn.disabled=true;btn.textContent='در حال بررسی…';try{var r=await fetch('/pay/status?t='+TID+'&_='+Date.now(),{cache:'no-store'});var d=await r.json();if(d.status!=='pending'){location.reload();return}toast('هنوز پرداختی پیدا نشد؛ اگر تازه واریز کرده‌اید چند دقیقه صبر کنید')}catch(e){toast('خطا در بررسی')}btn.disabled=false;btn.textContent='🔄 بررسی پرداخت'}
 function onReceiptFile(inp){var f=inp.files&&inp.files[0];var prev=document.getElementById('rcPrev');var btn=document.getElementById('rcBtn');var nm=document.getElementById('rcName');if(!f){if(btn)btn.disabled=true;return}if(nm)nm.textContent=f.name;if(prev){prev.src=URL.createObjectURL(f);prev.style.display='block'}if(btn)btn.disabled=false}
 async function submitReceipt(btn){var inp=document.getElementById('rcFile');if(!inp||!inp.files||!inp.files[0]){toast('اول عکس رسید را انتخاب کنید');return}btn.disabled=true;btn.textContent='در حال ارسال…';try{var fd=new FormData();fd.append('receipt',inp.files[0]);var r=await fetch('/pay/receipt?t='+TID,{method:'POST',body:fd});var d=await r.json().catch(function(){return{}});if(d.ok){toast('رسید ثبت شد');setTimeout(function(){location.reload()},700)}else{toast(d.error||'خطا در ثبت رسید');btn.disabled=false;btn.textContent='📤 ثبت رسید'}}catch(e){toast('خطا در ارتباط');btn.disabled=false;btn.textContent='📤 ثبت رسید'}}
-async function pollStatus(){try{var r=await fetch('/pay/status?t='+TID+'&_='+Date.now(),{cache:'no-store'});var d=await r.json();if(d.status!=='pending'||(!!d.receipt)!==HAS_RECEIPT)location.reload()}catch(e){}}
+async function pollStatus(){try{var r=await fetch('/pay/status?t='+TID+'&_='+Date.now(),{cache:'no-store'});var d=await r.json();if(d.toman)document.querySelectorAll('.tmnFill').forEach(function(e){e.textContent=d.toman});if(d.status!=='pending'||(!!d.receipt)!==HAS_RECEIPT)location.reload()}catch(e){}}
 async function checkStatusBtn(btn){btn.disabled=true;btn.textContent='در حال بررسی…';await pollStatus();setTimeout(function(){toast('هنوز تأیید نشده؛ به محض تأیید ادمین، صفحه خودکار به‌روز می‌شود');btn.disabled=false;btn.textContent='🔄 بررسی وضعیت'},700)}
 ${poll ? "setInterval(pollStatus,5000);document.addEventListener('visibilitychange',function(){if(!document.hidden)pollStatus()});window.addEventListener('focus',pollStatus);pollStatus();" : ""}`;
 }
@@ -2252,7 +2468,15 @@ async function handleApi(env, request, url) {
       const rec = await kvGet(env, `act:${body.id}`);
       return jsonResp({ activation: apiAct(r.act, rec) });
     }
-    if (path === "/api/topup" && request.method === "POST") {
+    if (path === "/api/topups" && request.method === "GET") {
+    const allT = (await kvList(env, "topup:")).filter((t) => t.userId === String(userId));
+    const mapT = (t) => ({ id: t.id, creditUsd: topupCredit(t), method: t.method, crypto: t.crypto || null, status: t.status, seen: !!t.seenAt, createdAt: t.createdAt, expiresAt: topupExpiresAt(t), amountToman: t.amountToman || null, payUrl: `${url.origin}/pay?t=${t.id}` });
+    const isOpen = (t) => t.status === "pending" && !topupIsExpired(t);
+    const pending = allT.filter(isOpen).sort((a, b) => b.createdAt - a.createdAt).map(mapT);
+    const history = allT.filter((t) => !isOpen(t)).sort((a, b) => b.createdAt - a.createdAt).slice(0, 50).map(mapT);
+    return jsonResp({ pending, history });
+  }
+  if (path === "/api/topup" && request.method === "POST") {
       const cfgJ = await getConfig(env);
       if (await forceJoinGate(env, cfgJ, userId)) return jsonResp({ error: "🔒 برای شارژ حساب، ابتدا در کانال ما عضو شوید و سپس در ربات دکمه «بررسی عضویت» را بزنید.", joinUrl: joinChannelLink(cfgJ) }, 403);
       const body = await request.json().catch(() => ({}));
@@ -2352,6 +2576,24 @@ h2.title .icn{vertical-align:-5px;margin-left:2px}
 .svc .pr{text-align:left;flex:none}
 .svc .pr .usd{font-weight:800}
 .svc .pr .tmn{color:#8e8e93;font-size:12px}
+.ophead{font-size:13.5px;font-weight:700;color:#e5e5e7;margin:2px 0 10px}
+.payc{border:1px solid rgba(255,159,67,.45);border-radius:18px;padding:14px 16px;margin:0 0 12px;background:rgba(255,159,67,.05)}
+.payc .prow1{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.payc .prow1 b{font-size:17px}
+.payc .pstatus{font-size:12px;color:#ff9f43;font-weight:700;text-align:left}
+.payc .pmeta{color:#aeaeb2;font-size:12.5px;margin-top:6px;line-height:1.9}
+.payc .pbtns{display:flex;gap:8px;margin-top:12px}
+.payc .pbtns .wbtn{flex:1;text-align:center;text-decoration:none;padding:11px 0}
+.payc .pbtns .gbtn{flex:1;padding:11px 0}
+.hrow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 2px;border-bottom:1px solid #1c1c1f}
+.hrow .hmain b{font-size:15.5px;display:block}
+.hrow .hmain span{color:#aeaeb2;font-size:12.5px}
+.hrow .hside{text-align:left}
+.hrow .hstatus{display:block;font-size:12.5px;font-weight:700;color:#d6d6da}
+.hrow .hstatus.ok{color:#fff}
+.hrow .hstatus.bad{color:#ff453a}
+.hrow .hstatus.seen{color:#ff9f43}
+.hrow .hdate{display:block;color:#8e8e93;font-size:11.5px;margin-top:2px}
 .installcard{display:flex;align-items:center;gap:12px;border:1px solid rgba(255,255,255,.14);border-radius:18px;padding:14px 16px;margin:0 0 14px;background:rgba(255,255,255,.04);position:relative}
 .installcard .ictx{flex:1}
 .installcard .ictx b{display:block;font-size:14.5px;margin-bottom:3px}
@@ -2483,14 +2725,20 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
       <div id="ordList"><div class="loading">در حال بارگذاری…</div></div>
     </section>
 
+    <section class="view" id="v-pays">
+      <h2 class="title" style="margin-top:4px">پرداخت‌ها</h2>
+      <div id="payHist"><div class="loading">در حال بارگذاری…</div></div>
+    </section>
+
     <section class="view" id="v-topup">
       <h2 class="title"><svg class="icn" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg> افزایش موجودی</h2>
+      <div id="openPays"></div>
       <div class="chips">
         <button id="chipUsd" class="on" onclick="setTopupMode('usd')"><svg class="icn" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/><path d="M6 12h.01"/><path d="M18 12h.01"/></svg> مبلغ به دلار</button>
         <button id="chipTmn" onclick="setTopupMode('tmn')">مبلغ به تومان</button>
       </div>
       <input class="amtin" id="tpAmt" inputmode="numeric" placeholder="$ مبلغ">
-      <p class="small" id="tpHint">مبلغ بین ۱ تا ۵۰۰۰ دلار. بعد از ساخت، به صفحه پرداخت می‌روید و روش پرداخت (رمزارز یا کارت‌به‌کارت) را آنجا انتخاب می‌کنید.</p>
+      <p class="small" id="tpHint">بعد از ساخت، به صفحه پرداخت می‌روید و روش پرداخت (رمزارز یا کارت‌به‌کارت) را آنجا انتخاب می‌کنید. هر پرداخت ۳۰ دقیقه مهلت دارد.</p>
       <button class="wbtn" style="width:100%" onclick="doTopup()">ساخت صفحه پرداخت</button>
       <div id="tpResult"></div>
     </section>
@@ -2498,6 +2746,7 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
     <nav class="nav">
       <button data-nav="shop" class="on" onclick="showView('shop')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>فروشگاه</button>
       <button data-nav="orders" onclick="showView('orders')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3.5 6h.01"/><path d="M3.5 12h.01"/><path d="M3.5 18h.01"/></svg>سفارش‌ها</button>
+      <button data-nav="pays" onclick="showView('pays')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/><path d="M6 12h.01M18 12h.01"/></svg>پرداخت‌ها</button>
       <button data-nav="topup" onclick="showView('topup')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>شارژ</button>
       <a href="/terms"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>قوانین</a>
     </nav>
@@ -2605,10 +2854,12 @@ function refreshMe(){ return api('/api/me').then(function(me){ S.me = me; render
 function logout(){ try { sessionStorage.removeItem('bg_tok'); } catch (e) {} api('/api/auth/logout', { method:'POST' }).then(function(){ location.reload(); }); }
 function showView(name){
   closeSheet();
-  ['shop','services','act','orders','topup'].forEach(function(v){ $('v-'+v).classList.toggle('on', v===name); });
+  ['shop','services','act','orders','pays','topup'].forEach(function(v){ $('v-'+v).classList.toggle('on', v===name); });
   document.querySelectorAll('[data-nav]').forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-nav')===name); });
   if (name !== 'act') stopActTimers();
   if (name === 'orders') loadOrders();
+  if (name === 'pays') loadPayHistory();
+  if (name === 'topup') { updTpHint(); refreshMe(); loadOpenPays(); }
   window.scrollTo(0,0);
 }
 function loadCountries(){
@@ -2840,6 +3091,55 @@ function updTpHint(){
     ? 'مبلغ بین ' + faUsd(min) + ' تا $۵٬۰۰۰. بعد از ساخت، به صفحه پرداخت می‌روید و روش پرداخت (رمزارز یا کارت‌به‌کارت) را آنجا انتخاب می‌کنید.'
     : 'مبلغ را به تومان وارد کنید؛ معادل دلاری آن باید بین ' + faUsd(min) + ' تا $۵٬۰۰۰ باشد و با نرخ لحظه‌ای تتر تبدیل می‌شود.';
 }
+function methodLabel(t){
+  if (t.method === 'crypto') return ({ USDT_TRC20: 'تتر (TRC20)', USDT_BEP20: 'تتر (BEP20)', USDT_ERC20: 'تتر (ERC20)', TRX: 'ترون (TRX)', BTC: 'بیت‌کوین', LTC: 'لایت‌کوین', TON: 'تون‌کوین', ETH: 'اتریوم' })[t.crypto] || 'رمزارز';
+  if (t.method === 'card') return 'کارت‌به‌کارت';
+  if (t.method === 'card_verify') return 'کارت‌به‌کارت (در انتظار احراز شماره)';
+  return 'در انتظار انتخاب روش پرداخت';
+}
+function payStatusInfo(t){
+  if (t.status === 'approved') return { txt: 'شارژ شد', cls: 'ok' };
+  if (t.status === 'rejected') return { txt: 'رد شد', cls: 'bad' };
+  if (t.status === 'expired') return { txt: 'منقضی شد', cls: 'bad' };
+  if (t.status === 'cancelled') return { txt: 'لغو شد', cls: '' };
+  return t.seen ? { txt: 'تراکنش دیده شد — در انتظار تأیید شبکه', cls: 'seen' } : { txt: 'در انتظار پرداخت', cls: 'seen' };
+}
+function tehranHM(ts){ try { return new Date(ts).toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' }); } catch(e) { return ''; } }
+function tehranFull(ts){ try { var d = new Date(ts); return d.toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' }) + ' — ' + tehranHM(ts); } catch(e) { return ''; } }
+function openPayCard(t){
+  var st = payStatusInfo(t);
+  return '<div class="payc"><div class="prow1"><b>' + faUsd(t.creditUsd) + '</b><span class="pstatus">' + st.txt + '</span></div>'
+    + '<div class="pmeta">' + methodLabel(t) + '<br>مهلت پرداخت تا ساعت ' + tehranHM(t.expiresAt) + '</div>'
+    + '<div class="pbtns"><a class="wbtn" href="' + t.payUrl + '">ادامه پرداخت</a><button class="gbtn" data-tid="' + t.id + '" onclick="cancelOpenPay(this)">لغو پرداخت</button></div></div>';
+}
+function cancelOpenPay(btn){
+  var tid = btn.getAttribute('data-tid');
+  if (!confirm('این پرداخت لغو شود؟')) return;
+  btn.disabled = true;
+  fetch('/pay/cancel', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ t: tid }) })
+    .then(function(r){ return r.json(); })
+    .then(function(d){ if (d.ok) { toast('پرداخت لغو شد'); loadOpenPays(); loadPayHistory(); } else { toast(d.error || 'خطا در لغو'); btn.disabled = false; } })
+    .catch(function(){ toast('خطای شبکه'); btn.disabled = false; });
+}
+function loadOpenPays(){
+  api('/api/topups').then(function(d){
+    var list = d.pending || [];
+    $('openPays').innerHTML = list.length ? '<div class="ophead">پرداخت‌های باز شما</div>' + list.map(openPayCard).join('') : '';
+  }).catch(function(){});
+}
+function loadPayHistory(){
+  api('/api/topups').then(function(d){
+    var open = d.pending || [], hist = d.history || [];
+    var html = '';
+    if (open.length) html += '<div class="ophead">پرداخت‌های باز</div>' + open.map(openPayCard).join('');
+    html += '<div class="ophead" style="margin-top:' + (open.length ? '18' : '2') + 'px">تاریخچه پرداخت‌ها</div>';
+    html += hist.length ? hist.map(function(t){
+      var st = payStatusInfo(t);
+      return '<div class="hrow"><div class="hmain"><b>' + faUsd(t.creditUsd) + '</b><span>' + methodLabel(t) + '</span></div><div class="hside"><span class="hstatus ' + st.cls + '">' + st.txt + '</span><span class="hdate">' + tehranFull(t.createdAt) + '</span></div></div>';
+    }).join('') : '<div class="loading">هنوز پرداختی ثبت نشده است.</div>';
+    $('payHist').innerHTML = html;
+  }).catch(function(e){ $('payHist').innerHTML = '<div class="loading">' + escH(e.message) + '</div>'; });
+}
 function doTopup(){
   var raw = String($('tpAmt').value||'').replace(/[^0-9.]/g,'');
   var val = Number(raw);
@@ -2875,7 +3175,7 @@ async function payPage(env, cfg, topup) {
   const credit = topupCredit(topup);
   const tmn = await usdtTomanRate(env);
   const tomanText = tmn ? `≈ ${faInt(Math.round(credit * tmn))} تومان` : "";
-  const summary = `<div class="summary"><div><div class="k">مبلغ شارژ</div><div class="v">$${esc(credit)}</div><div class="vt">${tomanText}</div></div>
+  const summary = `<div class="summary"><div class="sum-main"><div class="k">مبلغ شارژ</div><div class="v">$${esc(credit)}</div><div class="vt tmnFill">${tomanText}</div></div>
     <div class="timer"><div class="cd">30:00</div><div class="k">مهلت باقی‌مانده</div></div></div><div class="timebar"><i id="timebar"></i></div>`;
   const script = payScript(topup, topup.method === "crypto" || topup.method === "card");
   const icoX = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>';
@@ -2936,7 +3236,7 @@ async function payPage(env, cfg, topup) {
       rows.push(`<button class="method" onclick="selectMethod('CARD')">
         <span class="tick">کارت</span>
         <span class="inf"><span class="nm">کارت به کارت</span></span>
-        <span class="ap">${tomanText ? esc(String(Math.round(credit * (tmn || 0))).replace(/\\B(?=(\\d{3})+(?!\\d))/g, ",")) + " تومان" : "—"}</span><span class="ch">‹</span></button>`);
+        <span class="ap">${tmn ? esc(faInt(Math.round(credit * tmn))) + " تومان" : "—"}</span><span class="ch">‹</span></button>`);
     }
     return payShell(`${head(1)}
       <h1>روش پرداخت را انتخاب کنید</h1>
@@ -3020,15 +3320,15 @@ async function payPage(env, cfg, topup) {
     <p class="sub">فقط از همین شبکه و دقیقاً همین مبلغ را واریز کنید.</p>
     ${topup.seenAt ? `<div class="paywrap">
       <div class="ring" style="display:grid;place-items:center;border:1px solid #ff9f43;border-radius:50%;font-size:24px">⏳</div>
-      <div><div class="st"><span class="pill"><span class="dot"></span>تراکنش دیده شد — در انتظار تأیید شبکه</span></div><div class="st">مبلغ شارژ: $${esc(credit)} ${tomanText}</div><div class="st">تراکنش شما در شبکه پیدا شده و منتظر تأیید (کانفرم) است. به محض تأیید، شارژ خودکار انجام و این صفحه به‌روز می‌شود. مهلت پرداخت شما تا آن زمان تمدید شده است.</div></div>
+      <div><div class="st"><span class="pill"><span class="dot"></span>تراکنش دیده شد — در انتظار تأیید شبکه</span></div><div class="st">مبلغ شارژ: $${esc(credit)} <span class="tmnFill">${tomanText}</span></div><div class="st">تراکنش شما در شبکه پیدا شده و منتظر تأیید (کانفرم) است. به محض تأیید، شارژ خودکار انجام و این صفحه به‌روز می‌شود. مهلت پرداخت شما تا آن زمان تمدید شده است.</div></div>
     </div>` : `<div class="paywrap">
       <div class="ring"><svg width="66" height="66"><circle cx="33" cy="33" r="26" stroke="#222" stroke-width="3" fill="none"/><circle id="ringfg" cx="33" cy="33" r="26" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" stroke-dasharray="163.36" stroke-dashoffset="0"/></svg><div class="rc cd">30:00</div></div>
-      <div><div class="st"><span class="pill"><span class="dot"></span>در انتظار پرداخت</span></div><div class="st">مبلغ شارژ: $${esc(credit)} ${tomanText}</div><div class="st">پس از دیده‌شدن تراکنش در شبکه، شارژ خودکار انجام و این صفحه به‌روز می‌شود.</div></div>
+      <div><div class="st"><span class="pill"><span class="dot"></span>در انتظار پرداخت</span></div><div class="st">مبلغ شارژ: $${esc(credit)} <span class="tmnFill">${tomanText}</span></div><div class="st">پس از دیده‌شدن تراکنش در شبکه، شارژ خودکار انجام و این صفحه به‌روز می‌شود.</div></div>
     </div>`}
     <div class="amtbox"><div class="k">مبلغ دقیق پرداختی — ${esc(c.label || "")}</div>
       <div class="amt"><span>${esc(topup.expectedCrypto)}</span><button class="copy" onclick="copyText('${esc(topup.expectedCrypto)}',this)">کپی مبلغ</button></div></div>
     <div class="addr-box"><code class="addr">${esc(addr)}</code><button class="copy" onclick="copyText('${esc(addr)}',this)">کپی آدرس</button></div>
-    <div class="qrwrap"><img class="qr" alt="QR" width="140" height="140" loading="lazy" src="https://api.qrserver.com/v1/create-qr-code/?size=140x140&margin=8&data=${encodeURIComponent(addr)}"></div>
+    ${addr ? `<div class="qrwrap"><div class="qr">${qrSvg(addr)}</div></div>` : ""}
     <ul class="notes">
       <li><b>شبکه</b> واریز از شبکه دیگری به این آدرس، قابل شناسایی نیست.</li>
       <li><b>مبلغ دقیق</b> کمتر یا بیشتر از مبلغ بالا واریز نکنید؛ سیستم با همین مبلغ پرداخت شما را پیدا می‌کند.</li>
@@ -3069,7 +3369,8 @@ export default {
       let topup = t ? await kvGet(env, `topup:${t}`) : null;
       if (!topup) return Response.json({ status: "notfound" }, { status: 404 });
       topup = await settleTopupLazy(env, topup);
-      return Response.json({ status: topup.status, method: topup.method, receipt: !!topup.receiptFileId, expiresAt: topupExpiresAt(topup) }, { headers: { "cache-control": "no-store" } });
+      const rateNow = await usdtTomanRate(env);
+      return Response.json({ status: topup.status, method: topup.method, receipt: !!topup.receiptFileId, expiresAt: topupExpiresAt(topup), toman: rateNow ? `≈ ${faInt(Math.round(topupCredit(topup) * rateNow))} تومان` : null }, { headers: { "cache-control": "no-store" } });
     }
     if (url.pathname.startsWith("/api/")) return handleApi(env, request, url);
     if (url.pathname === "/manifest.webmanifest") {
