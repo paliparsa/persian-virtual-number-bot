@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.0.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.1.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -64,6 +64,7 @@ const CONFIG_KEYS = [
   "WALLET_USDT_TRC20", "WALLET_TRX", "WALLET_BTC", "WALLET_TON",
   "WALLET_LTC", "WALLET_ETH", "WALLET_USDT_ERC20", "WALLET_USDT_BEP20",
   "SUPPORT_USERNAME", "WORKER_BASE_URL", "PRICE_MARKUP_PERCENT", "TMN_RATE_MANUAL", "GROUP_CHAT_ID",
+  "FORCE_JOIN_ENABLED", "FORCE_JOIN_CHANNEL", "PHONE_VERIFY_ENABLED",
 ];
 async function getConfig(env) {
   const stored = (await kvGet(env, "config")) || {};
@@ -941,6 +942,9 @@ async function handlePayReceipt(env, request) {
   topup = await settleTopupLazy(env, topup);
   if (topup.status !== "pending") return json({ ok: false, error: "این پرداخت بسته شده است" });
   if (topup.method !== "card") return json({ ok: false, error: "اول روش کارت‌به‌کارت را انتخاب کنید" });
+  const cfgR = await getConfig(env);
+  const userR = await getUser(env, topup.userId);
+  if (cfgR.PHONE_VERIFY_ENABLED === "1" && !userR.phone) return json({ ok: false, error: "برای پرداخت کارتی، ابتدا باید شماره موبایلتان را داخل ربات احراز کنید" });
   let form;
   try { form = await request.formData(); } catch (_) { return json({ ok: false, error: "فرم نامعتبر است" }, 400); }
   const file = form.get("receipt");
@@ -985,6 +989,17 @@ async function applyPayMethod(env, topup, method) {
     await clearReceiptState();
   } else if (method === "CARD") {
     if (!cfg.CARD_NUMBER) throw new Error("این روش فعال نیست");
+    if (cfg.PHONE_VERIFY_ENABLED === "1" && !user.phone) {
+      // Park the session in a verify-first state; the /pay page explains and
+      // deep-links into the bot, and the contact handler completes this
+      // selection (calls applyPayMethod again) once the phone is verified.
+      topup.method = "card_verify";
+      delete topup.crypto; delete topup.expectedCrypto; delete topup.walletAddress; delete topup.receiptFileId;
+      delete topup.amountToman; delete topup.rateUsed; delete topup.selectedAt;
+      await clearReceiptState();
+      await kvPut(env, `topup:${topup.id}`, topup, 7 * 24 * 3600);
+      return topup;
+    }
     const rate = await usdtTomanRate(env);
     if (!rate) throw new Error("نرخ تتر در دسترس نیست؛ چند دقیقه دیگر تلاش کنید");
     topup.method = "card";
@@ -1070,6 +1085,9 @@ const SETTING_FIELDS = {
   SUPPORT_USERNAME: { label: "یوزرنیم پشتیبانی", hint: "بدون @ بفرستید، مثال: BlueGateSupport" },
   TMN_RATE_MANUAL: { label: "نرخ دستی تتر (تومان) — پشتیبان", hint: "فقط عدد بفرستید، مثال: 271000 — فقط وقتی استفاده می‌شود که نرخ زنده از والکس و اکسیر نرسد.", numeric: true },
   GROUP_CHAT_ID: { label: "آیدی گروه اعلام خرید موفق", hint: "آیدی عددی گروه را با علامت منفی بفرستید، مثال: -1001234567890 — یا ساده‌تر: ربات را در گروه اضافه کنید و همان‌جا دستور /setgroup را بفرستید تا خودکار ثبت شود." },
+  FORCE_JOIN_ENABLED: { label: "عضویت اجباری کانال", hint: "" },
+  FORCE_JOIN_CHANNEL: { label: "کانال عضویت اجباری", hint: "یوزرنیم کانال را با @ بفرستید، مثال: @blluegate — ربات باید در آن کانال ادمین باشد تا بتواند عضویت کاربران را بررسی کند." },
+  PHONE_VERIFY_ENABLED: { label: "احراز با شماره (فقط کارت‌به‌کارت)", hint: "" },
   WORKER_BASE_URL: { label: "آدرس عمومی ورکر", hint: "آدرس کامل با https:// — برای اطمینان از تنظیم خودکار وبهوک" },
 };
 const walletField = (code) => ({
@@ -1089,6 +1107,7 @@ const CONFIG_GROUPS = {
   card: { title: "💳 تنظیمات پرداخت کارتی", keys: ["CARD_NUMBER", "CARD_HOLDER", "CARD_BANK"] },
   wallet: { title: "🪙 کیف‌پول‌های کریپتو", keys: Object.values(CRYPTOS).map((c) => c.envKey) },
   general: { title: "🧰 تنظیمات عمومی", keys: ["PRICE_MARKUP_PERCENT", "TMN_RATE_MANUAL", "GROUP_CHAT_ID", "SUPPORT_USERNAME", "WORKER_BASE_URL"] },
+  access: { title: "🔒 عضویت و احراز هویت", keys: ["FORCE_JOIN_ENABLED", "FORCE_JOIN_CHANNEL", "PHONE_VERIFY_ENABLED"] },
 };
 const groupOfKey = (key) =>
   Object.entries(CONFIG_GROUPS).find(([, g]) => g.keys.includes(key))?.[0] || "general";
@@ -1097,15 +1116,20 @@ const shortVal = (v) => !v ? "— تنظیم نشده" : v.length > 26 ? `${v.sl
 function configGroupText(cfg, group) {
   const g = CONFIG_GROUPS[group];
   let text = `⚙️ <b>${g.title}</b>\n\nبرای ویرایش، روی هر مورد بزنید. دکمه 🗑 مقدار را حذف می‌کند.\n`;
-  for (const k of g.keys) text += `\n<b>${esc(settingLabel(k))}:</b> <code>${esc(shortVal(cfg[k]))}</code>`;
+  for (const k of g.keys) {
+    const v = TOGGLE_KEYS.includes(k) ? (cfg[k] === "1" ? "روشن ✅" : "خاموش ⚪️") : shortVal(cfg[k]);
+    text += `\n<b>${esc(settingLabel(k))}:</b> <code>${esc(v)}</code>`;
+  }
   return text;
 }
 function configGroupKb(cfg, group) {
   const g = CONFIG_GROUPS[group];
-  const rows = g.keys.map((k) => [
-    btn(`${settingLabel(k)}: ${shortVal(cfg[k])}`, `cfg_set:${k}`),
-    btn("🗑", `cfg_del:${k}`),
-  ]);
+  const rows = g.keys.map((k) => TOGGLE_KEYS.includes(k)
+    ? [btn(`${settingLabel(k)}: ${cfg[k] === "1" ? "روشن ✅" : "خاموش ⚪️"}`, `cfgtgl:${k}`)]
+    : [
+      btn(`${settingLabel(k)}: ${shortVal(cfg[k])}`, `cfg_set:${k}`),
+      btn("🗑", `cfg_del:${k}`),
+    ]);
   rows.push([btn("⬅️ همه تنظیمات", "cfg"), btn("🛠 پنل مدیریت", "admin")]);
   return kb(rows);
 }
@@ -1117,6 +1141,7 @@ async function showConfigOverview(env, chatId, msgId) {
     [btn(CONFIG_GROUPS.card.title, "cfg_g:card")],
     [btn(CONFIG_GROUPS.wallet.title, "cfg_g:wallet")],
     [btn(CONFIG_GROUPS.general.title, "cfg_g:general")],
+    [btn(CONFIG_GROUPS.access.title, "cfg_g:access")],
     [btn("🛠 پنل مدیریت", "admin"), btn("⬅️ منوی اصلی", "home")],
   ];
   if (msgId) return edit(env, chatId, msgId, text, kb(rows));
@@ -1134,6 +1159,13 @@ function validateSetting(key, raw) {
   if (key === "CARD_NUMBER") {
     const v = clean.replace(/[\s-]/g, "");
     return /^\d{12,19}$/.test(v) ? { value: v } : { error: "شماره کارت باید ۱۲ تا ۱۹ رقم باشد." };
+  }
+  if (key === "FORCE_JOIN_CHANNEL") {
+    let v = clean.replace(/\s/g, "");
+    const m = /^https?:\/\/t\.me\/([A-Za-z0-9_]{3,})$/.exec(v);
+    if (m) v = "@" + m[1];
+    if (/^@[A-Za-z0-9_]{3,}$/.test(v) || /^-100\d{6,}$/.test(v)) return { value: v };
+    return { error: "یوزرنیم کانال را با @ بفرستید (مثال: @blluegate) یا آیدی عددی کانال (-100…). لینک دعوت خصوصی قابل استفاده نیست." };
   }
   if (key === "GROUP_CHAT_ID") {
     const v = clean.replace(/\s/g, "");
@@ -1159,13 +1191,97 @@ function validateSetting(key, raw) {
   return { value: clean };
 }
 
+// ---------- forced channel join + phone verification ----------
+const TOGGLE_KEYS = ["FORCE_JOIN_ENABLED", "PHONE_VERIFY_ENABLED"];
+const JOIN_TEXT = `🔒 <b>عضویت اجباری</b>\n\nبرای استفاده از فروشگاه، ابتدا در کانال ما عضو شوید و سپس دکمه «بررسی عضویت» را بزنید.`;
+function joinChannelLink(cfg) {
+  const ch = cfg?.FORCE_JOIN_CHANNEL || "";
+  return ch.startsWith("@") ? `https://t.me/${ch.slice(1)}` : null;
+}
+function joinPromptKb(cfg) {
+  const rows = [];
+  const link = joinChannelLink(cfg);
+  if (link) rows.push([urlBtn("📢 عضویت در کانال", link)]);
+  rows.push([btn("✅ عضو شدم — بررسی عضویت", "joinchk")]);
+  return kb(rows);
+}
+async function isChannelMember(env, cfg, userId) {
+  const ch = cfg?.FORCE_JOIN_CHANNEL;
+  if (!ch) return true;
+  try {
+    const r = await tg(env, "getChatMember", { chat_id: ch, user_id: Number(userId) });
+    return ["creator", "administrator", "member", "restricted"].includes(r?.result?.status);
+  } catch (_) { return true; } // fail open: a misconfigured channel must not lock everyone out
+}
+// True when this user is currently BLOCKED by the forced-join rule.
+async function forceJoinGate(env, cfg, userId) {
+  if (cfg?.FORCE_JOIN_ENABLED !== "1" || !cfg?.FORCE_JOIN_CHANNEL) return false;
+  if (isAdmin(env, userId)) return false;
+  return !(await isChannelMember(env, cfg, userId));
+}
+const CONTACT_KB = { keyboard: [[{ text: "📱 ارسال شماره موبایل", request_contact: true }]], resize_keyboard: true, one_time_keyboard: true };
+const REMOVE_KB = { remove_keyboard: true };
+async function payReturnLink(env, user, preferId) {
+  const cfg = await getConfig(env);
+  const base = cfg.WORKER_BASE_URL || (await kvGet(env, "sys:origin"))?.origin;
+  if (!base) return null;
+  let id = preferId || user.pendingPay || null;
+  if (!id) {
+    const mine = (await kvList(env, "topup:")).filter((t) => t.userId === String(user.id) && t.status === "pending" && !topupIsExpired(t));
+    id = mine.sort((x, y) => y.createdAt - x.createdAt)[0]?.id || null;
+  }
+  return id ? `${String(base).replace(/\/+$/, "")}/pay?t=${id}` : null;
+}
+async function promptPhoneVerify(env, chatId, user, payId) {
+  if (payId) { user.pendingPay = payId; await saveUser(env, user); }
+  if (user.phone) {
+    const link = await payReturnLink(env, user, payId);
+    return send(env, chatId, "✅ شماره شما قبلاً احراز شده و پرداخت کارت‌به‌کارت برایتان فعال است.", link ? kb([[urlBtn("💳 بازگشت به صفحه پرداخت", link)]]) : backKb);
+  }
+  return send(env, chatId, "📱 <b>احراز هویت با شماره موبایل</b>\n\nبرای پرداخت کارت‌به‌کارت، یک‌بار باید شماره موبایلتان را با دکمه زیر ارسال کنید.\nشماره حتماً باید متعلق به خودتان باشد؛ تلگرام این را تضمین می‌کند و شماره دیگران پذیرفته نمی‌شود.", CONTACT_KB);
+}
+
 // ---------- message / callback router ----------
 async function handleMessage(env, msg, baseUrl) {
   const chatId = msg.chat.id;
   const user = await getUser(env, chatId);
   const text = enDigits((msg.text || "").trim());
 
-  if (text === "/start") { user.state = null; await saveUser(env, user); return showHome(env, chatId); }
+  // Forced channel membership: private chats only; contact shares pass
+  // through (they are part of phone verification, an independent flow).
+  if (msg.chat?.type === "private" && !msg.contact) {
+    const cfgJ = await getConfig(env);
+    if (await forceJoinGate(env, cfgJ, chatId)) return send(env, chatId, JOIN_TEXT, joinPromptKb(cfgJ));
+  }
+
+  // Phone verification via Telegram's own contact share. The shared contact
+  // must belong to the sender (Telegram signs it; contact.user_id proves it).
+  if (msg.contact) {
+    const c = msg.contact;
+    if (String(c.user_id) !== String(chatId)) {
+      return send(env, chatId, "⚠️ این شماره متعلق به حساب شما نیست. لطفاً با دکمه «📱 ارسال شماره موبایل» شماره خودتان را ارسال کنید.", REMOVE_KB);
+    }
+    user.phone = c.phone_number;
+    user.phoneVerifiedAt = now();
+    await saveUser(env, user);
+    // Complete any card selection that was waiting for this verification.
+    const waiting = (await kvList(env, "topup:")).filter((t) => t.userId === String(chatId) && t.status === "pending" && t.method === "card_verify" && !topupIsExpired(t));
+    for (const t of waiting) { try { await applyPayMethod(env, t, "CARD"); } catch (_) {} }
+    const link = await payReturnLink(env, user);
+    user.pendingPay = null;
+    await saveUser(env, user);
+    await send(env, chatId, `✅ <b>احراز هویت موفق بود!</b>\n\nشماره <b>${esc(faDigits(c.phone_number))}</b> ثبت شد و پرداخت کارت‌به‌کارت برای شما فعال شد.`, REMOVE_KB);
+    if (link) await send(env, chatId, "از دکمه زیر به صفحه پرداختتان برگردید و پرداخت کارت را ادامه دهید:", kb([[urlBtn("💳 بازگشت به صفحه پرداخت", link)]]));
+    return;
+  }
+
+  if (text === "/start" || text.startsWith("/start ")) {
+    user.state = null; await saveUser(env, user);
+    const param = text.split(" ")[1] || "";
+    if (param.startsWith("vfy_")) return promptPhoneVerify(env, chatId, user, param.slice(4));
+    if (param === "verify") return promptPhoneVerify(env, chatId, user, null);
+    return showHome(env, chatId);
+  }
 
   // Link/unlink this group for successful-purchase announcements (admin only,
   // sent inside the group). Group ids are the chat id of group/supergroup chats.
@@ -1207,6 +1323,8 @@ async function handleMessage(env, msg, baseUrl) {
   if (user.state === "await_card_receipt" && (msg.photo || msg.document)) {
     const topup = await kvGet(env, `topup:${user.stateData}`);
     if (!topup) { user.state = null; await saveUser(env, user); return send(env, chatId, "درخواست شارژ پیدا نشد. دوباره تلاش کنید.", backKb); }
+    const cfgV = await getConfig(env);
+    if (cfgV.PHONE_VERIFY_ENABLED === "1" && !user.phone) return promptPhoneVerify(env, chatId, user, topup.id);
     topup.receiptFileId = msg.photo ? msg.photo[msg.photo.length - 1].file_id : msg.document.file_id;
     topup.receiptVia = "bot";
     topup.receiptCount = (topup.receiptCount || 0) + 1;
@@ -1276,6 +1394,21 @@ async function handleCallback(env, cq, baseUrl) {
   const data = cq.data || "";
   const [head, a, b] = data.split(":");
   try {
+    if (data === "joinchk") {
+      const cfgJ = await getConfig(env);
+      if (!(await forceJoinGate(env, cfgJ, chatId))) {
+        await answerCb(env, cq.id, "عضویت شما تأیید شد ✅");
+        return showHome(env, chatId, msgId);
+      }
+      return answerCb(env, cq.id, "هنوز عضو کانال نیستید؛ اول عضو شوید و بعد دوباره بزنید", true);
+    }
+    {
+      const cfgJ = await getConfig(env);
+      if (await forceJoinGate(env, cfgJ, chatId)) {
+        await answerCb(env, cq.id, "🔒 ابتدا در کانال عضو شوید", true);
+        return edit(env, chatId, msgId, JOIN_TEXT, joinPromptKb(cfgJ));
+      }
+    }
     if (data === "home") return showHome(env, chatId, msgId);
     if (data === "terms") {
       const cfgT = await getConfig(env);
@@ -1413,6 +1546,13 @@ async function handleCallback(env, cq, baseUrl) {
     if (head === "cfg_del" && isAdmin(env, chatId)) {
       await setConfigValue(env, a, "");
       await answerCb(env, cq.id, "حذف شد 🗑");
+      return showConfigGroup(env, chatId, msgId, groupOfKey(a));
+    }
+    if (head === "cfgtgl" && isAdmin(env, chatId)) {
+      const cfg = await getConfig(env);
+      const on = cfg[a] === "1";
+      await setConfigValue(env, a, on ? "" : "1");
+      await answerCb(env, cq.id, on ? "خاموش شد ⚪️" : "روشن شد ✅");
       return showConfigGroup(env, chatId, msgId, groupOfKey(a));
     }
     if (data === "admin" && isAdmin(env, chatId)) return showAdmin(env, chatId, msgId);
@@ -1808,6 +1948,8 @@ async function handleApi(env, request, url) {
       return jsonResp({ rate, services: services.filter((x) => x.available > 0).map((x) => ({ id: x.id, name: x.name, available: x.available, priceUsd: fx ? sellPrice(cfg, x.price * fx) : null })) });
     }
     if (path === "/api/buy" && request.method === "POST") {
+      const cfgJ = await getConfig(env);
+      if (await forceJoinGate(env, cfgJ, userId)) return jsonResp({ error: "🔒 برای خرید، ابتدا در کانال ما عضو شوید و سپس در ربات دکمه «بررسی عضویت» را بزنید.", joinUrl: joinChannelLink(cfgJ) }, 403);
       const body = await request.json().catch(() => ({}));
       try {
         const r = await buyActivation(env, userId, body.countryId, body.serviceId);
@@ -1846,6 +1988,8 @@ async function handleApi(env, request, url) {
       return jsonResp({ activation: apiAct(r.act, rec) });
     }
     if (path === "/api/topup" && request.method === "POST") {
+      const cfgJ = await getConfig(env);
+      if (await forceJoinGate(env, cfgJ, userId)) return jsonResp({ error: "🔒 برای شارژ حساب، ابتدا در کانال ما عضو شوید و سپس در ربات دکمه «بررسی عضویت» را بزنید.", joinUrl: joinChannelLink(cfgJ) }, 403);
       const body = await request.json().catch(() => ({}));
       let creditUsd = null;
       const extra = {};
@@ -2335,6 +2479,24 @@ async function payPage(env, cfg, topup) {
       ${rows.join("\n")}`, script);
   }
 
+  // --- phone-verification view (card selected, verification pending) ---
+  if (topup.method === "card_verify") {
+    const botUser = await botUsername(env);
+    const deep = botUser ? `https://t.me/${botUser}?start=vfy_${topup.id}` : "";
+    return payShell(`${head(2)}
+      ${summary}
+      <h1>📱 احراز هویت با شماره موبایل</h1>
+      <p class="sub">برای پرداخت کارت‌به‌کارت، ابتدا باید شماره موبایلتان را <b>یک‌بار</b> احراز کنید. این کار داخل ربات تلگرام و با دکمه «ارسال شماره» انجام می‌شود؛ شماره باید متعلق به خودتان باشد و تلگرام اصالت آن را تضمین می‌کند.</p>
+      <ul class="notes">
+        <li><b>۱</b> دکمه زیر را بزنید تا ربات باز شود.</li>
+        <li><b>۲</b> در ربات، دکمه «📱 ارسال شماره موبایل» را بزنید و شماره را به اشتراک بگذارید.</li>
+        <li><b>۳</b> به همین صفحه برگردید — صفحه به‌صورت خودکار وارد مرحله پرداخت کارت می‌شود.</li>
+      </ul>
+      ${deep ? `<a href="${deep}" style="display:block;text-align:center;background:#fff;color:#000;border-radius:14px;padding:14px 18px;font-weight:800;text-decoration:none;margin:16px 0">📱 رفتن به ربات و احراز شماره</a>` : `<p class="sub">از داخل ربات روی لینک پرداخت همین سفارش بزنید و مراحل احراز را انجام دهید.</p>`}
+      <p class="sub">همین صفحه را باز نگه دارید؛ بعد از احراز موفق، خودش به‌روز می‌شود.</p>
+      <script>setInterval(async()=>{try{const r=await fetch('/pay/status?t=${topup.id}&_='+Date.now(),{cache:'no-store'});const d=await r.json();if(d.status!=='pending'||(d.method&&d.method!=='card_verify'))location.reload()}catch(e){}},4000)</script>`, script);
+  }
+
   // --- card view ---
   if (topup.method === "card") {
     const cardDigits = (cfg.CARD_NUMBER || "").replace(/[^0-9]/g, "");
@@ -2474,8 +2636,23 @@ export default {
       }
       const update = await request.json().catch(() => ({}));
       const work = (async () => {
+        // Tell the admin about brand-new users (first contact) — once per
+        // user, only for private chats, and never about the admin themself.
+        const fromU = update.message?.from || update.callback_query?.from;
+        const pChat = update.message?.chat || update.callback_query?.message?.chat;
+        const isPrivateUser = !!(fromU && pChat?.type === "private" && String(pChat.id) === String(fromU.id) && !fromU.is_bot);
+        const existedBefore = isPrivateUser && env.STORE ? !!(await env.STORE.get(`user:${fromU.id}`)) : true;
         if (update.message) await handleMessage(env, update.message, baseUrl);
         if (update.callback_query) await handleCallback(env, update.callback_query, baseUrl);
+        // Only announce users who actually got in: if the forced-join gate
+        // turned them away, no record was saved and they are announced on
+        // their first successful entry instead of on every blocked /start.
+        const existsAfter = isPrivateUser && !existedBefore && env.STORE ? !!(await env.STORE.get(`user:${fromU.id}`)) : false;
+        if (isPrivateUser && !existedBefore && existsAfter && String(fromU.id) !== String(env.ADMIN_CHAT_ID)) {
+          const name = [fromU.first_name, fromU.last_name].filter(Boolean).join(" ") || "—";
+          await send(env, env.ADMIN_CHAT_ID,
+            `👤 <b>کاربر جدید جوین شد</b>\n\nنام: <b>${esc(name)}</b>\nیوزرنیم: ${fromU.username ? "@" + esc(fromU.username) : "—"}\nآیدی عددی: <code>${esc(fromU.id)}</code>`);
+        }
       })();
       ctx.waitUntil(work);
       return Response.json({ ok: true });
