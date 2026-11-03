@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "1.2.3"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "1.3.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -539,57 +539,122 @@ async function refreshActivation(env, chatId, msgId, id) {
   return showActivation(env, chatId, msgId, act);
 }
 
-// ---------- top-ups: card receipt + crypto ----------
+// ---------- top-ups: one dollar payment session, method chosen on the web page ----------
+// Flow (v1.3.0): the user only enters the USD amount in the bot. That creates
+// a payment session with a 30-minute deadline and a /pay link. On the web
+// page the user picks the method (a crypto, or card-to-card); only then are
+// the wallet, the exact amount and (for card) the Toman total fixed.
+const PAY_TTL_MS = 30 * 60 * 1000;
+const topupExpiresAt = (t) => Number(t.expiresAt || (t.createdAt + PAY_TTL_MS));
+const topupIsExpired = (t) => t.status === "pending" && now() > topupExpiresAt(t);
+
+async function expireTopup(env, t) {
+  const fresh = await kvGet(env, `topup:${t.id}`);
+  if (!fresh || fresh.status !== "pending") return;
+  fresh.status = "expired"; fresh.resolvedAt = now();
+  await kvPut(env, `topup:${fresh.id}`, fresh, 7 * 24 * 3600);
+  const u = await getUser(env, fresh.userId);
+  if (u.state === "await_card_receipt" && u.stateData === fresh.id) {
+    u.state = null; u.stateData = null; await saveUser(env, u);
+  }
+  const cfg = await getConfig(env);
+  await send(env, fresh.userId,
+    `⏰ <b>مهلت پرداخت تمام شد</b>\n\nدرخواست شارژ $${faNum(topupCredit(fresh))} منقضی شد (هر پرداخت ۳۰ دقیقه مهلت دارد). اگر هنوز می‌خواهید شارژ کنید، از منوی «افزایش موجودی» یک پرداخت جدید بسازید.`,
+    mainMenuKb(env, cfg, fresh.userId));
+}
+
+async function findActiveSession(env, userId) {
+  const mine = (await kvList(env, "topup:"))
+    .filter((t) => t.userId === String(userId) && t.status === "pending" && !topupIsExpired(t))
+    .sort((x, y) => y.createdAt - x.createdAt);
+  return mine[0] || null;
+}
+
 function topupMenuText() {
-  return `💳 <b>افزایش موجودی</b>\n\nیکی از روش‌ها را انتخاب کنید:\n\n💳 <b>کارت به کارت:</b> مبلغ را به کارت فروشگاه واریز کنید و رسید را همین‌جا بفرستید. پس از تأیید مدیر، موجودی شارژ می‌شود.\n\n🪙 <b>ارز دیجیتال:</b> از صفحه کیف‌پول، آدرس ارز موردنظر را بردارید، <b>مبلغ دقیق</b> نمایش‌داده‌شده را واریز کنید؛ سیستم به‌صورت خودکار واریز را بررسی و حسابتان را شارژ می‌کند.`;
+  return `💳 <b>افزایش موجودی</b>\n\nمبلغ شارژ را به <b>دلار</b> مشخص می‌کنید و یک <b>لینک پرداخت</b> می‌گیرید. داخل صفحه پرداخت، روش را انتخاب می‌کنید (ارز دیجیتال یا کارت‌به‌کارت) و فقط همان روش به شما نشان داده می‌شود.\n\n⏰ هر پرداخت <b>۳۰ دقیقه</b> مهلت دارد.`;
 }
-async function showTopup(env, chatId, msgId) {
+async function showTopup(env, chatId, msgId, baseUrl) {
   const cfg = await getConfig(env);
-  const rows = [];
-  if (cfg.CARD_NUMBER) rows.push([btn("💳 کارت به کارت + ارسال رسید", "topup_card")]);
-  if (configuredCryptos(cfg).length) rows.push([btn("🪙 پرداخت با ارز دیجیتال", "topup_crypto")]);
-  rows.push([btn("⬅️ منوی اصلی", "home")]);
-  const text = rows.length > 1 ? topupMenuText()
-    : "روش پرداختی هنوز توسط مدیر تنظیم نشده است. لطفاً با پشتیبانی تماس بگیرید.";
-  return edit(env, chatId, msgId, text, kb(rows));
-}
-
-async function startCardTopup(env, chatId, msgId) {
-  const user = await getUser(env, chatId);
-  user.state = "await_card_amount";
-  await saveUser(env, user);
-  const cfg = await getConfig(env);
-  const tmn = await usdtTomanRate(env);
-  const rate = tmn ? `نرخ لحظه‌ای تتر (والکس): هر ۱ دلار شارژ = ${faInt(tmn)} تومان` : "نرخ تتر هنگام ثبت مبلغ، به‌صورت خودکار از والکس گرفته می‌شود.";
-  return edit(env, chatId, msgId,
-    `💳 <b>کارت به کارت</b>\n\nشماره کارت: <code>${esc(cfg.CARD_NUMBER)}</code>\nبه نام: ${esc(cfg.CARD_HOLDER || "")}${cfg.CARD_BANK ? `\nبانک: ${esc(cfg.CARD_BANK)}` : ""}\n\n${rate}\n\n✍️ مبلغی را که واریز می‌کنید به <b>تومان</b> بنویسید (فقط عدد):`,
-    kb([[btn("⬅️ بازگشت", "topup")]]));
+  if (!cfg.CARD_NUMBER && !configuredCryptos(cfg).length) {
+    return edit(env, chatId, msgId, "روش پرداختی هنوز توسط مدیر تنظیم نشده است. لطفاً با پشتیبانی تماس بگیرید.", backKb);
+  }
+  const active = await findActiveSession(env, chatId);
+  if (active) {
+    const m = await paySessionMessage(env, active, baseUrl);
+    return edit(env, chatId, msgId, m.text + "\n\n(برای ساخت پرداخت تازه، اول این یکی را لغو کنید یا صبر کنید مهلتش تمام شود.)", m.markup);
+  }
+  return edit(env, chatId, msgId, topupMenuText(),
+    kb([[btn("💵 ساخت لینک پرداخت", "link_new")], [btn("⬅️ منوی اصلی", "home")]]));
 }
 
-async function startCryptoTopup(env, chatId, msgId) {
-  const cfg = await getConfig(env);
-  const rows = configuredCryptos(cfg).map(([code, c]) => [btn(c.label, `crypto_new:${code}`)]);
-  rows.push([btn("⬅️ بازگشت", "topup")]);
-  return edit(env, chatId, msgId, `🪙 <b>ارز را انتخاب کنید:</b>\n\nدر مرحله بعد مبلغ شارژ را به <b>دلار</b> می‌نویسید و مبلغ دقیق ارزی و آدرس کیف‌پول به شما نشان داده می‌شود.`, kb(rows));
+async function createPaySession(env, chatId, creditUsd) {
+  const topup = {
+    id: uid(), userId: String(chatId), method: "session",
+    creditUsd, status: "pending", createdAt: now(), expiresAt: now() + PAY_TTL_MS,
+  };
+  await kvPut(env, `topup:${topup.id}`, topup, 7 * 24 * 3600);
+  return topup;
 }
 
-async function createCryptoTopup(env, chatId, cryptoCode, creditUsd, baseUrl) {
-  const cfg = await getConfig(env);
-  const c = CRYPTOS[cryptoCode];
-  const price = await cryptoPriceUsd(env, c.cg); // USD per 1 coin
+function expectedCryptoAmount(code, creditUsd, price) {
+  const c = CRYPTOS[code];
   const base = creditUsd / price;
   // Unique tail so the exact amount identifies this top-up on a shared wallet.
-  const tail = cryptoCode === "BTC"
+  const tail = code === "BTC"
     ? (Math.floor(Math.random() * 900) + 100) / 1e8
     : (Math.floor(Math.random() * 900) + 100) / 1e6;
-  const expected = Number((base + tail).toFixed(c.decimals));
-  const topup = {
-    id: uid(), userId: String(chatId), method: "crypto", crypto: cryptoCode,
-    walletAddress: cfg[c.envKey], creditUsd, expectedCrypto: expected,
-    status: "pending", createdAt: now(), expiresAt: now() + 60 * 60 * 1000,
+  return Number((base + tail).toFixed(c.decimals));
+}
+
+// Called from the web payment page when the user picks (or resets) a method.
+async function applyPayMethod(env, topup, method) {
+  const cfg = await getConfig(env);
+  const user = await getUser(env, topup.userId);
+  const clearReceiptState = async () => {
+    if (user.state === "await_card_receipt" && user.stateData === topup.id) {
+      user.state = null; user.stateData = null; await saveUser(env, user);
+    }
   };
-  await kvPut(env, `topup:${topup.id}`, topup, 2 * 24 * 3600);
+  if (method === "") { // back to method selection
+    topup.method = "session";
+    delete topup.crypto; delete topup.expectedCrypto; delete topup.walletAddress;
+    delete topup.amountToman; delete topup.rateUsed; delete topup.selectedAt; delete topup.receiptFileId;
+    await clearReceiptState();
+  } else if (method === "CARD") {
+    if (!cfg.CARD_NUMBER) throw new Error("این روش فعال نیست");
+    const rate = await usdtTomanRate(env);
+    if (!rate) throw new Error("نرخ تتر در دسترس نیست؛ چند دقیقه دیگر تلاش کنید");
+    topup.method = "card";
+    delete topup.crypto; delete topup.expectedCrypto; delete topup.walletAddress; delete topup.receiptFileId;
+    topup.amountToman = Math.round(topupCredit(topup) * rate);
+    topup.rateUsed = rate; topup.selectedAt = now();
+    user.state = "await_card_receipt"; user.stateData = topup.id; await saveUser(env, user);
+  } else {
+    const c = CRYPTOS[method];
+    if (!c || !cfg[c.envKey]) throw new Error("این روش فعال نیست");
+    const price = await cryptoPriceUsd(env, c.cg);
+    topup.method = "crypto"; topup.crypto = method; topup.walletAddress = cfg[c.envKey];
+    topup.expectedCrypto = expectedCryptoAmount(method, topupCredit(topup), price);
+    delete topup.amountToman; delete topup.rateUsed; delete topup.receiptFileId;
+    topup.selectedAt = now();
+    await clearReceiptState();
+  }
+  await kvPut(env, `topup:${topup.id}`, topup, 7 * 24 * 3600);
   return topup;
+}
+
+async function paySessionMessage(env, topup, baseUrl) {
+  const tmn = await usdtTomanRate(env);
+  const mins = Math.max(0, Math.ceil((topupExpiresAt(topup) - now()) / 60000));
+  let methodLine = "روش پرداخت: هنوز انتخاب نشده — داخل صفحه پرداخت انتخابش کنید.";
+  if (topup.method === "crypto") methodLine = `روش پرداخت: ${esc(CRYPTOS[topup.crypto]?.label || "")} — مبلغ دقیق: <code>${esc(topup.expectedCrypto)}</code>`;
+  if (topup.method === "card") methodLine = `روش پرداخت: کارت‌به‌کارت — مبلغ: ${faInt(topup.amountToman)} تومان. رسید را همین‌جا در ربات بفرستید.`;
+  const text = `💵 <b>پرداخت شما ساخته شد</b>\n\nمبلغ شارژ: ${usdText(tmn, topupCredit(topup))}\n${methodLine}\n⏰ مهلت پرداخت: ${faDigits(mins)} دقیقه\n\nاز دکمه زیر صفحه پرداخت را باز کنید:`;
+  const rows = [[urlBtn("🌐 باز کردن صفحه پرداخت", `${baseUrl}/pay?t=${topup.id}`)]];
+  if (topup.method === "crypto") rows.push([btn("🔄 بررسی پرداخت", `chk:${topup.id}`)]);
+  rows.push([btn("❌ لغو این پرداخت", `ses_cancel:${topup.id}`)]);
+  rows.push([btn("⬅️ منوی اصلی", "home")]);
+  return { text, markup: kb(rows) };
 }
 
 // ---------- admin ----------
@@ -612,7 +677,7 @@ async function showAdmin(env, chatId, msgId) {
 }
 async function showPending(env, chatId, msgId, method) {
   const all = (await kvList(env, "topup:")).filter(
-    (t) => t.status === "pending" && t.method === method);
+    (t) => t.status === "pending" && t.method === method && (method !== "card" || t.receiptFileId));
   if (!all.length) return edit(env, chatId, msgId, "موردی در انتظار نیست. ✅", kb([[btn("⬅️ پنل مدیریت", "admin")]]));
   let text = method === "card" ? "🧾 <b>رسیدهای در انتظار:</b>\n" : "🪙 <b>پرداخت‌های کریپتوی در انتظار:</b>\n";
   const rows = [];
@@ -767,44 +832,16 @@ async function handleMessage(env, msg, baseUrl) {
     return;
   }
 
-  if (user.state === "await_card_amount" && /^[0-9]+$/.test(text.replace(/[,٬]/g, ""))) {
-    const amountToman = Number(text.replace(/[,٬]/g, ""));
-    const rate = await usdtTomanRate(env); // Wallex USDT/TMN, automatic
-    if (!rate) return send(env, chatId, "⚠️ در حال حاضر نرخ تتر از والکس در دسترس نیست. چند دقیقه دیگر مبلغ را دوباره بفرستید.");
-    const creditUsd = Math.floor((amountToman / rate) * 100) / 100;
-    if (creditUsd < 0.5) return send(env, chatId, `حداقل مبلغ شارژ معادل نیم دلار است (حدود ${faInt(Math.ceil(rate / 2))} تومان). مبلغ بیشتری بفرستید.`);
-    const topup = {
-      id: uid(), userId: String(chatId), method: "card", amountToman,
-      creditUsd, rateUsed: rate, status: "awaiting_receipt", createdAt: now(),
-    };
-    await kvPut(env, `topup:${topup.id}`, topup, 7 * 24 * 3600);
-    user.state = "await_card_receipt"; user.stateData = topup.id;
-    await saveUser(env, user);
-    return send(env, chatId,
-      `مبلغ ${faInt(amountToman)} تومان ثبت شد.\n💵 معادل شارژ: <b>$${faNum(creditUsd)}</b> (با نرخ تتر والکس: ${faInt(rate)} تومان)\n\n📸 حالا <b>عکس رسید</b> واریز را همین‌جا بفرستید:`,
-      kb([[btn("⬅️ منوی اصلی", "home")]]));
-  }
-
-  if (user.state?.startsWith("await_crypto_amount:") && /^[0-9]+(\.[0-9]+)?$/.test(text)) {
-    const cryptoCode = user.state.split(":")[1];
-    const creditUsd = Number(text);
+  if (user.state === "await_link_amount" && /^[0-9]+(\.[0-9]+)?$/.test(text)) {
+    const creditUsd = Math.round(Number(text) * 100) / 100;
     user.state = null;
     await saveUser(env, user);
-    if (creditUsd < 1) return send(env, chatId, "حداقل مبلغ شارژ ۱ دلار است.", backKb);
-    try {
-      const topup = await createCryptoTopup(env, chatId, cryptoCode, creditUsd, baseUrl);
-      const c = CRYPTOS[cryptoCode];
-      const payUrl = `${baseUrl}/pay?t=${topup.id}`;
-      return send(env, chatId,
-        `🪙 <b>پرداخت ${esc(c.label)}</b>\n\nمبلغ دقیق: <code>${faDigits(topup.expectedCrypto)}</code>\nآدرس کیف‌پول:\n<code>${esc(topup.walletAddress)}</code>\n\n⚠️ دقیقاً همین مبلغ را واریز کنید تا سیستم خودکار آن را پیدا کند. اعتبار این درخواست: ${faDigits(60)} دقیقه\n\nپس از واریز، دکمه «بررسی پرداخت» را بزنید (بررسی خودکار هم هر چند دقیقه انجام می‌شود).`,
-        kb([
-          [urlBtn("🌐 صفحه پرداخت و کیف‌پول‌ها", payUrl)],
-          [btn("🔄 بررسی پرداخت", `chk:${topup.id}`)],
-          [btn("⬅️ منوی اصلی", "home")],
-        ]));
-    } catch (e) {
-      return send(env, chatId, "در حال حاضر دریافت قیمت ارز ممکن نیست. چند دقیقه دیگر تلاش کنید.", backKb);
+    if (!(creditUsd >= 1 && creditUsd <= 5000)) {
+      return send(env, chatId, "مبلغ شارژ باید بین ۱ تا ۵۰۰۰ دلار باشد. از منوی «افزایش موجودی» دوباره تلاش کنید.", backKb);
     }
+    const topup = await createPaySession(env, chatId, creditUsd);
+    const m = await paySessionMessage(env, topup, baseUrl);
+    return send(env, chatId, m.text, m.markup);
   }
 
   user.state = null;
@@ -842,18 +879,40 @@ async function handleCallback(env, cq, baseUrl) {
       rows.push([btn("⬅️ منوی اصلی", "home")]);
       return edit(env, chatId, msgId, "📱 <b>سفارش‌های اخیر شما:</b>", kb(rows));
     }
-    if (data === "topup") return showTopup(env, chatId, msgId);
-    if (data === "topup_card") return startCardTopup(env, chatId, msgId);
-    if (data === "topup_crypto") return startCryptoTopup(env, chatId, msgId);
-    if (head === "crypto_new") {
+    if (data === "topup") return showTopup(env, chatId, msgId, baseUrl);
+    if (data === "link_new") {
+      const active = await findActiveSession(env, chatId);
+      if (active) {
+        const m = await paySessionMessage(env, active, baseUrl);
+        return edit(env, chatId, msgId, m.text, m.markup);
+      }
       const user = await getUser(env, chatId);
-      user.state = `await_crypto_amount:${a}`;
+      user.state = "await_link_amount";
       await saveUser(env, user);
-      return edit(env, chatId, msgId, `🪙 ${esc(CRYPTOS[a].label)} انتخاب شد.\n\n✍️ مبلغ شارژ را به <b>دلار</b> بنویسید (فقط عدد، مثال: 50):`, kb([[btn("⬅️ بازگشت", "topup_crypto")]]));
+      return edit(env, chatId, msgId,
+        `💵 <b>ساخت لینک پرداخت</b>\n\n✍️ مبلغ شارژی را که می‌خواهید به <b>دلار</b> بنویسید (فقط عدد، مثال: 50):\n\nروش پرداخت را بعداً داخل صفحه پرداخت انتخاب می‌کنید و هر پرداخت ۳۰ دقیقه مهلت دارد.`,
+        kb([[btn("⬅️ بازگشت", "topup")]]));
+    }
+    if (head === "ses_cancel") {
+      const topup = await kvGet(env, `topup:${a}`);
+      if (topup && topup.userId === String(chatId) && topup.status === "pending") {
+        topup.status = "cancelled"; topup.resolvedAt = now();
+        await kvPut(env, `topup:${topup.id}`, topup, 7 * 24 * 3600);
+        const user = await getUser(env, chatId);
+        if (user.state === "await_card_receipt" && user.stateData === topup.id) {
+          user.state = null; user.stateData = null; await saveUser(env, user);
+        }
+        await answerCb(env, cq.id, "پرداخت لغو شد");
+        return showTopup(env, chatId, msgId, baseUrl);
+      }
+      await answerCb(env, cq.id, "این پرداخت قابل لغو نیست", true);
+      return;
     }
     if (head === "chk") {
       const topup = await kvGet(env, `topup:${a}`);
       if (!topup || topup.status !== "pending") { await answerCb(env, cq.id, "این پرداخت قبلاً تعیین‌تکلیف شده است"); return; }
+      if (topupIsExpired(topup)) { await expireTopup(env, topup); await answerCb(env, cq.id, "⏰ مهلت این پرداخت (۳۰ دقیقه) تمام شده است", true); return; }
+      if (topup.method !== "crypto") { await answerCb(env, cq.id, "اول از صفحه پرداخت، روش پرداخت را انتخاب کنید", true); return; }
       const paid = await checkCryptoPaid(env, topup);
       if (paid) { await creditTopup(env, topup, "auto-chain"); await answerCb(env, cq.id, "پرداخت تأیید و حساب شارژ شد ✅"); return showHome(env, chatId, msgId); }
       await answerCb(env, cq.id, "هنوز واریزی با مبلغ دقیق پیدا نشد. اگر تازه واریز کرده‌اید چند دقیقه صبر کنید.", true);
@@ -909,34 +968,44 @@ async function handleCallback(env, cq, baseUrl) {
 }
 
 // ---------- wallet / payment web page (Persian) ----------
-// Minimal professional design: pure black background, white text,
-// hairline dividers instead of boxes, Vazirmatn with system fallbacks.
-function walletPage(env, cfg, topup) {
-  const copyBtn = (val, label = "کپی") =>
-    `<button class="copy" onclick="copyText(this,'${esc(val)}')">${label}</button>`;
-  const wallets = configuredCryptos(cfg).map(([code, c]) => {
-    const addr = cfg[c.envKey];
-    const hot = topup && topup.crypto === code;
-    return `<section class="row${hot ? " hot" : ""}">
-      <div class="row-head"><h2>${esc(c.label)}</h2>${hot ? `<span class="badge">پرداخت شما</span>` : ""}</div>
-      <div class="addr-box"><code class="addr">${esc(addr)}</code>${copyBtn(addr, "کپی آدرس")}</div>
-      <img class="qr" alt="QR" width="132" height="132" loading="lazy" src="https://api.qrserver.com/v1/create-qr-code/?size=132x132&margin=8&data=${encodeURIComponent(addr)}">
-    </section>`;
-  }).join("\n");
-  const topupBox = topup
-    ? `<section class="paybox">
-        <div class="paybox-label">مبلغ دقیق پرداختی — ${esc(CRYPTOS[topup.crypto]?.label || "")}</div>
-        <div class="paybox-amt"><span>${esc(topup.expectedCrypto)}</span>${copyBtn(String(topup.expectedCrypto), "کپی مبلغ")}</div>
-        <p class="hint">دقیقاً همین مبلغ را واریز کنید؛ شارژ پس از دیده‌شدن تراکنش در شبکه، به‌صورت خودکار انجام می‌شود.</p>
-      </section>`
-    : "";
-  const cardBox = cfg.CARD_NUMBER
-    ? `<section class="row">
-        <div class="row-head"><h2>کارت به کارت</h2></div>
-        <div class="addr-box"><code class="addr">${esc(cfg.CARD_NUMBER)}</code>${copyBtn(cfg.CARD_NUMBER, "کپی شماره کارت")}</div>
-        <p class="hint">به نام ${esc(cfg.CARD_HOLDER || "")}${cfg.CARD_BANK ? ` — ${esc(cfg.CARD_BANK)}` : ""}<br>پس از واریز، رسید را داخل ربات تلگرام ارسال کنید.</p>
-      </section>`
-    : "";
+// v1.3.0: the bot only creates a dollar payment session (30-minute deadline);
+// the method is chosen here on the page, and only the chosen method's wallet
+// and exact amount are shown. Design: professional minimal — pure black,
+// white text, hairline dividers, Vazirmatn, countdown ring + auto polling.
+const COIN_TICKER = { USDT_TRC20: "USDT", USDT_BEP20: "USDT", USDT_ERC20: "USDT", TRX: "TRX", BTC: "BTC", TON: "TON", LTC: "LTC", ETH: "ETH" };
+
+async function settleTopupLazy(env, topup) {
+  if (!topup || topup.status !== "pending") return topup;
+  if (topupIsExpired(topup)) {
+    await expireTopup(env, topup);
+    return (await kvGet(env, `topup:${topup.id}`)) || topup;
+  }
+  if (topup.method === "crypto" && (await checkCryptoPaid(env, topup))) {
+    await creditTopup(env, topup, "auto-chain-page");
+    return (await kvGet(env, `topup:${topup.id}`)) || topup;
+  }
+  return topup;
+}
+
+async function handlePaySelect(env, request) {
+  const body = await request.json().catch(() => ({}));
+  const topup = body.t ? await kvGet(env, `topup:${body.t}`) : null;
+  if (!topup || topup.status !== "pending") {
+    return Response.json({ ok: false, error: "این پرداخت فعال نیست" }, { status: 400 });
+  }
+  if (topupIsExpired(topup)) {
+    await expireTopup(env, topup);
+    return Response.json({ ok: false, error: "مهلت پرداخت تمام شده است" }, { status: 400 });
+  }
+  try {
+    await applyPayMethod(env, topup, String(body.m ?? ""));
+    return Response.json({ ok: true });
+  } catch (e) {
+    return Response.json({ ok: false, error: String(e?.message || e) }, { status: 400 });
+  }
+}
+
+function payShell(body, script = "") {
   return `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#000000">
@@ -947,52 +1016,225 @@ function walletPage(env, cfg, topup) {
 *{box-sizing:border-box;margin:0;padding:0}
 html{background:#000}
 body{background:#000;color:#fff;font-family:Vazirmatn,Tahoma,Arial,sans-serif;-webkit-font-smoothing:antialiased;line-height:1.9}
-main{max-width:600px;margin:0 auto;padding:56px 22px 64px}
-.brand{display:flex;align-items:center;gap:12px;margin-bottom:14px}
-.mark{width:34px;height:34px;border:1px solid #fff;border-radius:10px;display:grid;place-items:center;font-size:15px;font-weight:700}
-.brand span{font-size:13px;color:#a3a3a3;letter-spacing:.02em}
-h1{font-size:30px;font-weight:800;letter-spacing:-.01em}
-.lead{color:#a3a3a3;font-size:14.5px;margin:10px 0 40px;max-width:46ch}
-.paybox{border:1px solid #fff;border-radius:18px;padding:22px;margin-bottom:8px}
-.paybox-label{font-size:12.5px;color:#a3a3a3;margin-bottom:6px}
-.paybox-amt{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.paybox-amt span{font-size:27px;font-weight:800;direction:ltr;font-variant-numeric:tabular-nums}
-.row{padding:28px 0;border-top:1px solid #1c1c1c}
-.row.hot{border-top-color:#fff}
-.row-head{display:flex;align-items:center;gap:10px;margin-bottom:14px}
-h2{font-size:16.5px;font-weight:700}
-.badge{font-size:11px;color:#000;background:#fff;border-radius:999px;padding:2px 10px;font-weight:700}
-.addr-box{display:flex;align-items:center;gap:10px;background:#0a0a0a;border:1px solid #262626;border-radius:12px;padding:10px 12px}
+main{max-width:560px;margin:0 auto;padding:44px 22px 60px;animation:up .45s ease both}
+@keyframes up{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.brand{display:flex;align-items:center;gap:12px;margin-bottom:26px}
+.mark{width:36px;height:36px;border:1px solid #fff;border-radius:11px;display:grid;place-items:center;font-size:15px;font-weight:800}
+.brand b{font-size:14.5px}
+.brand span{display:block;font-size:11.5px;color:#8a8a8a;line-height:1.5}
+.secure{margin-inline-start:auto;font-size:11px;color:#a3a3a3;border:1px solid #262626;border-radius:999px;padding:3px 12px}
+.steps{display:flex;align-items:center;gap:8px;margin:6px 0 26px}
+.step{display:flex;align-items:center;gap:8px;font-size:12px;color:#6d6d6d;white-space:nowrap}
+.step .dot{width:24px;height:24px;border-radius:50%;border:1px solid #333;display:grid;place-items:center;font-size:11.5px;font-weight:700}
+.step.on{color:#fff}
+.step.on .dot{background:#fff;color:#000;border-color:#fff}
+.step.done{color:#a3a3a3}
+.step.done .dot{border-color:#525252;color:#fff}
+.steps .line{flex:1;height:1px;background:#1e1e1e;min-width:14px}
+h1{font-size:24px;font-weight:800;letter-spacing:-.01em}
+.sub{color:#a3a3a3;font-size:13.5px;margin:6px 0 22px}
+.summary{display:flex;align-items:center;gap:14px;background:#0a0a0a;border:1px solid #232323;border-radius:16px;padding:14px 18px;margin-bottom:8px}
+.summary .k{font-size:11.5px;color:#8a8a8a}
+.summary .v{font-size:19px;font-weight:800;direction:ltr;font-variant-numeric:tabular-nums}
+.summary .vt{font-size:12px;color:#a3a3a3}
+.timer{margin-inline-start:auto;text-align:center}
+.timer .cd{font-size:19px;font-weight:800;direction:ltr;font-variant-numeric:tabular-nums;line-height:1.3}
+.timer .k{font-size:10.5px;color:#8a8a8a}
+.timebar{height:3px;background:#1a1a1a;border-radius:99px;overflow:hidden;margin:10px 0 20px}
+.timebar i{display:block;height:100%;background:#fff;border-radius:99px;transition:width .3s linear}
+.method{display:flex;align-items:center;gap:14px;width:100%;text-align:start;background:transparent;border:0;border-top:1px solid #1c1c1c;padding:17px 2px;cursor:pointer;color:#fff;font-family:inherit;transition:background .15s}
+.method:hover{background:#0d0d0d}
+.method .tick{width:46px;height:46px;flex:none;border:1px solid #2c2c2c;border-radius:13px;display:grid;place-items:center;font-size:10.5px;font-weight:800;letter-spacing:.04em}
+.method .nm{font-size:15px;font-weight:700;line-height:1.6}
+.method .ap{font-size:12px;color:#8a8a8a;direction:ltr;text-align:left;font-variant-numeric:tabular-nums}
+.method .ch{margin-inline-start:auto;color:#5c5c5c;font-size:19px;flex:none}
+.method .inf{flex:1}
+.paywrap{display:flex;gap:18px;align-items:center;background:#0a0a0a;border:1px solid #232323;border-radius:18px;padding:18px;margin:4px 0 14px}
+.ring{position:relative;width:66px;height:66px;flex:none}
+.ring svg{transform:rotate(-90deg)}
+.ring .rc{position:absolute;inset:0;display:grid;place-items:center;font-size:13.5px;font-weight:800;direction:ltr;font-variant-numeric:tabular-nums}
+.paywrap .st{font-size:12px;color:#a3a3a3}
+.paywrap .st b{color:#fff;font-size:14px}
+.pulse{display:inline-block;width:7px;height:7px;border-radius:50%;background:#fff;margin-inline-end:6px;animation:pl 1.6s infinite}
+@keyframes pl{0%,100%{opacity:1}50%{opacity:.25}}
+.amtbox{border:1px solid #fff;border-radius:18px;padding:20px;margin-bottom:14px}
+.amtbox .k{font-size:12px;color:#a3a3a3;margin-bottom:4px}
+.amtbox .amt{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.amtbox .amt span{font-size:29px;font-weight:800;direction:ltr;font-variant-numeric:tabular-nums;letter-spacing:.01em}
+.addr-box{display:flex;align-items:center;gap:10px;background:#0a0a0a;border:1px solid #262626;border-radius:13px;padding:11px 13px;margin-bottom:6px}
 .addr{flex:1;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;word-break:break-all;direction:ltr;text-align:left;color:#e5e5e5}
 .copy{flex:none;background:transparent;color:#fff;border:1px solid #3f3f3f;border-radius:999px;padding:5px 14px;font-family:inherit;font-size:12.5px;cursor:pointer;transition:all .15s}
 .copy:hover{background:#fff;color:#000;border-color:#fff}
-.qr{display:block;margin-top:16px;background:#fff;border-radius:12px;padding:6px}
-.hint{color:#a3a3a3;font-size:13px;margin-top:12px}
-footer{margin-top:44px;padding-top:20px;border-top:1px solid #1c1c1c;color:#737373;font-size:12.5px}
-#toast{position:fixed;bottom:26px;left:50%;transform:translate(-50%,16px);background:#fff;color:#000;font-size:13px;font-weight:700;padding:8px 20px;border-radius:999px;opacity:0;pointer-events:none;transition:all .25s}
+.qrwrap{display:flex;justify-content:center;padding:10px 0 2px}
+.qr{background:#fff;border-radius:14px;padding:7px}
+.notes{margin:14px 0 20px}
+.notes li{list-style:none;color:#a3a3a3;font-size:13px;padding:7px 0;border-top:1px solid #161616;display:flex;gap:10px}
+.notes li b{color:#fff;font-weight:700}
+.btnrow{display:flex;gap:10px;flex-wrap:wrap}
+.btn{flex:1;min-width:150px;background:#fff;color:#000;border:1px solid #fff;border-radius:13px;padding:12px 18px;font-family:inherit;font-size:14.5px;font-weight:800;cursor:pointer;transition:all .15s}
+.btn:hover{background:#e5e5e5}
+.btn:disabled{opacity:.55;cursor:wait}
+.btn.ghost{background:transparent;color:#fff;border-color:#3a3a3a;font-weight:600}
+.btn.ghost:hover{border-color:#fff;background:transparent}
+.state{text-align:center;padding:28px 0 6px}
+.state .circ{width:74px;height:74px;margin:0 auto 18px;border:1.5px solid #fff;border-radius:50%;display:grid;place-items:center;font-size:31px}
+.state h1{margin-bottom:6px}
+.state p{color:#a3a3a3;font-size:14px;max-width:40ch;margin:0 auto}
+.state .big{font-size:21px;font-weight:800;color:#fff;direction:ltr;margin-top:12px}
+footer{margin-top:38px;padding-top:18px;border-top:1px solid #1c1c1c;color:#737373;font-size:12.5px}
+footer a{color:#a3a3a3}
+#toast{position:fixed;bottom:26px;left:50%;transform:translate(-50%,16px);background:#fff;color:#000;font-size:13px;font-weight:700;padding:8px 20px;border-radius:999px;opacity:0;pointer-events:none;transition:all .25s;z-index:9;max-width:88vw;text-align:center}
 #toast.show{opacity:1;transform:translate(-50%,0)}
-@media (max-width:480px){h1{font-size:25px}.paybox-amt span{font-size:22px}main{padding-top:40px}}
+@media (max-width:480px){.amtbox .amt span{font-size:23px}h1{font-size:21px}.method .ap{display:none}}
 </style></head>
 <body><main>
-<header>
-  <div class="brand"><div class="mark">S</div><span>فروشگاه شماره مجازی</span></div>
-  <h1>پرداخت و افزایش موجودی</h1>
-  <p class="lead">برای شارژ حساب، یکی از روش‌های زیر را انتخاب کنید. در پرداخت ارزی، مبلغ دقیق نمایش‌داده‌شده در ربات را واریز کنید تا سیستم به‌صورت خودکار آن را شناسایی کند.</p>
-</header>
-${topupBox}
-${wallets}
-${cardBox}
-<footer>پیش از واریز، آدرس کیف‌پول و مبلغ را یک‌بار دیگر بررسی کنید. پس از پرداخت ارزی، در ربات دکمه «بررسی پرداخت» را بزنید؛ بررسی خودکار نیز هر چند دقیقه انجام می‌شود.</footer>
+<header class="brand"><div class="mark">S</div><div><b>فروشگاه شماره مجازی</b><span>درگاه پرداخت</span></div><div class="secure">پرداخت امن</div></header>
+${body}
+<footer>مبلغ و آدرس را پیش از واریز یک‌بار دیگر بررسی کنید. هر پرداخت ۳۰ دقیقه مهلت دارد؛ پس از آن، درخواست به‌صورت خودکار بسته می‌شود.</footer>
 </main>
-<div id="toast">کپی شد</div>
+<div id="toast"></div>
 <script>
-function copyText(btn, text){
-  var done=function(){var t=document.getElementById('toast');t.classList.add('show');setTimeout(function(){t.classList.remove('show')},1600)};
-  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done).catch(done)}
-  else{var ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();try{document.execCommand('copy')}catch(e){}ta.remove();done()}
-}
+function toast(msg){var t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show')},2200)}
+function copyText(text){var done=function(){toast('کپی شد')};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done).catch(done)}else{var ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();try{document.execCommand('copy')}catch(e){}ta.remove();done()}}
+${script}
 </script>
 </body></html>`;
+}
+
+function paySteps(active) {
+  const names = ["انتخاب روش", "پرداخت", "تأیید شارژ"];
+  const parts = names.map((n, i) => {
+    const cls = i + 1 < active ? "step done" : i + 1 === active ? "step on" : "step";
+    const inner = i + 1 < active ? "✓" : String(i + 1);
+    return `<div class="${cls}"><span class="dot">${inner}</span>${n}</div>`;
+  });
+  return `<div class="steps">${parts.join('<div class="line"></div>')}</div>`;
+}
+
+function payScript(topup, poll) {
+  const expiresAt = topupExpiresAt(topup);
+  return `
+var TID='${esc(topup.id)}', EXP=${expiresAt}, SPAN=${PAY_TTL_MS};
+function pad(n){return (n<10?'0':'')+n}
+function tick(){var ms=EXP-Date.now();var s=Math.max(0,Math.floor(ms/1000));var txt=pad(Math.floor(s/60))+':'+pad(s%60);document.querySelectorAll('.cd').forEach(function(e){e.textContent=txt});var bar=document.getElementById('timebar');if(bar)bar.style.width=Math.max(0,ms/SPAN*100)+'%';var ring=document.getElementById('ringfg');if(ring){var C=163.36;ring.style.strokeDashoffset=C*(1-Math.max(0,ms)/SPAN)}if(ms<=0&&!window._exp){window._exp=1;setTimeout(function(){location.reload()},1500)}}
+setInterval(tick,250);tick();
+async function selectMethod(m){toast('در حال ثبت روش پرداخت…');try{var r=await fetch('/pay/select',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({t:TID,m:m})});var d=await r.json().catch(function(){return{}});if(d.ok){location.reload()}else{toast(d.error||'خطا رخ داد')}}catch(e){toast('خطا در ارتباط')}};
+async function checkNow(btn){btn.disabled=true;btn.textContent='در حال بررسی…';try{var r=await fetch('/pay/status?t='+TID);var d=await r.json();if(d.status!=='pending'){location.reload();return}toast('هنوز پرداختی پیدا نشد؛ اگر تازه واریز کرده‌اید چند دقیقه صبر کنید')}catch(e){toast('خطا در بررسی')}btn.disabled=false;btn.textContent='🔄 بررسی پرداخت'}
+${poll ? "setInterval(async function(){try{var r=await fetch('/pay/status?t='+TID);var d=await r.json();if(d.status!=='pending')location.reload()}catch(e){}},15000);" : ""}`;
+}
+
+async function payPage(env, cfg, topup) {
+  const head = (step) => paySteps(step);
+  if (!topup) {
+    return payShell(`${head(1)}
+      <h1>پرداخت و افزایش موجودی</h1>
+      <p class="sub">پرداخت از داخل ربات تلگرام شروع می‌شود: مبلغ شارژ را به دلار می‌نویسید، لینک پرداخت می‌گیرید و همین‌جا روش پرداخت را انتخاب می‌کنید.</p>
+      <ul class="notes">
+        <li><b>۱</b> در ربات، «افزایش موجودی» و بعد «ساخت لینک پرداخت» را بزنید.</li>
+        <li><b>۲</b> روش را همین‌جا انتخاب کنید؛ فقط ولت و مبلغ همان روش نشان داده می‌شود.</li>
+        <li><b>۳</b> هر پرداخت ۳۰ دقیقه مهلت دارد و شارژ ارز دیجیتال خودکار انجام می‌شود.</li>
+      </ul>
+      ${cfg.SUPPORT_USERNAME ? `<p class="sub">پشتیبانی: <a href="https://t.me/${esc(cfg.SUPPORT_USERNAME)}" style="color:#fff">@${esc(cfg.SUPPORT_USERNAME)}</a></p>` : ""}`);
+  }
+  const credit = topupCredit(topup);
+  const tmn = await usdtTomanRate(env);
+  const tomanText = tmn ? `≈ ${faInt(Math.round(credit * tmn))} تومان` : "";
+  const summary = `<div class="summary"><div><div class="k">مبلغ شارژ</div><div class="v">$${esc(credit)}</div><div class="vt">${tomanText}</div></div>
+    <div class="timer"><div class="cd">30:00</div><div class="k">مهلت باقی‌مانده</div></div></div><div class="timebar"><i id="timebar"></i></div>`;
+  const script = payScript(topup, topup.method === "crypto" || (topup.method === "card" && !!topup.receiptFileId));
+
+  if (topup.status === "approved") {
+    const user = await getUser(env, topup.userId);
+    return payShell(`${head(3)}
+      <div class="state"><div class="circ">✓</div>
+      <h1>پرداخت تأیید شد</h1>
+      <p>موجودی شما با موفقیت شارژ شد. می‌توانید این صفحه را ببندید و به ربات برگردید.</p>
+      <div class="big">+$${esc(credit)}</div>
+      <p>موجودی فعلی: $${esc(user.balance)}</p></div>`);
+  }
+  if (topup.status === "expired" || topupIsExpired(topup)) {
+    return payShell(`${head(2)}
+      <div class="state"><div class="circ">⏱</div>
+      <h1>مهلت پرداخت تمام شد</h1>
+      <p>این درخواست پرداخت بسته شد. برای شارژ حساب، داخل ربات یک پرداخت جدید بسازید.</p></div>`);
+  }
+  if (topup.status !== "pending") {
+    return payShell(`${head(2)}
+      <div class="state"><div class="circ">✕</div>
+      <h1>این پرداخت بسته شده است</h1>
+      <p>برای شارژ حساب، داخل ربات یک پرداخت جدید بسازید.</p></div>`);
+  }
+
+  // --- method selection view ---
+  if (topup.method === "session") {
+    const rows = [];
+    for (const [code, c] of configuredCryptos(cfg)) {
+      let approx = "—";
+      try {
+        const price = await cryptoPriceUsd(env, c.cg);
+        approx = (credit / price).toFixed(c.decimals) + " " + COIN_TICKER[code];
+      } catch (_) {}
+      rows.push(`<button class="method" onclick="selectMethod('${code}')">
+        <span class="tick">${COIN_TICKER[code]}</span>
+        <span class="inf"><span class="nm">${esc(c.label)}</span></span>
+        <span class="ap">${esc(approx)}</span><span class="ch">‹</span></button>`);
+    }
+    if (cfg.CARD_NUMBER) {
+      rows.push(`<button class="method" onclick="selectMethod('CARD')">
+        <span class="tick">کارت</span>
+        <span class="inf"><span class="nm">کارت به کارت</span></span>
+        <span class="ap">${tomanText ? esc(String(Math.round(credit * (tmn || 0))).replace(/\\B(?=(\\d{3})+(?!\\d))/g, ",")) + " تومان" : "—"}</span><span class="ch">‹</span></button>`);
+    }
+    return payShell(`${head(1)}
+      <h1>روش پرداخت را انتخاب کنید</h1>
+      <p class="sub">بعد از انتخاب، فقط ولت و مبلغ دقیق همان روش نمایش داده می‌شود.</p>
+      ${summary}
+      ${rows.join("\n")}`, script);
+  }
+
+  // --- card view ---
+  if (topup.method === "card") {
+    if (topup.receiptFileId) {
+      return payShell(`${head(2)}
+        <h1>رسید شما دریافت شد</h1>
+        <p class="sub">رسید برای مدیر ارسال شده است؛ پس از تأیید، موجودی شما شارژ می‌شود و همین صفحه به‌صورت خودکار به‌روز می‌شود.</p>
+        ${summary}`, script);
+    }
+    return payShell(`${head(2)}
+      <h1>کارت به کارت</h1>
+      <p class="sub">مبلغ زیر را به کارت فروشگاه واریز کنید و رسید را داخل ربات ارسال کنید.</p>
+      ${summary}
+      <div class="amtbox"><div class="k">مبلغ دقیق واریزی — تومان</div>
+        <div class="amt"><span>${esc(String(topup.amountToman || 0))}</span><button class="copy" onclick="copyText('${esc(topup.amountToman || "")}')">کپی مبلغ</button></div></div>
+      <div class="addr-box"><code class="addr">${esc(cfg.CARD_NUMBER || "")}</code><button class="copy" onclick="copyText('${esc(cfg.CARD_NUMBER || "")}')">کپی شماره کارت</button></div>
+      <p class="sub" style="margin:8px 0 0">به نام ${esc(cfg.CARD_HOLDER || "")}${cfg.CARD_BANK ? ` — ${esc(cfg.CARD_BANK)}` : ""}</p>
+      <ul class="notes">
+        <li><b>۱</b> دقیقاً همین مبلغ را کارت‌به‌کارت کنید.</li>
+        <li><b>۲</b> به ربات برگردید و <b>عکس رسید</b> را همان‌جا بفرستید؛ رسید به‌صورت خودکار به همین پرداخت وصل می‌شود.</li>
+        <li><b>۳</b> پس از تأیید مدیر، موجودی‌تان شارژ می‌شود.</li>
+      </ul>
+      <div class="btnrow"><button class="btn ghost" onclick="selectMethod('')">تغییر روش پرداخت</button></div>`, script);
+  }
+
+  // --- crypto payment view: only the chosen wallet + amount ---
+  const c = CRYPTOS[topup.crypto] || {};
+  const addr = topup.walletAddress || "";
+  return payShell(`${head(2)}
+    <h1>پرداخت ${esc(c.label || "")}</h1>
+    <p class="sub">فقط از همین شبکه و دقیقاً همین مبلغ را واریز کنید.</p>
+    <div class="paywrap">
+      <div class="ring"><svg width="66" height="66"><circle cx="33" cy="33" r="26" stroke="#222" stroke-width="3" fill="none"/><circle id="ringfg" cx="33" cy="33" r="26" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" stroke-dasharray="163.36" stroke-dashoffset="0"/></svg><div class="rc cd">30:00</div></div>
+      <div><div class="st"><span class="pulse"></span><b>در انتظار پرداخت</b></div><div class="st">مبلغ شارژ: $${esc(credit)} ${tomanText}</div><div class="st">پس از دیده‌شدن تراکنش در شبکه، شارژ خودکار انجام و این صفحه به‌روز می‌شود.</div></div>
+    </div>
+    <div class="amtbox"><div class="k">مبلغ دقیق پرداختی — ${esc(c.label || "")}</div>
+      <div class="amt"><span>${esc(topup.expectedCrypto)}</span><button class="copy" onclick="copyText('${esc(topup.expectedCrypto)}')">کپی مبلغ</button></div></div>
+    <div class="addr-box"><code class="addr">${esc(addr)}</code><button class="copy" onclick="copyText('${esc(addr)}')">کپی آدرس</button></div>
+    <div class="qrwrap"><img class="qr" alt="QR" width="140" height="140" loading="lazy" src="https://api.qrserver.com/v1/create-qr-code/?size=140x140&margin=8&data=${encodeURIComponent(addr)}"></div>
+    <ul class="notes">
+      <li><b>شبکه</b> واریز از شبکه دیگری به این آدرس، قابل شناسایی نیست.</li>
+      <li><b>مبلغ دقیق</b> کمتر یا بیشتر از مبلغ بالا واریز نکنید؛ سیستم با همین مبلغ پرداخت شما را پیدا می‌کند.</li>
+    </ul>
+    <div class="btnrow"><button class="btn" onclick="checkNow(this)">🔄 بررسی پرداخت</button><button class="btn ghost" onclick="selectMethod('')">تغییر روش پرداخت</button></div>`, script);
 }
 
 // ---------- Worker entry ----------
@@ -1009,11 +1251,23 @@ export default {
       return Response.json({ ok: webhook.ok, kv: !!env.STORE, webhook });
     }
     if (url.pathname === "/" ) return Response.redirect(`${url.origin}/pay`, 302);
+    if (url.pathname === "/pay/select" && request.method === "POST") {
+      return handlePaySelect(env, request);
+    }
+    if (url.pathname === "/pay/status") {
+      const t = url.searchParams.get("t");
+      let topup = t ? await kvGet(env, `topup:${t}`) : null;
+      if (!topup) return Response.json({ status: "notfound" }, { status: 404 });
+      topup = await settleTopupLazy(env, topup);
+      return Response.json({ status: topup.status, method: topup.method, expiresAt: topupExpiresAt(topup) });
+    }
     if (url.pathname === "/pay") {
       const t = url.searchParams.get("t");
-      const topup = t ? await kvGet(env, `topup:${t}`) : null;
+      let topup = t ? await kvGet(env, `topup:${t}`) : null;
+      if (topup) topup = await settleTopupLazy(env, topup);
       const cfg = await getConfig(env);
-      return new Response(walletPage(env, cfg, topup), { headers: { "content-type": "text/html; charset=utf-8" } });
+      const html = await payPage(env, cfg, topup);
+      return new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } });
     }
     if (url.pathname === "/health") return Response.json({ ok: true, kv: !!env.STORE, version: BOT_VERSION });
     if (url.pathname === "/webhook" && request.method === "POST") {
@@ -1040,10 +1294,12 @@ export default {
       const cfgCron = await getConfig(env);
       const origin = cfgCron.WORKER_BASE_URL || storedOrigin?.origin;
       if (origin) await ensureWebhook(env, origin);
-      const pending = (await kvList(env, "topup:")).filter(
-        (t) => t.method === "crypto" && t.status === "pending" && t.expiresAt > now());
-      for (const t of pending) {
-        if (await checkCryptoPaid(env, t)) await creditTopup(env, t, "auto-chain-cron");
+      for (const t of await kvList(env, "topup:")) {
+        if (t.status !== "pending") continue;
+        if (topupIsExpired(t)) { await expireTopup(env, t); continue; }
+        if (t.method === "crypto" && (await checkCryptoPaid(env, t))) {
+          await creditTopup(env, t, "auto-chain-cron");
+        }
       }
     })();
     ctx.waitUntil(work);

@@ -21,9 +21,15 @@ refunded automatically (the provider only charges on a finished activation with 
   inside the bot (you also get the receipt forwarded with Approve/Reject buttons).
   The Toman → USD credit conversion is automatic using the Wallex USDT rate
   (the rate used is stored on each top-up and shown to the admin).
-- **Crypto:** the bot creates a payment with a **unique exact amount** on your shared
-  wallet address, links the user to the wallet page on the bot's own domain
-  (`/pay?t=<topup-id>`), and checks the chain automatically (button + cron every
+- **Payment sessions (v1.3.0):** the user only enters the USD amount in the bot;
+  that creates a payment session with a **30-minute deadline** and a link to the
+  payment page on the bot's own domain (`/pay?t=<session-id>`). The payment
+  method is chosen **on the page** (any configured crypto, or card-to-card);
+  only then are the wallet, the unique exact crypto amount (or the Toman card
+  total) fixed, and the page shows only that method. The page has a live
+  countdown, polls `/pay/status` automatically, and expired sessions are
+  closed by the cron. Crypto payments keep a **unique exact amount** on your
+  shared wallet address and are checked automatically (button + page + cron every
   2 minutes). On a match it tops up the user automatically.
   Auto-check supports USDT-TRC20, TRX, BTC, TON, LTC, USDT-BEP20 (read keylessly from BSC public RPC nodes via Transfer logs; BSC USDT has 18 decimals), and ETH / USDT-ERC20
   (ERC20 needs a free `ETHERSCAN_API_KEY`). Crypto USD prices are fetched redundantly — CoinGecko → Coinbase → Wallex-derived, with USDT fixed at $1 and a stale-cache last resort — because CoinGecko's free API aggressively rate-limits Cloudflare Workers' shared IPs, which used to abort top-ups with “price unavailable”.
@@ -136,7 +142,7 @@ instantly. The 🗑 button next to a field clears it.
 
 - Country names come from SmsFull in Portuguese; service names as provided.
 - One shared wallet address per crypto (payments are matched by the unique exact
-  amount — users must pay the exact amount shown, within 60 minutes).
+  amount — users must pay the exact amount shown, within 30 minutes).
 - Card top-ups need your approval in the bot (there is no bank API in the flow).
 
 ---
