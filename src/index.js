@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.1.1"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.2.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -375,131 +375,192 @@ function tronBase58ToHex(addr) {
   } catch (_) { return null; }
 }
 
-async function checkCryptoState(env, topup) {
-  const addr = topup.walletAddress;
-  const sinceSec = Math.floor(topup.createdAt / 1000) - 120;
-  const want = Number(topup.expectedCrypto);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Best-effort KV lock: KV has no compare-and-swap, so acquiring means writing
+// an owner token, waiting briefly for rival writes to land, then re-reading —
+// only the writer whose token survived proceeds. This collapses the realistic
+// races (cron vs check button vs admin approve vs double-tap) to one runner.
+async function withKvLock(env, key, fn, ttlSec = 30) {
+  if (!env.STORE) return fn();
+  const lockKey = `lock:${key}`;
+  const token = uid();
   try {
-    if (topup.crypto === "USDT_TRC20" || topup.crypto === "TRX") {
-      if (topup.crypto === "USDT_TRC20") {
-        const r = await fetch(
-          `https://api.trongrid.io/v1/accounts/${addr}/transactions/trc20?limit=50&contract_address=${USDT_TRC20_CONTRACT}`
-        );
-        const d = await r.json().catch(() => ({}));
-        return (d.data || []).some(
-          (t) => t.to === addr && Number(t.value) / 1e6 >= want - 1e-6 &&
-            Math.floor(t.block_timestamp / 1000) >= sinceSec
-        ) ? "paid" : "none";
+    const existing = await kvGet(env, lockKey);
+    if (existing && existing.at && now() - existing.at < ttlSec * 1000) return undefined;
+    await kvPut(env, lockKey, { token, at: now() }, ttlSec);
+    await sleep(1200);
+    const check = await kvGet(env, lockKey);
+    if (!check || check.token !== token) return undefined;
+    return await fn();
+  } finally {
+    try { const cur = await kvGet(env, lockKey); if (cur && cur.token === token) await kvDel(env, lockKey); } catch (_) {}
+  }
+}
+
+// Best-effort fixed-window rate limit in KV (eventually consistent, so it
+// damps abuse rather than guaranteeing an exact count).
+async function throttle(env, key, limit, windowSec) {
+  if (!env.STORE) return true;
+  const bucket = Math.floor(now() / (windowSec * 1000));
+  const k = `rl:${key}:${bucket}`;
+  const cur = (await kvGet(env, k)) || { n: 0 };
+  if (cur.n >= limit) return false;
+  cur.n += 1;
+  await kvPut(env, k, cur, windowSec * 2);
+  return true;
+}
+const clientIp = (request) => request.headers.get("cf-connecting-ip") || "unknown";
+// Full diagnostics on /health and /setup are only shown to whoever knows the
+// diag key (DIAG_KEY, or the webhook secret as a fallback).
+const diagKeyOk = (env, url) => {
+  const k = url.searchParams.get("k");
+  return !!k && ((env.DIAG_KEY && k === env.DIAG_KEY) || (env.WEBHOOK_SECRET && k === env.WEBHOOK_SECRET));
+};
+
+// Candidate on-chain transfers TO this topup's wallet since the payment
+// method (and with it the exact amount) was selected:
+// [{ txid, amount (coin units), ts (unix sec), confirmed }].
+async function findCryptoCandidates(env, topup) {
+  const addr = topup.walletAddress;
+  const sinceSec = Math.floor((topup.selectedAt || topup.createdAt) / 1000) - 30;
+  const out = [];
+  try {
+    if (topup.crypto === "USDT_TRC20") {
+      const r = await fetch(`https://api.trongrid.io/v1/accounts/${addr}/transactions/trc20?limit=50&contract_address=${USDT_TRC20_CONTRACT}`);
+      const d = await r.json().catch(() => ({}));
+      for (const t of d.data || []) {
+        const ts = Math.floor(t.block_timestamp / 1000);
+        if (t.to === addr && ts >= sinceSec) out.push({ txid: t.transaction_id, amount: Number(t.value) / 1e6, ts, confirmed: true });
       }
+    } else if (topup.crypto === "TRX") {
       const wantHex = tronBase58ToHex(addr);
       const r = await fetch(`https://api.trongrid.io/v1/accounts/${addr}/transactions?limit=50`);
       const d = await r.json().catch(() => ({}));
-      return (d.data || []).some((t) => {
-        const c = t.raw_data?.contract?.[0];
-        const v = c?.parameter?.value;
-        return wantHex && String(v?.to_address || "").toLowerCase() === wantHex &&
-          t.ret?.[0]?.contractRet === "SUCCESS" &&
-          Number(v.amount || 0) / 1e6 >= want - 1e-3 &&
-          Math.floor(t.block_timestamp / 1000) >= sinceSec;
-      }) ? "paid" : "none";
-    }
-    if (topup.crypto === "BTC") {
+      for (const t of d.data || []) {
+        const v = t.raw_data?.contract?.[0]?.parameter?.value;
+        const ts = Math.floor(t.block_timestamp / 1000);
+        if (wantHex && String(v?.to_address || "").toLowerCase() === wantHex && t.ret?.[0]?.contractRet === "SUCCESS" && ts >= sinceSec)
+          out.push({ txid: t.transaction_id, amount: Number(v.amount || 0) / 1e6, ts, confirmed: true });
+      }
+    } else if (topup.crypto === "BTC") {
       const r = await fetch(`https://mempool.space/api/address/${addr}/txs`);
       const txs = await r.json().catch(() => []);
-      const match = (Array.isArray(txs) ? txs : []).find((tx) =>
-        (tx.vout || []).some((o) => o.scriptpubkey_address === addr && o.value >= Math.round(want * 1e8) - 10) &&
-        (tx.status?.block_time || Math.floor(now() / 1000)) >= sinceSec - 3600
-      );
-      if (!match) return "none";
-      return match.status?.confirmed ? "paid" : "seen";
-    }
-    if (topup.crypto === "TON") {
-      const r = await fetch(
-        `https://toncenter.com/api/v2/getTransactions?address=${encodeURIComponent(addr)}&limit=30&archival=false`
-      );
+      for (const tx of Array.isArray(txs) ? txs : []) {
+        const sat = (tx.vout || []).filter((o) => o.scriptpubkey_address === addr).reduce((a, o) => a + Number(o.value || 0), 0);
+        if (sat > 0) out.push({ txid: tx.txid, amount: sat / 1e8, ts: tx.status?.block_time || Math.floor(now() / 1000), confirmed: !!tx.status?.confirmed });
+      }
+    } else if (topup.crypto === "TON") {
+      const r = await fetch(`https://toncenter.com/api/v2/getTransactions?address=${encodeURIComponent(addr)}&limit=30&archival=false`);
       const d = await r.json().catch(() => ({}));
-      return (d.result || []).some((tx) => {
+      for (const tx of d.result || []) {
         const msg = tx.in_msg;
-        return msg && Number(msg.value || 0) / 1e9 >= want - 1e-4 && Number(tx.utime) >= sinceSec;
-      }) ? "paid" : "none";
-    }
-    if (topup.crypto === "USDT_BEP20") {
-      // Keyless: read Transfer logs straight from BSC public RPC nodes.
+        if (msg && Number(tx.utime) >= sinceSec)
+          out.push({ txid: tx.transaction_id?.hash || `${tx.utime}:${tx.lt || ""}`, amount: Number(msg.value || 0) / 1e9, ts: Number(tx.utime), confirmed: true });
+      }
+    } else if (topup.crypto === "USDT_BEP20") {
       const rpcCall = async (rpc, method, params) => {
-        const r = await fetch(rpc, {
-          method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-        });
+        const r = await fetch(rpc, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
         const d = await r.json();
         if (d.error) throw new Error(d.error.message || "rpc error");
         return d.result;
       };
       const toTopic = "0x" + "0".repeat(24) + addr.replace(/^0x/i, "").toLowerCase();
       const transferTopic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
-      const elapsedBlocks = Math.ceil((now() - topup.createdAt) / 3000) + 300; // BSC: ~3s blocks
-      const span = Math.min(Math.max(elapsedBlocks, 600), 5000); // public RPC log-range limits
+      const elapsedBlocks = Math.ceil((now() - topup.createdAt) / 3000) + 300;
+      const span = Math.min(Math.max(elapsedBlocks, 600), 5000);
       for (const rpc of ["https://bsc-dataseed.bnbchain.org", "https://bsc.publicnode.com", "https://bsc-dataseed1.defibit.io"]) {
         try {
           const latest = parseInt(await rpcCall(rpc, "eth_blockNumber", []), 16);
-          const logs = await rpcCall(rpc, "eth_getLogs", [{
-            fromBlock: "0x" + Math.max(0, latest - span).toString(16),
-            toBlock: "latest",
-            address: USDT_BSC_CONTRACT,
-            topics: [transferTopic, null, toTopic],
-          }]);
+          const logs = await rpcCall(rpc, "eth_getLogs", [{ fromBlock: "0x" + Math.max(0, latest - span).toString(16), toBlock: "latest", address: USDT_BSC_CONTRACT, topics: [transferTopic, null, toTopic] }]);
           if (Array.isArray(logs)) {
-            return logs.some((l) => Number(BigInt(l.data)) / 1e18 >= want - 1e-4) ? "paid" : "none";
+            for (const l of logs) out.push({ txid: l.transactionHash, amount: Number(BigInt(l.data)) / 1e18, ts: Math.floor(now() / 1000), confirmed: true });
+            break;
           }
         } catch (_) { /* try the next RPC node */ }
       }
-      return "none";
-    }
-    if ((topup.crypto === "ETH" || topup.crypto === "USDT_ERC20") && env.ETHERSCAN_API_KEY) {
+    } else if (topup.crypto === "LTC") {
+      const r = await fetch(`https://api.blockcypher.com/v1/ltc/main/addrs/${addr}/full?limit=50`);
+      const d = await r.json().catch(() => ({}));
+      for (const tx of d.txs || []) {
+        const sat = (tx.outputs || []).filter((o) => (o.addresses || []).includes(addr)).reduce((a, o) => a + Number(o.value || 0), 0);
+        const ts = tx.received ? Math.floor(new Date(tx.received).getTime() / 1000) : Math.floor(now() / 1000);
+        if (sat > 0 && ts >= sinceSec - 3600) out.push({ txid: tx.hash, amount: sat / 1e8, ts, confirmed: Number(tx.confirmations || 0) >= 1 });
+      }
+    } else if ((topup.crypto === "ETH" || topup.crypto === "USDT_ERC20") && env.ETHERSCAN_API_KEY) {
       const isToken = topup.crypto === "USDT_ERC20";
       const action = isToken ? "tokentx" : "txlist";
       const contract = isToken ? `&contractaddress=0xdAC17F958D2ee523a2206206994597C13D831ec7` : "";
-      const r = await fetch(
-        `https://api.etherscan.io/api?module=account&action=${action}${contract}&address=${addr}&sort=desc&apikey=${env.ETHERSCAN_API_KEY}`
-      );
+      const r = await fetch(`https://api.etherscan.io/api?module=account&action=${action}${contract}&address=${addr}&sort=desc&apikey=<redacted>`);
       const d = await r.json().catch(() => ({}));
-      return (d.result || []).some((tx) =>
-        String(tx.to).toLowerCase() === addr.toLowerCase() &&
-        Number(tx.value) / (isToken ? 1e6 : 1e18) >= want - 1e-4 &&
-        Number(tx.timeStamp) >= sinceSec
-      ) ? "paid" : "none";
+      for (const tx of Array.isArray(d.result) ? d.result : []) {
+        if (String(tx.to).toLowerCase() === addr.toLowerCase() && Number(tx.timeStamp) >= sinceSec)
+          out.push({ txid: tx.hash, amount: Number(tx.value) / (isToken ? 1e6 : 1e18), ts: Number(tx.timeStamp), confirmed: true });
+      }
     }
-    if (topup.crypto === "LTC") {
-      const r = await fetch(`https://api.blockcypher.com/v1/ltc/main/addrs/${addr}/full?limit=50`);
-      const d = await r.json().catch(() => ({}));
-      const match = (d.txs || []).find((tx) =>
-        (tx.outputs || []).some((o) => (o.addresses || []).includes(addr) && o.value >= Math.round(want * 1e8) - 100) &&
-        (!tx.received || new Date(tx.received).getTime() / 1000 >= sinceSec - 3600)
-      );
-      if (!match) return "none";
-      return Number(match.confirmations || 0) >= 1 ? "paid" : "seen";
-    }
-  } catch (_) { /* network hiccup: stay pending, cron retries */ }
-  return "none";
+  } catch (_) { /* network hiccup: no candidates this round, cron retries */ }
+  return out;
 }
-const checkCryptoPaid = async (env, topup) => (await checkCryptoState(env, topup)) === "paid";
+
+// A transfer only counts for a topup when its amount sits in a tight band
+// around that topup's unique expected amount: at most 3% under (exchange
+// withdrawal fees) and at most 1% over. A bigger payment no longer sweeps up
+// every smaller open topup on the same wallet.
+const inAmountBand = (amount, want) =>
+  amount >= want - Math.max(want * 0.03, 0.0005) && amount <= want + Math.max(want * 0.01, 0.0005);
+
+// Decide whether any on-chain transfer pays THIS topup. When several open
+// topups compete for the same wallet + currency, each transfer belongs to the
+// topup whose expected amount is closest, and its txid is claimed exactly
+// once (txclaim:*), so one deposit can never settle two top-ups.
+async function matchCryptoPayment(env, topup) {
+  const want = Number(topup.expectedCrypto);
+  if (!want || !topup.walletAddress) return null;
+  const cands = await findCryptoCandidates(env, topup);
+  if (!cands.length) return null;
+  const rivals = (await kvList(env, "topup:")).filter((t) =>
+    t.status === "pending" && t.method === "crypto" && t.crypto === topup.crypto &&
+    t.walletAddress === topup.walletAddress && Number(t.expectedCrypto) > 0);
+  for (const cand of cands.sort((a, b) => b.ts - a.ts)) {
+    if (!cand.txid || !inAmountBand(cand.amount, want)) continue;
+    let best = null, bestDiff = Infinity;
+    for (const r of rivals) {
+      if (!inAmountBand(cand.amount, Number(r.expectedCrypto))) continue;
+      const diff = Math.abs(cand.amount - Number(r.expectedCrypto));
+      if (diff < bestDiff - 1e-12 || (best && Math.abs(diff - bestDiff) <= 1e-12 && r.createdAt < best.createdAt)) { best = r; bestDiff = diff; }
+    }
+    if (!best || best.id !== topup.id) continue; // belongs to a rival topup
+    const claimKey = `txclaim:${topup.crypto}:${cand.txid}`;
+    const claim = await kvGet(env, claimKey);
+    if (claim && claim.topupId !== topup.id) continue; // already consumed
+    await kvPut(env, claimKey, { topupId: topup.id, at: now() }, 30 * 24 * 3600);
+    return { kind: cand.confirmed ? "paid" : "seen", txid: cand.txid };
+  }
+  return null;
+}
 
 async function creditTopup(env, topup, note) {
-  const fresh = await kvGet(env, `topup:${topup.id}`);
-  if (!fresh || fresh.status !== "pending") return false;
-  fresh.status = "approved";
-  fresh.resolvedAt = now();
-  if (note) fresh.note = note;
-  await kvPut(env, `topup:${topup.id}`, fresh);
-  const user = await getUser(env, fresh.userId);
-  const credit = topupCredit(fresh);
-  user.balance = Math.round((Number(user.balance) + credit) * 100) / 100;
-  await saveUser(env, user);
-  const cfg = await getConfig(env);
-  const tmn = await usdtTomanRate(env);
-  await send(env, fresh.userId,
-    `✅ <b>موجودی شما افزایش یافت</b>\n\nمبلغ ${usdText(tmn, credit)} به حساب شما اضافه شد.\nموجودی فعلی: ${usdText(tmn, user.balance)}`,
-    mainMenuKb(env, cfg, fresh.userId));
-  return true;
+  // Serialized per topup: the status flip and the balance credit must not be
+  // interleaved by a second runner (cron + check button + admin approve).
+  const res = await withKvLock(env, `topup:${topup.id}`, async () => {
+    const fresh = await kvGet(env, `topup:${topup.id}`);
+    if (!fresh || fresh.status !== "pending") return false;
+    fresh.status = "approved";
+    fresh.resolvedAt = now();
+    if (note) fresh.note = note;
+    await kvPut(env, `topup:${topup.id}`, fresh);
+    const user = await getUser(env, fresh.userId);
+    const credit = topupCredit(fresh);
+    user.balance = Math.round((Number(user.balance) + credit) * 100) / 100;
+    await saveUser(env, user);
+    const cfg = await getConfig(env);
+    const tmn = await usdtTomanRate(env);
+    await send(env, fresh.userId,
+      `✅ <b>موجودی شما افزایش یافت</b>\n\nمبلغ ${usdText(tmn, credit)} به حساب شما اضافه شد.\nموجودی فعلی: ${usdText(tmn, user.balance)}`,
+      mainMenuKb(env, cfg, fresh.userId));
+    return true;
+  });
+  return !!res;
 }
 
 // ---------- bot UI (Persian) ----------
@@ -655,6 +716,24 @@ async function showConfirm(env, chatId, msgId, countryId, serviceId) {
 // with .kind: noService | noFx | insufficient | provider (provider errors
 // keep their .code from the provider).
 async function buyActivation(env, userId, countryId, serviceId, onProgress) {
+  const res = await withKvLock(env, `buy:${userId}`, async () => {
+    // Debounce: an identical purchase completed seconds ago is a double-tap
+    // or a client retry — return that activation instead of buying twice and
+    // charging twice.
+    const last = await kvGet(env, `lastbuy:${userId}`);
+    if (last && last.countryId === Number(countryId) && last.serviceId === Number(serviceId) && now() - last.at < 30000) {
+      const rec = await kvGet(env, `act:${last.actId}`);
+      const act = rec ? await smsfull(env, `/activations/${last.actId}`).catch(() => null) : null;
+      if (rec && act) return { act, price: rec.price, deduped: true };
+    }
+    const r = await buyActivationInner(env, userId, countryId, serviceId, onProgress);
+    await kvPut(env, `lastbuy:${userId}`, { countryId: Number(countryId), serviceId: Number(serviceId), actId: r.act.id, at: now() }, 120);
+    return r;
+  }, 60);
+  if (res === undefined) throw Object.assign(new Error("درخواست قبلی شما در حال پردازش است؛ چند ثانیه دیگر دوباره تلاش کنید"), { kind: "busy" });
+  return res;
+}
+async function buyActivationInner(env, userId, countryId, serviceId, onProgress) {
   const services = await smsfull(env, `/services?countryId=${countryId}`);
   const s = services.find((x) => x.id === Number(serviceId));
   if (!s) throw Object.assign(new Error("سرویس موجود نیست"), { kind: "noService" });
@@ -691,6 +770,10 @@ async function doBuy(env, chatId, msgId, countryId, serviceId, cbId) {
   try {
     r = await buyActivation(env, chatId, countryId, serviceId, () => answerCb(env, cbId, "در حال خرید شماره…"));
   } catch (e) {
+    if (e.kind === "busy") {
+      await answerCb(env, cbId, e.message, true);
+      return;
+    }
     if (e.kind === "insufficient") {
       const tmn = await usdtTomanRate(env);
       const user = await getUser(env, chatId);
@@ -788,14 +871,22 @@ async function syncActivation(env, id) {
   const act = await smsfull(env, `/activations/${id}`);
   const rec = await kvGet(env, `act:${id}`);
   if (rec && rec.status !== act.status) { rec.status = act.status; await kvPut(env, `act:${id}`, rec); }
-  // Refund the user if the activation ended with no SMS and we had charged them.
+  // Refund the user if the activation ended with no SMS and we had charged
+  // them. Flag-first under a per-activation lock: syncActivation runs from
+  // the bot button, the web app's 4s polling and the group hook at once, and
+  // a naive read-check-write refunded twice.
   if (rec && rec.charged && ["cancelled", "expired"].includes(act.status)) {
-    const user = await getUser(env, rec.userId);
-    user.balance = Math.round((Number(user.balance) + Number(rec.price)) * 100) / 100;
-    rec.charged = false;
-    await saveUser(env, user);
-    await kvPut(env, `act:${id}`, rec);
-    await send(env, rec.userId, `↩️ مبلغ ${usdText(await usdtTomanRate(env), rec.price)} بابت سفارش بدون پیامک به موجودی شما برگشت.`);
+    await withKvLock(env, `act:${id}`, async () => {
+      const fresh = await kvGet(env, `act:${id}`);
+      if (!fresh || !fresh.charged) return;
+      fresh.charged = false;
+      fresh.status = act.status;
+      await kvPut(env, `act:${id}`, fresh);
+      const user = await getUser(env, fresh.userId);
+      user.balance = Math.round((Number(user.balance) + Number(fresh.price)) * 100) / 100;
+      await saveUser(env, user);
+      await send(env, fresh.userId, `↩️ مبلغ ${usdText(await usdtTomanRate(env), fresh.price)} بابت سفارش بدون پیامک به موجودی شما برگشت.`);
+    });
   }
   // Announce in the purchases group the first time a code is delivered.
   if (rec && act.latestCode) await postPurchaseToGroup(env, rec);
@@ -851,6 +942,9 @@ const topupExpiresAt = (t) =>
 const topupIsExpired = (t) => t.status === "pending" && now() > topupExpiresAt(t);
 
 async function expireTopup(env, t) {
+  await withKvLock(env, `topup:${t.id}`, () => expireTopupInner(env, t));
+}
+async function expireTopupInner(env, t) {
   const fresh = await kvGet(env, `topup:${t.id}`);
   if (!fresh || fresh.status !== "pending") return;
   fresh.status = "expired"; fresh.resolvedAt = now();
@@ -936,6 +1030,7 @@ async function tgUploadPhoto(env, chatId, blob, filename, caption, replyMarkup) 
 // message that the receipt is awaiting admin approval.
 async function handlePayReceipt(env, request) {
   const json = (body, status = 200) => Response.json(body, { status });
+  if (!(await throttle(env, `rcpt:${clientIp(request)}`, 10, 3600))) return json({ ok: false, error: "تلاش بیش از حد؛ بعداً دوباره تلاش کنید" }, 429);
   const t = new URL(request.url).searchParams.get("t");
   let topup = t ? await kvGet(env, `topup:${t}`) : null;
   if (!topup) return json({ ok: false, error: "پرداخت پیدا نشد" }, 404);
@@ -945,6 +1040,7 @@ async function handlePayReceipt(env, request) {
   const cfgR = await getConfig(env);
   const userR = await getUser(env, topup.userId);
   if (cfgR.PHONE_VERIFY_ENABLED === "1" && !userR.phone) return json({ ok: false, error: "برای پرداخت کارتی، ابتدا باید شماره موبایلتان را داخل ربات احراز کنید" });
+  if ((topup.receiptCount || 0) >= 3) return json({ ok: false, error: "حداکثر ۳ رسید برای هر پرداخت قابل ارسال است؛ برای ادامه با پشتیبانی در تماس باشید" });
   let form;
   try { form = await request.formData(); } catch (_) { return json({ ok: false, error: "فرم نامعتبر است" }, 400); }
   const file = form.get("receipt");
@@ -977,6 +1073,12 @@ async function handlePayReceipt(env, request) {
 async function applyPayMethod(env, topup, method) {
   const cfg = await getConfig(env);
   const user = await getUser(env, topup.userId);
+  // Once money is visibly in flight, the method is final: switching after a
+  // transfer was seen on-chain would strand that payment (it would never be
+  // checked again), and switching away after a receipt was uploaded would
+  // orphan the admin's review.
+  if (topup.seenAt) throw new Error("تراکنش این پرداخت در شبکه دیده شده و روش پرداخت دیگر قابل تغییر نیست؛ برای پیگیری با پشتیبانی در تماس باشید");
+  if (topup.receiptFileId && method !== "CARD") throw new Error("برای این پرداخت رسید ارسال شده و روش پرداخت قابل تغییر نیست");
   const clearReceiptState = async () => {
     if (user.state === "await_card_receipt" && user.stateData === topup.id) {
       user.state = null; user.stateData = null; await saveUser(env, user);
@@ -1210,8 +1312,25 @@ async function isChannelMember(env, cfg, userId) {
   if (!ch) return true;
   try {
     const r = await tg(env, "getChatMember", { chat_id: ch, user_id: Number(userId) });
-    return ["creator", "administrator", "member", "restricted"].includes(r?.result?.status);
-  } catch (_) { return true; } // fail open: a misconfigured channel must not lock everyone out
+    // tg() never throws: an API-level failure (bot not in the channel, not an
+    // admin, channel deleted) arrives as { ok:false } with no result — treat
+    // it as a broken check, not as "not a member".
+    if (!r || r.ok === false || !r.result) throw new Error(r?.description || "getChatMember failed");
+    return ["creator", "administrator", "member", "restricted"].includes(r.result.status);
+  } catch (e) {
+    // Fail open (a misconfigured channel must not lock everyone out) — but
+    // never silently: the admin is told the gate is currently not enforcing,
+    // throttled to one alert per 6 hours.
+    try {
+      const last = await kvGet(env, "sys:joinAlert");
+      if (!last || now() - last.at > 6 * 3600 * 1000) {
+        await kvPut(env, "sys:joinAlert", { at: now() }, 7 * 24 * 3600);
+        await send(env, env.ADMIN_CHAT_ID,
+          `⚠️ <b>بررسی عضویت اجباری کانال ممکن نیست</b>\n\nخطا: ${esc(e.message || String(e))}\n\nاحتمالاً ربات در کانال ${esc(ch)} ادمین نیست یا از آن حذف شده است. تا وقتی مشکل رفع شود، دروازه عضویت موقتاً باز است و همه می‌توانند وارد شوند.`);
+      }
+    } catch (_) {}
+    return true;
+  }
 }
 // True when this user is currently BLOCKED by the forced-join rule.
 async function forceJoinGate(env, cfg, userId) {
@@ -1246,6 +1365,11 @@ async function handleMessage(env, msg, baseUrl) {
   const chatId = msg.chat.id;
   const user = await getUser(env, chatId);
   const text = enDigits((msg.text || "").trim());
+
+  // Groups are not served: the only group commands are the admin's
+  // /setgroup and /unsetgroup (handled below). Every shop flow — balances,
+  // purchases, receipts, phone verification — is private-chat only.
+  if (msg.chat?.type !== "private" && !/^\/(setgroup|unsetgroup)(\s|$)/.test(text)) return;
 
   // Forced channel membership: private chats only; contact shares pass
   // through (they are part of phone verification, an independent flow).
@@ -1325,6 +1449,10 @@ async function handleMessage(env, msg, baseUrl) {
     if (!topup) { user.state = null; await saveUser(env, user); return send(env, chatId, "درخواست شارژ پیدا نشد. دوباره تلاش کنید.", backKb); }
     const cfgV = await getConfig(env);
     if (cfgV.PHONE_VERIFY_ENABLED === "1" && !user.phone) return promptPhoneVerify(env, chatId, user, topup.id);
+    if ((topup.receiptCount || 0) >= 3) {
+      user.state = null; user.stateData = null; await saveUser(env, user);
+      return send(env, chatId, "🧾 برای این پرداخت قبلاً ۳ رسید ارسال شده و سقف ارسال رسید پر است. برای ادامه، با پشتیبانی در تماس باشید.", mainMenuKb(env, cfgV, chatId));
+    }
     topup.receiptFileId = msg.photo ? msg.photo[msg.photo.length - 1].file_id : msg.document.file_id;
     topup.receiptVia = "bot";
     topup.receiptCount = (topup.receiptCount || 0) + 1;
@@ -1394,6 +1522,7 @@ async function handleCallback(env, cq, baseUrl) {
   const data = cq.data || "";
   const [head, a, b] = data.split(":");
   try {
+    if (cq.message?.chat?.type !== "private") { await answerCb(env, cq.id); return; }
     if (data === "joinchk") {
       const cfgJ = await getConfig(env);
       if (!(await forceJoinGate(env, cfgJ, chatId))) {
@@ -1502,14 +1631,18 @@ async function handleCallback(env, cq, baseUrl) {
         kb([[btn("⬅️ بازگشت", "link_new")]]));
     }
     if (head === "ses_cancel") {
-      const topup = await kvGet(env, `topup:${a}`);
-      if (topup && topup.userId === String(chatId) && topup.status === "pending") {
+      const done = await withKvLock(env, `topup:${a}`, async () => {
+        const topup = await kvGet(env, `topup:${a}`);
+        if (!topup || topup.userId !== String(chatId) || topup.status !== "pending") return false;
         topup.status = "cancelled"; topup.resolvedAt = now();
         await kvPut(env, `topup:${topup.id}`, topup, 7 * 24 * 3600);
         const user = await getUser(env, chatId);
         if (user.state === "await_card_receipt" && user.stateData === topup.id) {
           user.state = null; user.stateData = null; await saveUser(env, user);
         }
+        return true;
+      });
+      if (done) {
         await answerCb(env, cq.id, "پرداخت لغو شد");
         return showTopup(env, chatId, msgId, baseUrl);
       }
@@ -1520,7 +1653,8 @@ async function handleCallback(env, cq, baseUrl) {
       const topup = await kvGet(env, `topup:${a}`);
       if (!topup || topup.status !== "pending") { await answerCb(env, cq.id, "این پرداخت قبلاً تعیین‌تکلیف شده است"); return; }
       if (topup.method !== "crypto") { await answerCb(env, cq.id, "اول از صفحه پرداخت، روش پرداخت را انتخاب کنید", true); return; }
-      const fresh = await settleTopupLazy(env, topup);
+      if (!(await throttle(env, `chk:${chatId}`, 6, 60))) { await answerCb(env, cq.id, "⏳ کمی صبر کنید و دوباره بزنید", true); return; }
+      const fresh = await settleTopupLazy(env, topup, true);
       if (fresh.status === "approved") { await answerCb(env, cq.id, "پرداخت تأیید و حساب شارژ شد ✅"); return showHome(env, chatId, msgId); }
       if (fresh.status === "expired") { await answerCb(env, cq.id, "⏰ مهلت این پرداخت تمام شده است", true); return; }
       if (fresh.seenAt) { await answerCb(env, cq.id, "👀 تراکنش دیده شد و در انتظار تأیید شبکه است؛ به محض تأیید، خودکار شارژ می‌شود.", true); return; }
@@ -1590,23 +1724,40 @@ async function handleCallback(env, cq, baseUrl) {
 // white text, hairline dividers, Vazirmatn, countdown ring + auto polling.
 const COIN_TICKER = { USDT_TRC20: "USDT", USDT_BEP20: "USDT", USDT_ERC20: "USDT", TRX: "TRX", BTC: "BTC", TON: "TON", LTC: "LTC", ETH: "ETH" };
 
-async function settleTopupLazy(env, topup) {
+async function settleTopupLazy(env, topup, force = false) {
   if (!topup || topup.status !== "pending") return topup;
   if (topup.method === "crypto") {
-    const st = await checkCryptoState(env, topup);
-    if (st === "paid") {
-      await creditTopup(env, topup, "auto-chain");
-      return (await kvGet(env, `topup:${topup.id}`)) || topup;
-    }
-    if (st === "seen" && !topup.seenAt) {
-      // Transaction is on-chain but unconfirmed: keep the payment alive past
-      // the 30-minute deadline (topupExpiresAt now counts from seenAt).
-      topup.seenAt = now();
-      await kvPut(env, `topup:${topup.id}`, topup, 7 * 24 * 3600);
-      const cfg = await getConfig(env);
-      await send(env, topup.userId,
-        `👀 <b>تراکنش شما دیده شد</b>\n\nپرداخت $${faNum(topupCredit(topup))} در شبکه پیدا شد و در انتظار تأیید (کانفرم) است. به محض تأیید، موجودی‌تان به‌صورت خودکار شارژ می‌شود و مهلت پرداخت‌تان تا آن زمان تمدید شد.`,
-        mainMenuKb(env, cfg, topup.userId));
+    // Public chain APIs are rate-limited: re-check at most every 20s per
+    // topup unless a human explicitly pressed the check button (force).
+    const freshEnough = topup.lastChainCheck && now() - topup.lastChainCheck < 20000;
+    if (force || !freshEnough) {
+      const m = await matchCryptoPayment(env, topup);
+      const cur = (await kvGet(env, `topup:${topup.id}`)) || topup;
+      if (cur.status === "pending") {
+        cur.lastChainCheck = now();
+        if (m && m.kind === "paid") {
+          cur.paidTxid = m.txid;
+          await kvPut(env, `topup:${cur.id}`, cur, 7 * 24 * 3600);
+          await creditTopup(env, cur, "auto-chain");
+          return (await kvGet(env, `topup:${topup.id}`)) || cur;
+        }
+        if (m && m.kind === "seen" && !cur.seenAt) {
+          // Transaction is on-chain but unconfirmed: keep the payment alive
+          // past the 30-minute deadline (topupExpiresAt counts from seenAt).
+          cur.seenAt = now();
+          cur.seenTxid = m.txid;
+          await kvPut(env, `topup:${cur.id}`, cur, 7 * 24 * 3600);
+          const cfg = await getConfig(env);
+          await send(env, cur.userId,
+            `👀 <b>تراکنش شما دیده شد</b>\n\nپرداخت $${faNum(topupCredit(cur))} در شبکه پیدا شد و در انتظار تأیید (کانفرم) است. به محض تأیید، موجودی‌تان به‌صورت خودکار شارژ می‌شود و مهلت پرداخت‌تان تا آن زمان تمدید شد.`,
+            mainMenuKb(env, cfg, cur.userId));
+          return cur;
+        }
+        await kvPut(env, `topup:${cur.id}`, cur, 7 * 24 * 3600); // persist lastChainCheck
+        topup = cur;
+      } else {
+        topup = cur;
+      }
     }
   }
   if (topupIsExpired(topup)) {
@@ -1615,9 +1766,10 @@ async function settleTopupLazy(env, topup) {
   }
   return topup;
 }
-
 async function handlePaySelect(env, request) {
   const body = await request.json().catch(() => ({}));
+  if (!(await throttle(env, `sel:${clientIp(request)}`, 60, 3600)) || (body.t && !(await throttle(env, `sel:t:${body.t}`, 30, 3600))))
+    return Response.json({ ok: false, error: "تلاش بیش از حد؛ بعداً دوباره تلاش کنید" }, { status: 429 });
   const topup = body.t ? await kvGet(env, `topup:${body.t}`) : null;
   if (!topup || topup.status !== "pending") {
     return Response.json({ ok: false, error: "این پرداخت فعال نیست" }, { status: 400 });
@@ -1861,7 +2013,7 @@ async function hmacSha256Hex(keyBytes, data) {
 // HMAC-SHA256 over the sorted "key=value" lines of the payload.
 async function verifyTelegramAuth(env, data) {
   if (!env.TELEGRAM_BOT_TOKEN || !data || !data.hash || !data.id) return false;
-  if (Math.abs(Math.floor(Date.now() / 1000) - Number(data.auth_date || 0)) > 86400) return false;
+  if (Math.abs(Math.floor(Date.now() / 1000) - Number(data.auth_date || 0)) > 3600) return false; // 1h replay window
   const secret = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.TELEGRAM_BOT_TOKEN));
   const check = Object.keys(data).filter((k) => k !== "hash").sort().map((k) => `${k}=${data[k]}`).join("\n");
   const sig = await hmacSha256Hex(secret, check);
@@ -1873,7 +2025,7 @@ async function verifyTelegramAuth(env, data) {
   return diff === 0;
 }
 async function kvDel(env, key) { if (env.STORE) await env.STORE.delete(key); }
-const SESSION_TTL = 30 * 24 * 3600;
+const SESSION_TTL = 7 * 24 * 3600; // 7 days
 async function createSession(env, profile) {
   const token = bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
   await kvPut(env, `sess:${token}`, {
@@ -1921,6 +2073,7 @@ async function handleApi(env, request, url) {
   const path = url.pathname;
   try {
     if (path === "/api/auth/telegram" && request.method === "POST") {
+      if (!(await throttle(env, `auth:${clientIp(request)}`, 10, 60))) return jsonResp({ error: "تلاش بیش از حد؛ یک دقیقه دیگر دوباره تلاش کنید" }, 429);
       const data = await request.json().catch(() => null);
       if (!(await verifyTelegramAuth(env, data))) return jsonResp({ error: "ورود ناموفق بود؛ دوباره تلاش کنید" }, 401);
       await getUser(env, data.id); // ensure the shared bot/web account exists
@@ -1954,6 +2107,7 @@ async function handleApi(env, request, url) {
     if (path === "/api/buy" && request.method === "POST") {
       const cfgJ = await getConfig(env);
       if (await forceJoinGate(env, cfgJ, userId)) return jsonResp({ error: "🔒 برای خرید، ابتدا در کانال ما عضو شوید و سپس در ربات دکمه «بررسی عضویت» را بزنید.", joinUrl: joinChannelLink(cfgJ) }, 403);
+      if (!(await throttle(env, `buy:${userId}`, 10, 60))) return jsonResp({ error: "تعداد درخواست خرید بیش از حد است؛ کمی صبر کنید" }, 429);
       const body = await request.json().catch(() => ({}));
       try {
         const r = await buyActivation(env, userId, body.countryId, body.serviceId);
@@ -2598,9 +2752,13 @@ export default {
     // in the background — no manual setWebhook call is needed after deploy.
     if (url.pathname !== "/webhook") ctx.waitUntil(rememberOriginAndWebhook(env, url.origin));
     if (url.pathname === "/setup") {
+      const full = diagKeyOk(env, url);
+      const lastSetup = await kvGet(env, "sys:setupAt");
+      if (!full && lastSetup && now() - lastSetup.at < 30000) return Response.json({ ok: true, kv: !!env.STORE, throttled: true });
+      await kvPut(env, "sys:setupAt", { at: now() }, 120);
       const cfgSetup = await getConfig(env);
       const webhook = await ensureWebhook(env, cfgSetup.WORKER_BASE_URL || url.origin, true);
-      return Response.json({ ok: webhook.ok, kv: !!env.STORE, webhook });
+      return Response.json(full ? { ok: webhook.ok, kv: !!env.STORE, webhook } : { ok: webhook.ok, kv: !!env.STORE });
     }
     if (url.pathname === "/" ) return Response.redirect(`${url.origin}/app`, 302);
     if (url.pathname === "/pay/select" && request.method === "POST") {
@@ -2634,23 +2792,31 @@ export default {
       return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
     }
     if (url.pathname === "/health") {
-      const wallex = await probeWallex();
-      const usdtToman = await usdtTomanRate(env);
-      const tmnDiag = await kvGet(env, "diag:tmn");
-      // Telegram delivery state: if the bot goes silent, this shows where
-      // updates are being sent and Telegram's last delivery error.
-      let webhook = null;
-      try {
-        const wi = await tg(env, "getWebhookInfo", {});
-        const r = wi?.result || {};
-        webhook = {
-          url: r.url || "",
-          pendingUpdates: r.pending_update_count ?? null,
-          lastError: r.last_error_message || null,
-          lastErrorAt: r.last_error_date ? new Date(r.last_error_date * 1000).toISOString() : null,
-        };
-      } catch (_) {}
-      return Response.json({ ok: true, kv: !!env.STORE, version: BOT_VERSION, usdtTomanRate: usdtToman, wallex, tmnDiag, webhook });
+      if (!diagKeyOk(env, url)) return Response.json({ ok: true, version: BOT_VERSION });
+      // Full probes are cached for 60s: this endpoint is public, and each
+      // probe used to fan out to several external APIs on every single hit.
+      let diag = await kvGet(env, "diag:health");
+      if (!diag || now() - diag.at > 60000) {
+        const wallex = await probeWallex();
+        const usdtToman = await usdtTomanRate(env);
+        const tmnDiag = await kvGet(env, "diag:tmn");
+        // Telegram delivery state: if the bot goes silent, this shows where
+        // updates are being sent and Telegram's last delivery error.
+        let webhook = null;
+        try {
+          const wi = await tg(env, "getWebhookInfo", {});
+          const r = wi?.result || {};
+          webhook = {
+            url: r.url || "",
+            pendingUpdates: r.pending_update_count ?? null,
+            lastError: r.last_error_message || null,
+            lastErrorAt: r.last_error_date ? new Date(r.last_error_date * 1000).toISOString() : null,
+          };
+        } catch (_) {}
+        diag = { at: now(), usdtTomanRate: usdtToman, wallex, tmnDiag, webhook };
+        await kvPut(env, "diag:health", diag, 300);
+      }
+      return Response.json({ ok: true, kv: !!env.STORE, version: BOT_VERSION, usdtTomanRate: diag.usdtTomanRate, wallex: diag.wallex, tmnDiag: diag.tmnDiag, webhook: diag.webhook });
     }
     if (url.pathname === "/webhook" && request.method === "POST") {
       if (env.WEBHOOK_SECRET) {
