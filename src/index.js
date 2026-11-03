@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "1.7.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "1.8.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -1366,7 +1366,7 @@ async function handleCallback(env, cq, baseUrl) {
 // ---------- wallet / payment web page (Persian) ----------
 // v1.3.0: the bot only creates a dollar payment session (30-minute deadline);
 // the method is chosen here on the page, and only the chosen method's wallet
-// and exact amount are shown. Design: professional minimal — pure black,
+// and exact amount are shown. Design v2 (v1.8.0): professional minimal — pure black,
 // white text, hairline dividers, Vazirmatn, countdown ring + auto polling.
 const COIN_TICKER = { USDT_TRC20: "USDT", USDT_BEP20: "USDT", USDT_ERC20: "USDT", TRX: "TRX", BTC: "BTC", TON: "TON", LTC: "LTC", ETH: "ETH" };
 
@@ -1425,6 +1425,7 @@ function payShell(body, script = "") {
 *{box-sizing:border-box;margin:0;padding:0}
 html{background:#000}
 body{background:#000;color:#fff;font-family:Vazirmatn,Tahoma,Arial,sans-serif;-webkit-font-smoothing:antialiased;line-height:1.9}
+body:before{content:"";position:fixed;inset:0;background:radial-gradient(640px 300px at 50% -80px,rgba(255,255,255,.07),transparent 65%);pointer-events:none}
 main{max-width:560px;margin:0 auto;padding:44px 22px 60px;animation:up .45s ease both}
 @keyframes up{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 .brand{display:flex;align-items:center;gap:12px;margin-bottom:26px}
@@ -1438,42 +1439,48 @@ main{max-width:560px;margin:0 auto;padding:44px 22px 60px;animation:up .45s ease
 .step.on{color:#fff}
 .step.on .dot{background:#fff;color:#000;border-color:#fff}
 .step.done{color:#a3a3a3}
-.step.done .dot{border-color:#525252;color:#fff}
+.step.done .dot{background:#fff;border-color:#fff;color:#000}
 .steps .line{flex:1;height:1px;background:#1e1e1e;min-width:14px}
 h1{font-size:24px;font-weight:800;letter-spacing:-.01em}
 .sub{color:#a3a3a3;font-size:13.5px;margin:6px 0 22px}
-.summary{display:flex;align-items:center;gap:14px;background:#0a0a0a;border:1px solid #232323;border-radius:16px;padding:14px 18px;margin-bottom:8px}
+.summary{display:flex;align-items:center;gap:14px;background:#0a0a0a;border:1px solid #232323;border-radius:20px;padding:16px 20px;margin-bottom:8px}
 .summary .k{font-size:11.5px;color:#8a8a8a}
-.summary .v{font-size:19px;font-weight:800;direction:ltr;font-variant-numeric:tabular-nums}
+.summary .v{font-size:32px;font-weight:800;direction:ltr;font-variant-numeric:tabular-nums;line-height:1.25}
 .summary .vt{font-size:12px;color:#a3a3a3}
 .timer{margin-inline-start:auto;text-align:center}
 .timer .cd{font-size:19px;font-weight:800;direction:ltr;font-variant-numeric:tabular-nums;line-height:1.3}
 .timer .k{font-size:10.5px;color:#8a8a8a}
 .timebar{height:3px;background:#1a1a1a;border-radius:99px;overflow:hidden;margin:10px 0 20px}
 .timebar i{display:block;height:100%;background:#fff;border-radius:99px;transition:width .3s linear}
-.method{display:flex;align-items:center;gap:14px;width:100%;text-align:start;background:transparent;border:0;border-top:1px solid #1c1c1c;padding:17px 2px;cursor:pointer;color:#fff;font-family:inherit;transition:background .15s}
+.timer.low .cd,.timer.low .k{color:#ff9f43}
+.timebar.low i{background:#ff9f43}
+.method{display:flex;align-items:center;gap:14px;width:100%;text-align:start;background:transparent;border:0;border-top:1px solid #1c1c1c;padding:17px 4px;cursor:pointer;color:#fff;font-family:inherit;transition:background .15s,transform .1s;border-radius:6px}
+.method:active{transform:scale(.99)}
 .method:hover{background:#0d0d0d}
-.method .tick{width:46px;height:46px;flex:none;border:1px solid #2c2c2c;border-radius:13px;display:grid;place-items:center;font-size:10.5px;font-weight:800;letter-spacing:.04em}
+.method .tick{width:46px;height:46px;flex:none;border:1px solid #2c2c2c;border-radius:13px;display:grid;place-items:center;font-size:10.5px;font-weight:800;letter-spacing:.04em;background:#0a0a0a}
 .method .nm{font-size:15px;font-weight:700;line-height:1.6}
 .method .ap{font-size:12px;color:#8a8a8a;direction:ltr;text-align:left;font-variant-numeric:tabular-nums}
 .method .ch{margin-inline-start:auto;color:#5c5c5c;font-size:19px;flex:none}
 .method .inf{flex:1}
-.paywrap{display:flex;gap:18px;align-items:center;background:#0a0a0a;border:1px solid #232323;border-radius:18px;padding:18px;margin:4px 0 14px}
+.paywrap{display:flex;gap:18px;align-items:center;background:#0a0a0a;border:1px solid #232323;border-radius:20px;padding:18px;margin:4px 0 14px}
 .ring{position:relative;width:66px;height:66px;flex:none}
 .ring svg{transform:rotate(-90deg)}
 .ring .rc{position:absolute;inset:0;display:grid;place-items:center;font-size:13.5px;font-weight:800;direction:ltr;font-variant-numeric:tabular-nums}
 .paywrap .st{font-size:12px;color:#a3a3a3}
 .paywrap .st b{color:#fff;font-size:14px}
 .pulse{display:inline-block;width:7px;height:7px;border-radius:50%;background:#fff;margin-inline-end:6px;animation:pl 1.6s infinite}
+.pill{display:inline-flex;align-items:center;gap:8px;border:1px solid #3a2a12;background:rgba(255,159,67,.08);color:#ff9f43;border-radius:999px;padding:5px 14px;font-size:12.5px;font-weight:700}
+.pill .dot{width:7px;height:7px;border-radius:50%;background:#ff9f43;animation:pl 1.6s infinite}
 @keyframes pl{0%,100%{opacity:1}50%{opacity:.25}}
-.amtbox{border:1px solid #fff;border-radius:18px;padding:20px;margin-bottom:14px}
+.amtbox{border:1px solid #fff;border-radius:20px;padding:20px;margin-bottom:14px}
 .amtbox .k{font-size:12px;color:#a3a3a3;margin-bottom:4px}
 .amtbox .amt{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.amtbox .amt span{font-size:29px;font-weight:800;direction:ltr;font-variant-numeric:tabular-nums;letter-spacing:.01em}
+.amtbox .amt span{font-size:30px;font-weight:800;direction:ltr;font-variant-numeric:tabular-nums;letter-spacing:.01em}
 .addr-box{display:flex;align-items:center;gap:10px;background:#0a0a0a;border:1px solid #262626;border-radius:13px;padding:11px 13px;margin-bottom:6px}
 .addr{flex:1;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;word-break:break-all;direction:ltr;text-align:left;color:#e5e5e5}
 .copy{flex:none;background:transparent;color:#fff;border:1px solid #3f3f3f;border-radius:999px;padding:5px 14px;font-family:inherit;font-size:12.5px;cursor:pointer;transition:all .15s}
 .copy:hover{background:#fff;color:#000;border-color:#fff}
+.copy.done{background:#fff;color:#000;border-color:#fff}
 .qrwrap{display:flex;justify-content:center;padding:10px 0 2px}
 .qr{background:#fff;border-radius:14px;padding:7px}
 .notes{margin:14px 0 20px}
@@ -1482,22 +1489,29 @@ h1{font-size:24px;font-weight:800;letter-spacing:-.01em}
 .btnrow{display:flex;gap:10px;flex-wrap:wrap}
 .btn{flex:1;min-width:150px;background:#fff;color:#000;border:1px solid #fff;border-radius:13px;padding:12px 18px;font-family:inherit;font-size:14.5px;font-weight:800;cursor:pointer;transition:all .15s}
 .btn:hover{background:#e5e5e5}
+.btn:active{transform:scale(.985)}
 .btn:disabled{opacity:.55;cursor:wait}
 .btn.ghost{background:transparent;color:#fff;border-color:#3a3a3a;font-weight:600}
 .btn.ghost:hover{border-color:#fff;background:transparent}
 .state{text-align:center;padding:28px 0 6px}
-.state .circ{width:74px;height:74px;margin:0 auto 18px;border:1.5px solid #fff;border-radius:50%;display:grid;place-items:center;font-size:31px}
+.state .circ{width:76px;height:76px;margin:0 auto 18px;border:1.5px solid #fff;border-radius:50%;display:grid;place-items:center;font-size:32px;animation:pop .4s cubic-bezier(.2,.9,.3,1.4) both}
+@keyframes pop{from{transform:scale(.6);opacity:0}to{transform:scale(1);opacity:1}}
+.state .circ.fill{background:#fff;color:#000;border-color:#fff}
+.state .circ.red{border-color:#ff453a;color:#ff453a}
+.state .circ.orange{border-color:#ff9f43;color:#ff9f43}
+.state h1.red{color:#ff453a}
+.state h1.orange{color:#ff9f43}
 .state h1{margin-bottom:6px}
 .state p{color:#a3a3a3;font-size:14px;max-width:40ch;margin:0 auto}
 .state .big{font-size:21px;font-weight:800;color:#fff;direction:ltr;margin-top:12px}
-.bankcard{position:relative;overflow:hidden;aspect-ratio:1.586;max-width:430px;margin:0 auto 16px;border-radius:20px;padding:20px 22px;color:#fff;background:linear-gradient(130deg,#0b1e4b 0%,#0e4d7a 48%,#0a7a6e 100%);box-shadow:0 18px 40px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.25);display:flex;flex-direction:column;justify-content:space-between;text-align:start}
-.bankcard:before{content:"";position:absolute;inset:0;background:radial-gradient(420px 200px at 85% -10%,rgba(255,255,255,.22),transparent 60%),radial-gradient(300px 300px at -10% 110%,rgba(255,255,255,.10),transparent 60%);pointer-events:none}
+.bankcard{position:relative;overflow:hidden;aspect-ratio:1.586;max-width:430px;margin:0 auto 16px;border-radius:20px;padding:20px 22px;color:#fff;background:linear-gradient(145deg,#1b1b1b 0%,#050505 52%,#121212 100%);border:1px solid #2b2b2b;box-shadow:0 22px 44px rgba(0,0,0,.65),inset 0 1px 0 rgba(255,255,255,.09);display:flex;flex-direction:column;justify-content:space-between;text-align:start}
+.bankcard:before{content:"";position:absolute;inset:0;background:linear-gradient(115deg,transparent 30%,rgba(255,255,255,.055) 45%,transparent 60%);pointer-events:none}
 .bankcard>*{position:relative}
 .bc-top{display:flex;justify-content:space-between;align-items:center;font-weight:800;font-size:15px}
-.bc-type{font-size:11px;font-weight:600;opacity:.75}
+.bc-type{font-size:11px;font-weight:600;color:#a3a3a3}
 .bc-mid{display:flex;justify-content:space-between;align-items:center}
-.bc-chip{width:46px;height:34px;flex:none;border-radius:7px;background:linear-gradient(145deg,#f6d789,#c9a227 55%,#e9cd7a);box-shadow:inset 0 0 0 1px rgba(90,64,0,.35);position:relative}
-.bc-chip:before,.bc-chip:after{content:"";position:absolute;left:0;right:0;height:1px;background:rgba(90,64,0,.4)}
+.bc-chip{width:46px;height:34px;flex:none;border-radius:7px;background:linear-gradient(145deg,#e8e8e8,#9a9a9a 55%,#cfcfcf);box-shadow:inset 0 0 0 1px rgba(0,0,0,.35);position:relative}
+.bc-chip:before,.bc-chip:after{content:"";position:absolute;left:0;right:0;height:1px;background:rgba(0,0,0,.35)}
 .bc-chip:before{top:11px}
 .bc-chip:after{top:22px}
 .bc-num{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:clamp(16px,5.2vw,22px);letter-spacing:.13em;text-align:left;font-weight:700;text-shadow:0 1px 2px rgba(0,0,0,.35);white-space:nowrap}
@@ -1505,8 +1519,9 @@ h1{font-size:24px;font-weight:800;letter-spacing:-.01em}
 .bc-k{font-size:10px;opacity:.7;margin-bottom:2px}
 .bc-holder{font-size:14.5px;font-weight:700}
 .bc-copy{border-color:rgba(255,255,255,.55);color:#fff}
-.bc-copy:hover{background:#fff;color:#0b1e4b;border-color:#fff}
-.upload{border:1.5px dashed #3a3a3a;border-radius:16px;padding:18px;text-align:center;margin:16px 0 6px}
+.bc-copy:hover{background:#fff;color:#000;border-color:#fff}
+.upload{border:1.5px dashed #3a3a3a;border-radius:18px;padding:20px;text-align:center;margin:16px 0 6px;transition:border-color .15s}
+.upload:hover{border-color:#8a8a8a}
 .upload .uic{font-size:26px}
 .upload p{color:#a3a3a3;font-size:13px;margin:6px 0 4px;line-height:1.9}
 .upload p b{color:#fff}
@@ -1526,7 +1541,7 @@ ${body}
 <div id="toast"></div>
 <script>
 function toast(msg){var t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show')},2200)}
-function copyText(text){var done=function(){toast('کپی شد')};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done).catch(done)}else{var ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();try{document.execCommand('copy')}catch(e){}ta.remove();done()}}
+function copyText(text,btn){var done=function(){toast('کپی شد');if(btn&&!btn._cp){btn._cp=1;var o=btn.textContent;btn.textContent='✓ کپی شد';btn.classList.add('done');setTimeout(function(){btn.textContent=o;btn.classList.remove('done');btn._cp=0},1500)}};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done).catch(done)}else{var ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();try{document.execCommand('copy')}catch(e){}ta.remove();done()}}
 ${script}
 </script>
 </body></html>`;
@@ -1547,7 +1562,7 @@ function payScript(topup, poll) {
   return `
 var TID='${esc(topup.id)}', EXP=${expiresAt}, SPAN=${PAY_TTL_MS}, HAS_RECEIPT=${topup.receiptFileId ? "true" : "false"};
 function pad(n){return (n<10?'0':'')+n}
-function tick(){var ms=EXP-Date.now();var s=Math.max(0,Math.floor(ms/1000));var txt=pad(Math.floor(s/60))+':'+pad(s%60);document.querySelectorAll('.cd').forEach(function(e){e.textContent=txt});var bar=document.getElementById('timebar');if(bar)bar.style.width=Math.max(0,ms/SPAN*100)+'%';var ring=document.getElementById('ringfg');if(ring){var C=163.36;ring.style.strokeDashoffset=C*(1-Math.max(0,ms)/SPAN)}if(ms<=0&&!window._exp){window._exp=1;setTimeout(function(){location.reload()},1500)}}
+function tick(){var ms=EXP-Date.now();var s=Math.max(0,Math.floor(ms/1000));var txt=pad(Math.floor(s/60))+':'+pad(s%60);document.querySelectorAll('.cd').forEach(function(e){e.textContent=txt});var low=ms<5*60*1000;document.querySelectorAll('.timer').forEach(function(e){e.classList.toggle('low',low)});var tb=document.querySelector('.timebar');if(tb)tb.classList.toggle('low',low);var bar=document.getElementById('timebar');if(bar)bar.style.width=Math.max(0,ms/SPAN*100)+'%';var ring=document.getElementById('ringfg');if(ring){var C=163.36;ring.style.strokeDashoffset=C*(1-Math.max(0,ms)/SPAN);ring.style.stroke=low?'#ff9f43':'#fff'}var rc=document.querySelector('.rc');if(rc)rc.style.color=low?'#ff9f43':'';if(ms<=0&&!window._exp){window._exp=1;setTimeout(function(){location.reload()},1500)}}
 setInterval(tick,250);tick();
 async function selectMethod(m){toast('در حال ثبت روش پرداخت…');try{var r=await fetch('/pay/select',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({t:TID,m:m})});var d=await r.json().catch(function(){return{}});if(d.ok){location.reload()}else{toast(d.error||'خطا رخ داد')}}catch(e){toast('خطا در ارتباط')}};
 async function checkNow(btn){btn.disabled=true;btn.textContent='در حال بررسی…';try{var r=await fetch('/pay/status?t='+TID+'&_='+Date.now(),{cache:'no-store'});var d=await r.json();if(d.status!=='pending'){location.reload();return}toast('هنوز پرداختی پیدا نشد؛ اگر تازه واریز کرده‌اید چند دقیقه صبر کنید')}catch(e){toast('خطا در بررسی')}btn.disabled=false;btn.textContent='🔄 بررسی پرداخت'}
@@ -1581,7 +1596,7 @@ async function payPage(env, cfg, topup) {
   if (topup.status === "approved") {
     const user = await getUser(env, topup.userId);
     return payShell(`${head(3)}
-      <div class="state"><div class="circ">✓</div>
+      <div class="state"><div class="circ fill">✓</div>
       <h1>پرداخت تأیید شد</h1>
       <p>موجودی شما با موفقیت شارژ شد. می‌توانید این صفحه را ببندید و به ربات برگردید.</p>
       <div class="big">+$${esc(credit)}</div>
@@ -1589,9 +1604,15 @@ async function payPage(env, cfg, topup) {
   }
   if (topup.status === "expired" || topupIsExpired(topup)) {
     return payShell(`${head(2)}
-      <div class="state"><div class="circ">⏱</div>
-      <h1>مهلت پرداخت تمام شد</h1>
+      <div class="state"><div class="circ red">⏱</div>
+      <h1 class="red">مهلت پرداخت تمام شد</h1>
       <p>این درخواست پرداخت بسته شد. برای شارژ حساب، داخل ربات یک پرداخت جدید بسازید.</p></div>`);
+  }
+  if (topup.status === "rejected") {
+    return payShell(`${head(2)}
+      <div class="state"><div class="circ red">✕</div>
+      <h1 class="red">پرداخت رد شد</h1>
+      <p>رسید ارسالی توسط ادمین تأیید نشد. اگر مبلغی واریز کرده‌اید، برای پیگیری با پشتیبانی در تماس باشید یا داخل ربات یک پرداخت تازه بسازید.</p></div>`);
   }
   if (topup.status !== "pending") {
     return payShell(`${head(2)}
@@ -1637,7 +1658,7 @@ async function payPage(env, cfg, topup) {
       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.85)" stroke-width="2" stroke-linecap="round"><path d="M6 8a8 8 0 0 1 0 8"/><path d="M9.5 5.5a12 12 0 0 1 0 13"/><path d="M13 3a16 16 0 0 1 0 18"/></svg></div>
       <div class="bc-num" dir="ltr">${esc(cardGrouped)}</div>
       <div class="bc-bot"><div><div class="bc-k">به نام</div><div class="bc-holder">${esc(cfg.CARD_HOLDER || "")}</div></div>
-      <button class="copy bc-copy" onclick="copyText('${esc(cardDigits || cfg.CARD_NUMBER || "")}')">کپی شماره کارت</button></div>
+      <button class="copy bc-copy" onclick="copyText('${esc(cardDigits || cfg.CARD_NUMBER || "")}',this)">کپی شماره کارت</button></div>
     </div>`;
     const uploadBlock = `<div class="upload">
       <div class="uic">🧾</div>
@@ -1650,7 +1671,8 @@ async function payPage(env, cfg, topup) {
     if (topup.receiptFileId) {
       return payShell(`${head(2)}
         <h1>رسید شما دریافت شد</h1>
-        <p class="sub"><span class="pulse"></span>رسید برای ادمین ارسال شده و <b style="color:#fff">منتظر تأیید ادمین</b> است؛ پس از تأیید، موجودی شما شارژ می‌شود و همین صفحه به‌صورت خودکار به‌روز می‌شود.</p>
+        <p style="margin:10px 0 2px"><span class="pill"><span class="dot"></span>منتظر تأیید ادمین</span></p>
+        <p class="sub">رسید برای ادمین ارسال شده است؛ پس از تأیید، موجودی شما شارژ می‌شود و همین صفحه به‌صورت خودکار به‌روز می‌شود.</p>
         ${summary}
         <div class="btnrow"><button class="btn" onclick="checkStatusBtn(this)">🔄 بررسی وضعیت</button><button class="btn ghost" onclick="document.getElementById('reUp').style.display='block';this.style.display='none'">ارسال رسید جایگزین</button></div>
         <div id="reUp" style="display:none">${uploadBlock}</div>`, script);
@@ -1661,7 +1683,7 @@ async function payPage(env, cfg, topup) {
       ${summary}
       ${bankCard}
       <div class="amtbox"><div class="k">مبلغ دقیق واریزی — تومان</div>
-        <div class="amt"><span>${esc(String(topup.amountToman || 0))}</span><button class="copy" onclick="copyText('${esc(topup.amountToman || "")}')">کپی مبلغ</button></div></div>
+        <div class="amt"><span>${esc(String(topup.amountToman || 0))}</span><button class="copy" onclick="copyText('${esc(topup.amountToman || "")}',this)">کپی مبلغ</button></div></div>
       ${uploadBlock}
       <ul class="notes">
         <li><b>۱</b> دقیقاً همین مبلغ را به کارت بالا کارت‌به‌کارت کنید.</li>
@@ -1678,15 +1700,15 @@ async function payPage(env, cfg, topup) {
     <h1>پرداخت ${esc(c.label || "")}</h1>
     <p class="sub">فقط از همین شبکه و دقیقاً همین مبلغ را واریز کنید.</p>
     ${topup.seenAt ? `<div class="paywrap">
-      <div class="ring" style="display:grid;place-items:center;border:1px solid #2c2c2c;border-radius:50%;font-size:24px">⏳</div>
-      <div><div class="st"><span class="pulse"></span><b>تراکنش دیده شد — در انتظار تأیید شبکه</b></div><div class="st">مبلغ شارژ: $${esc(credit)} ${tomanText}</div><div class="st">تراکنش شما در شبکه پیدا شده و منتظر تأیید (کانفرم) است. به محض تأیید، شارژ خودکار انجام و این صفحه به‌روز می‌شود. مهلت پرداخت شما تا آن زمان تمدید شده است.</div></div>
+      <div class="ring" style="display:grid;place-items:center;border:1px solid #ff9f43;border-radius:50%;font-size:24px">⏳</div>
+      <div><div class="st"><span class="pill"><span class="dot"></span>تراکنش دیده شد — در انتظار تأیید شبکه</span></div><div class="st">مبلغ شارژ: $${esc(credit)} ${tomanText}</div><div class="st">تراکنش شما در شبکه پیدا شده و منتظر تأیید (کانفرم) است. به محض تأیید، شارژ خودکار انجام و این صفحه به‌روز می‌شود. مهلت پرداخت شما تا آن زمان تمدید شده است.</div></div>
     </div>` : `<div class="paywrap">
       <div class="ring"><svg width="66" height="66"><circle cx="33" cy="33" r="26" stroke="#222" stroke-width="3" fill="none"/><circle id="ringfg" cx="33" cy="33" r="26" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" stroke-dasharray="163.36" stroke-dashoffset="0"/></svg><div class="rc cd">30:00</div></div>
-      <div><div class="st"><span class="pulse"></span><b>در انتظار پرداخت</b></div><div class="st">مبلغ شارژ: $${esc(credit)} ${tomanText}</div><div class="st">پس از دیده‌شدن تراکنش در شبکه، شارژ خودکار انجام و این صفحه به‌روز می‌شود.</div></div>
+      <div><div class="st"><span class="pill"><span class="dot"></span>در انتظار پرداخت</span></div><div class="st">مبلغ شارژ: $${esc(credit)} ${tomanText}</div><div class="st">پس از دیده‌شدن تراکنش در شبکه، شارژ خودکار انجام و این صفحه به‌روز می‌شود.</div></div>
     </div>`}
     <div class="amtbox"><div class="k">مبلغ دقیق پرداختی — ${esc(c.label || "")}</div>
-      <div class="amt"><span>${esc(topup.expectedCrypto)}</span><button class="copy" onclick="copyText('${esc(topup.expectedCrypto)}')">کپی مبلغ</button></div></div>
-    <div class="addr-box"><code class="addr">${esc(addr)}</code><button class="copy" onclick="copyText('${esc(addr)}')">کپی آدرس</button></div>
+      <div class="amt"><span>${esc(topup.expectedCrypto)}</span><button class="copy" onclick="copyText('${esc(topup.expectedCrypto)}',this)">کپی مبلغ</button></div></div>
+    <div class="addr-box"><code class="addr">${esc(addr)}</code><button class="copy" onclick="copyText('${esc(addr)}',this)">کپی آدرس</button></div>
     <div class="qrwrap"><img class="qr" alt="QR" width="140" height="140" loading="lazy" src="https://api.qrserver.com/v1/create-qr-code/?size=140x140&margin=8&data=${encodeURIComponent(addr)}"></div>
     <ul class="notes">
       <li><b>شبکه</b> واریز از شبکه دیگری به این آدرس، قابل شناسایی نیست.</li>

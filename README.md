@@ -23,6 +23,7 @@ refunded automatically (the provider only charges on a finished activation with 
   awaits admin approval.
   The Toman → USD credit conversion is automatic using the Wallex USDT rate
   (the rate used is stored on each top-up and shown to the admin).
+- **Pay page design v2 (v1.8.0):** still minimal black/white — matte-black premium bank card, hero summary amount, filled-white success check, inline copied-feedback on copy buttons; orange is reserved for pending states and the under-5-minutes countdown, red only for rejected/expired states (including a dedicated rejected view).
 - **Purchase announcements (v1.7.0):** add the bot to a group and send /setgroup there as admin (or set GROUP_CHAT_ID in the admin settings panel); the first time a purchase's SMS code is delivered, the bot posts a success summary in that group — masked number, service and the buyer's numeric id. /unsetgroup disables it.
 - **Payment sessions (v1.3.0, Toman entry added v1.5.0):** the user enters the top-up amount in the bot in USD, or in Toman — converted to USD at the live USDT/TMN rate, with the entered Toman and the rate shown on the session;
   that creates a payment session with a **30-minute deadline** and a link to the
