@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.3.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.3.1"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -2422,6 +2422,7 @@ var ICONS = {
   flag: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>',
   send: '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>',
   xc: '<circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/>',
+  clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
   list: '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3.5 6h.01"/><path d="M3.5 12h.01"/><path d="M3.5 18h.01"/>'
 };
 function ico(n, sz){ return '<svg class="icn" width="' + (sz||19) + '" height="' + (sz||19) + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + (ICONS[n]||'') + '</svg>'; }
@@ -2564,7 +2565,7 @@ function tickCountdown(){
   var el = $('cdLeft'); if (!el || !S.act || !S.act.expiresAt) return;
   var left = Math.max(0, Math.floor((new Date(S.act.expiresAt).getTime() - Date.now()) / 1000));
   var mm = String(Math.floor(left/60)), ss = String(left%60); if (ss.length<2) ss='0'+ss;
-  el.textContent = '⏰ ' + faDigits(mm + ':' + ss) + ' تا پایان مهلت';
+  el.innerHTML = ico('clock', 13) + ' ' + faDigits(mm + ':' + ss) + ' تا پایان مهلت';
 }
 function pollAct(){
   if (!S.act) return;
@@ -2576,7 +2577,7 @@ function pollAct(){
 }
 function renderAct(){
   var a = S.act; if (!a) return;
-  var html = '<h2 class="title">شماره شما آماده است 🎉</h2>';
+  var html = '<h2 class="title">شماره شما آماده است</h2>';
   html += '<button class=\"numcard\" id=\"numCard\"><div class=\"lbl\">' + escH(a.serviceName) + '</div><div class=\"num\">' + escH(a.phone) + '</div><div class=\"lbl\">برای کپی، روی شماره بزنید</div></button>';
   html += '<div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center">' + statusPill(a) + '<span style="color:#9a9aa2;font-size:13px" id="cdLeft"></span></div>';
   if (a.code) {
