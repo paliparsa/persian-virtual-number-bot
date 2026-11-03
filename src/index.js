@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "1.3.1"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "1.4.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -437,10 +437,13 @@ async function showHome(env, chatId, editMsgId) {
   return send(env, chatId, text, mainMenuKb(env, cfg, chatId));
 }
 
-function pageKb(items, page, perPage, makeCb, backTo) {
+function pageKb(items, page, perPage, makeCb, backTo, cols = 1, topRows = []) {
   const start = page * perPage;
   const slice = items.slice(start, start + perPage);
-  const rows = slice.map((it) => [btn(it.label, makeCb(it))]);
+  const rows = [...topRows];
+  for (let i = 0; i < slice.length; i += cols) {
+    rows.push(slice.slice(i, i + cols).map((it) => btn(it.label, makeCb(it))));
+  }
   const nav = [];
   if (page > 0) nav.push(btn("◀️ قبلی", makeCb(null, page - 1)));
   if (start + perPage < items.length) nav.push(btn("بعدی ▶️", makeCb(null, page + 1)));
@@ -449,28 +452,90 @@ function pageKb(items, page, perPage, makeCb, backTo) {
   return kb(rows);
 }
 
+// ---------- country names in English + search ----------
+// SmsFull returns country names in Portuguese, but every country also carries
+// its flag emoji — which encodes the ISO 3166-1 alpha-2 code (regional
+// indicator letters). We derive the code from the flag and map it to the
+// English name; when the flag is missing, a Portuguese->English dictionary
+// is the fallback, then the provider's own name.
+const COUNTRY_EN = { AF:"Afghanistan",AL:"Albania",DZ:"Algeria",AD:"Andorra",AO:"Angola",AG:"Antigua and Barbuda",AR:"Argentina",AM:"Armenia",AU:"Australia",AT:"Austria",AZ:"Azerbaijan",BS:"Bahamas",BH:"Bahrain",BD:"Bangladesh",BB:"Barbados",BY:"Belarus",BE:"Belgium",BZ:"Belize",BJ:"Benin",BT:"Bhutan",BO:"Bolivia",BA:"Bosnia and Herzegovina",BW:"Botswana",BR:"Brazil",BN:"Brunei",BG:"Bulgaria",BF:"Burkina Faso",BI:"Burundi",KH:"Cambodia",CM:"Cameroon",CA:"Canada",CV:"Cape Verde",CF:"Central African Republic",TD:"Chad",CL:"Chile",CN:"China",CO:"Colombia",KM:"Comoros",CG:"Congo",CD:"Congo (DRC)",CR:"Costa Rica",CI:"Côte d’Ivoire",HR:"Croatia",CU:"Cuba",CY:"Cyprus",CZ:"Czechia",DK:"Denmark",DJ:"Djibouti",DM:"Dominica",DO:"Dominican Republic",EC:"Ecuador",EG:"Egypt",SV:"El Salvador",GQ:"Equatorial Guinea",ER:"Eritrea",EE:"Estonia",ET:"Ethiopia",FJ:"Fiji",FI:"Finland",FR:"France",GA:"Gabon",GM:"Gambia",GE:"Georgia",DE:"Germany",GH:"Ghana",GR:"Greece",GD:"Grenada",GT:"Guatemala",GN:"Guinea",GW:"Guinea-Bissau",GY:"Guyana",HT:"Haiti",HN:"Honduras",HK:"Hong Kong",HU:"Hungary",IS:"Iceland",IN:"India",ID:"Indonesia",IR:"Iran",IQ:"Iraq",IE:"Ireland",IL:"Israel",IT:"Italy",JM:"Jamaica",JP:"Japan",JO:"Jordan",KZ:"Kazakhstan",KE:"Kenya",KI:"Kiribati",KW:"Kuwait",KG:"Kyrgyzstan",LA:"Laos",LV:"Latvia",LB:"Lebanon",LS:"Lesotho",LR:"Liberia",LY:"Libya",LI:"Liechtenstein",LT:"Lithuania",LU:"Luxembourg",MO:"Macao",MG:"Madagascar",MW:"Malawi",MY:"Malaysia",MV:"Maldives",ML:"Mali",MT:"Malta",MR:"Mauritania",MU:"Mauritius",MX:"Mexico",MD:"Moldova",MC:"Monaco",MN:"Mongolia",ME:"Montenegro",MA:"Morocco",MZ:"Mozambique",MM:"Myanmar",NA:"Namibia",NP:"Nepal",NL:"Netherlands",NZ:"New Zealand",NI:"Nicaragua",NE:"Niger",NG:"Nigeria",KP:"North Korea",MK:"North Macedonia",NO:"Norway",OM:"Oman",PK:"Pakistan",PS:"Palestine",PA:"Panama",PG:"Papua New Guinea",PY:"Paraguay",PE:"Peru",PH:"Philippines",PL:"Poland",PT:"Portugal",QA:"Qatar",RO:"Romania",RU:"Russia",RW:"Rwanda",WS:"Samoa",SM:"San Marino",ST:"São Tomé and Príncipe",SA:"Saudi Arabia",SN:"Senegal",RS:"Serbia",SC:"Seychelles",SL:"Sierra Leone",SG:"Singapore",SK:"Slovakia",SI:"Slovenia",SB:"Solomon Islands",SO:"Somalia",ZA:"South Africa",KR:"South Korea",SS:"South Sudan",ES:"Spain",LK:"Sri Lanka",SD:"Sudan",SR:"Suriname",SE:"Sweden",CH:"Switzerland",SY:"Syria",TW:"Taiwan",TJ:"Tajikistan",TZ:"Tanzania",TH:"Thailand",TL:"Timor-Leste",TG:"Togo",TO:"Tonga",TT:"Trinidad and Tobago",TN:"Tunisia",TR:"Turkey",TM:"Turkmenistan",UG:"Uganda",UA:"Ukraine",AE:"United Arab Emirates",GB:"United Kingdom",US:"United States",UY:"Uruguay",UZ:"Uzbekistan",VU:"Vanuatu",VE:"Venezuela",VN:"Vietnam",YE:"Yemen",ZM:"Zambia",ZW:"Zimbabwe",AQ:"Antarctica",AX:"Åland",BV:"Bouvet Island",IO:"British Indian Ocean Territory",KY:"Cayman Islands",CX:"Christmas Island",CC:"Cocos Islands",CK:"Cook Islands",FK:"Falkland Islands",FO:"Faroe Islands",GF:"French Guiana",PF:"French Polynesia",GL:"Greenland",GP:"Guadeloupe",GU:"Guam",GG:"Guernsey",IM:"Isle of Man",JE:"Jersey",MS:"Montserrat",NC:"New Caledonia",NU:"Niue",NF:"Norfolk Island",MP:"Northern Mariana Islands",PN:"Pitcairn",PR:"Puerto Rico",RE:"Réunion",SH:"Saint Helena",LC:"Saint Lucia",MF:"Saint Martin",PM:"Saint Pierre and Miquelon",VC:"Saint Vincent and the Grenadines",GS:"South Georgia",SJ:"Svalbard and Jan Mayen",TK:"Tokelau",TC:"Turks and Caicos",UM:"U.S. Minor Outlying Islands",VG:"British Virgin Islands",VI:"U.S. Virgin Islands",WF:"Wallis and Futuna",EH:"Western Sahara",AS:"American Samoa",AW:"Aruba",BM:"Bermuda",BQ:"Bonaire",CW:"Curaçao",GI:"Gibraltar",MH:"Marshall Islands",FM:"Micronesia",NR:"Nauru",PW:"Palau",KN:"Saint Kitts and Nevis",SX:"Sint Maarten",VA:"Vatican City",XK:"Kosovo" };
+const PT_COUNTRY_EN = { "brasil":"Brazil","estados unidos":"United States","alemanha":"Germany","franca":"France","espanha":"Spain","italia":"Italy","reino unido":"United Kingdom","inglaterra":"United Kingdom","russia":"Russia","china":"China","japao":"Japan","india":"India","canada":"Canada","mexico":"Mexico","argentina":"Argentina","chile":"Chile","colombia":"Colombia","peru":"Peru","venezuela":"Venezuela","ucrania":"Ukraine","polonia":"Poland","turquia":"Turkey","ira":"Iran","iraque":"Iraq","afeganistao":"Afghanistan","paquistao":"Pakistan","bangladesh":"Bangladesh","indonesia":"Indonesia","vietna":"Vietnam","tailandia":"Thailand","filipinas":"Philippines","malasia":"Malaysia","coreia do sul":"South Korea","coreia do norte":"North Korea","australia":"Australia","nova zelandia":"New Zealand","africa do sul":"South Africa","nigeria":"Nigeria","egito":"Egypt","marrocos":"Morocco","argelia":"Algeria","quenia":"Kenya","etiopia":"Ethiopia","angola":"Angola","mocambique":"Mozambique","portugal":"Portugal","grecia":"Greece","holanda":"Netherlands","belgica":"Belgium","suecia":"Sweden","noruega":"Norway","dinamarca":"Denmark","finlandia":"Finland","suica":"Switzerland","austria":"Austria","irlanda":"Ireland","islandia":"Iceland","romenia":"Romania","bulgaria":"Bulgaria","hungria":"Hungary","bielorrussia":"Belarus","cazaquistao":"Kazakhstan","uzbequistao":"Uzbekistan","georgia":"Georgia","armenia":"Armenia","azerbaijao":"Azerbaijan","emirados arabes unidos":"United Arab Emirates","arabia saudita":"Saudi Arabia","catar":"Qatar","kuwait":"Kuwait","oma":"Oman","jordania":"Jordan","libano":"Lebanon","israel":"Israel","siria":"Syria","iemen":"Yemen","sri lanka":"Sri Lanka","nepal":"Nepal","mianmar":"Myanmar","camboja":"Cambodia","laos":"Laos","mongolia":"Mongolia","taiwan":"Taiwan","hong kong":"Hong Kong","singapura":"Singapore","cuba":"Cuba","republica dominicana":"Dominican Republic","guatemala":"Guatemala","honduras":"Honduras","nicaragua":"Nicaragua","panama":"Panama","costa rica":"Costa Rica","equador":"Ecuador","bolivia":"Bolivia","paraguai":"Paraguay","uruguai":"Uruguay","irao":"Iran" };
+const normText = (x) => String(x || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+function isoFromFlag(emoji) {
+  const pts = [...String(emoji || "")].map((ch) => ch.codePointAt(0)).filter((cp) => cp >= 0x1f1e6 && cp <= 0x1f1ff);
+  if (pts.length !== 2) return null;
+  return pts.map((cp) => String.fromCharCode(cp - 0x1f1e6 + 65)).join("");
+}
+function countryEnName(c) {
+  const iso = isoFromFlag(c.emoji);
+  if (iso && COUNTRY_EN[iso]) return COUNTRY_EN[iso];
+  return PT_COUNTRY_EN[normText(c.name)] || c.name;
+}
+const countryLabel = (c) => `${c.emoji || "🌍"} ${countryEnName(c)}`;
+function countryMatches(c, q) {
+  const query = normText(q);
+  if (!query) return false;
+  const iso = isoFromFlag(c.emoji);
+  return normText(c.name).includes(query) || normText(countryEnName(c)).includes(query) ||
+    (iso && iso.toLowerCase() === query);
+}
+const serviceMatches = (s, q) => {
+  const query = normText(q);
+  return !!query && (normText(s.name).includes(query) || normText(s.code).includes(query));
+};
 async function showCountries(env, chatId, msgId, page) {
   const countries = await smsfull(env, "/countries");
-  const items = countries.map((c) => ({ label: `${c.emoji || "🌍"} ${c.name}`, id: c.id }));
-  const text = `🌍 <b>کشور را انتخاب کنید:</b>\n\nتعداد کشورها: ${faInt(items.length)}`;
+  const items = countries.map((c) => ({ label: countryLabel(c), id: c.id }));
+  const text = `🌍 <b>کشور را انتخاب کنید:</b>\n\nتعداد کشورها: ${faInt(items.length)} — برای پیدا کردن سریع، از دکمه جستجو استفاده کنید.`;
   return edit(env, chatId, msgId, text,
-    pageKb(items, page, 10, (it, p) => it ? `services:${it.id}:0` : `countries:${p}`, "home"));
+    pageKb(items, page, 20, (it, p) => it ? `services:${it.id}:0` : `countries:${p}`, "home", 2,
+      [[btn("🔍 جستجوی کشور", "csearch")]]));
 }
+
+async function showCountrySearchResults(env, chatId, query) {
+  const countries = await smsfull(env, "/countries");
+  const hits = countries.filter((c) => countryMatches(c, query)).slice(0, 24);
+  if (!hits.length) {
+    return send(env, chatId, `🔍 کشوری با «${esc(query)}» پیدا نشد. املای انگلیسی را امتحان کنید (مثلاً Germany) یا از فهرست انتخاب کنید:`,
+      kb([[btn("🌍 فهرست کشورها", "countries:0")], [btn("⬅️ منوی اصلی", "home")]]));
+  }
+  const rows = [];
+  for (let i = 0; i < hits.length; i += 2) {
+    rows.push(hits.slice(i, i + 2).map((c) => btn(countryLabel(c), `services:${c.id}:0`)));
+  }
+  rows.push([btn("🌍 فهرست کشورها", "countries:0")], [btn("⬅️ منوی اصلی", "home")]);
+  return send(env, chatId, `🔍 <b>نتایج جستجو برای «${esc(query)}»:</b>`, kb(rows));
+}
+
+const serviceLabel = (cfg, fx, tmn, s) =>
+  `${s.name} — ${usdText(tmn, fx ? sellPrice(cfg, s.price * fx) : s.price)} | موجود: ${faInt(s.available)}`;
 
 async function showServices(env, chatId, msgId, countryId, page) {
   const cfg = await getConfig(env);
   const [fx, tmn] = await Promise.all([brlToUsdRate(env), usdtTomanRate(env)]);
   const services = await smsfull(env, `/services?countryId=${countryId}`);
   const avail = services.filter((s) => s.available > 0);
-  const items = avail.map((s) => ({
-    label: `${s.name} — ${usdText(tmn, fx ? sellPrice(cfg, s.price * fx) : s.price)} | موجود: ${faInt(s.available)}`,
-    id: s.id,
-  }));
+  const items = avail.map((s) => ({ label: serviceLabel(cfg, fx, tmn, s), id: s.id }));
   const text = items.length
     ? `📲 <b>سرویس را انتخاب کنید:</b>\nقیمت‌ها <b>دلاری</b> و با احتساب سود فروشگاه است${tmn ? ` — نرخ تتر (والکس): ${faInt(tmn)} تومان` : ""}.`
     : `در حال حاضر برای این کشور شماره‌ای موجود نیست. لطفاً بعداً دوباره تلاش کنید.`;
   return edit(env, chatId, msgId, text,
-    pageKb(items, page, 10, (it, p) => it ? `confirm:${countryId}:${it.id}` : `services:${countryId}:${p}`, "countries:0"));
+    pageKb(items, page, 10, (it, p) => it ? `confirm:${countryId}:${it.id}` : `services:${countryId}:${p}`, "countries:0", 1,
+      items.length ? [[btn("🔍 جستجوی سرویس", `ssearch:${countryId}`)]] : []));
+}
+
+async function showServiceSearchResults(env, chatId, countryId, query) {
+  const cfg = await getConfig(env);
+  const [fx, tmn] = await Promise.all([brlToUsdRate(env), usdtTomanRate(env)]);
+  const services = await smsfull(env, `/services?countryId=${countryId}`);
+  const hits = services.filter((s) => s.available > 0 && serviceMatches(s, query)).slice(0, 20);
+  if (!hits.length) {
+    return send(env, chatId, `🔍 سرویسی با «${esc(query)}» پیدا نشد. بخشی از نام سرویس را به انگلیسی بنویسید (مثلاً Whats):`,
+      kb([[btn("📲 فهرست سرویس‌ها", `services:${countryId}:0`)], [btn("⬅️ منوی اصلی", "home")]]));
+  }
+  const rows = hits.map((s) => [btn(serviceLabel(cfg, fx, tmn, s), `confirm:${countryId}:${s.id}`)]);
+  rows.push([btn("📲 فهرست سرویس‌ها", `services:${countryId}:0`)], [btn("⬅️ منوی اصلی", "home")]);
+  return send(env, chatId, `🔍 <b>نتایج جستجو برای «${esc(query)}»:</b>`, kb(rows));
 }
 
 async function showConfirm(env, chatId, msgId, countryId, serviceId) {
@@ -481,7 +546,10 @@ async function showConfirm(env, chatId, msgId, countryId, serviceId) {
   const [fx, tmn] = await Promise.all([brlToUsdRate(env), usdtTomanRate(env)]);
   const price = fx ? sellPrice(cfg, s.price * fx) : s.price;
   const user = await getUser(env, chatId);
-  const text = `🧾 <b>تأیید خرید</b>\n\nسرویس: <b>${esc(s.name)}</b>\nقیمت: <b>${usdText(tmn, price)}</b>\nموجودی شما: ${usdText(tmn, user.balance)}\nموجودی لحظه‌ای: ${faInt(s.available)} شماره\n\nپس از خرید، شماره نمایش داده می‌شود و تا ${faDigits(20)} دقیقه منتظر کد پیامک می‌ماند. اگر کدی نیاید، مبلغی از موجودی کسر نخواهد شد.`;
+  const tomanLine = tmn
+    ? `\n💵 معادل تومانی: <b>${faInt(Math.round(price * tmn))} تومان</b> (با نرخ لحظه‌ای تتر والکس: ${faInt(tmn)} تومان)`
+    : "";
+  const text = `🧾 <b>تأیید خرید</b>\n\nسرویس: <b>${esc(s.name)}</b>\nقیمت: <b>${usdText(tmn, price)}</b>${tomanLine}\nموجودی شما: ${usdText(tmn, user.balance)}\nموجودی لحظه‌ای: ${faInt(s.available)} شماره\n\nپس از خرید، شماره نمایش داده می‌شود و تا ${faDigits(20)} دقیقه منتظر کد پیامک می‌ماند. اگر کدی نیاید، مبلغی از موجودی کسر نخواهد شد.`;
   return edit(env, chatId, msgId, text, kb([
     [btn("✅ تأیید و خرید", `buy:${countryId}:${serviceId}`)],
     [btn("⬅️ بازگشت", `services:${countryId}:0`)],
@@ -877,6 +945,19 @@ async function handleMessage(env, msg, baseUrl) {
     return;
   }
 
+  if (user.state === "await_country_search" && text && !text.startsWith("/")) {
+    user.state = null;
+    await saveUser(env, user);
+    return showCountrySearchResults(env, chatId, text);
+  }
+
+  if (user.state?.startsWith("await_service_search:") && text && !text.startsWith("/")) {
+    const countryId = user.state.split(":")[1];
+    user.state = null;
+    await saveUser(env, user);
+    return showServiceSearchResults(env, chatId, countryId, text);
+  }
+
   if (user.state === "await_link_amount" && /^[0-9]+(\.[0-9]+)?$/.test(text)) {
     const creditUsd = Math.round(Number(text) * 100) / 100;
     user.state = null;
@@ -901,7 +982,29 @@ async function handleCallback(env, cq, baseUrl) {
   const [head, a, b] = data.split(":");
   try {
     if (data === "home") return showHome(env, chatId, msgId);
-    if (head === "countries") return showCountries(env, chatId, msgId, Number(a || 0));
+    if (data === "csearch") {
+      const user = await getUser(env, chatId);
+      user.state = "await_country_search";
+      await saveUser(env, user);
+      return edit(env, chatId, msgId,
+        `🔍 <b>جستجوی کشور</b>\n\nنام کشور را به <b>انگلیسی</b> بنویسید (مثلاً Germany یا United)؛ به نام پرتغالی و کد ISO هم جواب می‌دهد:`,
+        kb([[btn("⬅️ بازگشت به فهرست کشورها", "countries:0")]]));
+    }
+    if (head === "ssearch") {
+      const user = await getUser(env, chatId);
+      user.state = `await_service_search:${a}`;
+      await saveUser(env, user);
+      return edit(env, chatId, msgId,
+        `🔍 <b>جستجوی سرویس</b>\n\nبخشی از نام سرویس را بنویسید (مثلاً Whats یا Tele):`,
+        kb([[btn("⬅️ بازگشت به فهرست سرویس‌ها", `services:${a}:0`)]]));
+    }
+    if (head === "countries") {
+      const user = await getUser(env, chatId);
+      if (user.state?.startsWith("await_country_search") || user.state?.startsWith("await_service_search")) {
+        user.state = null; await saveUser(env, user);
+      }
+      return showCountries(env, chatId, msgId, Number(a || 0));
+    }
     if (head === "services") return showServices(env, chatId, msgId, a, Number(b || 0));
     if (head === "confirm") return showConfirm(env, chatId, msgId, a, b);
     if (head === "buy") return doBuy(env, chatId, msgId, a, b, cq.id);

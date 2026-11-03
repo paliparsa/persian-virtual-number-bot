@@ -141,7 +141,7 @@ instantly. The 🗑 button next to a field clears it.
 
 ## Known limits of v1
 
-- Country names come from SmsFull in Portuguese; service names as provided.
+- Country names are shown in English: SmsFull returns Portuguese names, but each country also carries a flag emoji encoding its ISO code, which the bot maps to the English name (Portuguese-name dictionary fallback). The country menu is two buttons per row with a search button (matches English/Portuguese names and ISO codes); the service menu also has a search button. The purchase confirmation shows an explicit Toman line converted at the live Wallex USDT rate.
 - One shared wallet address per crypto (payments are matched by the unique exact
   amount — users must pay the exact amount shown, within 30 minutes).
 - Card top-ups need your approval in the bot (there is no bank API in the flow).
