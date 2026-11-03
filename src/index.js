@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "1.9.2"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "1.10.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -502,12 +502,15 @@ async function creditTopup(env, topup, note) {
 }
 
 // ---------- bot UI (Persian) ----------
-function mainMenuKb(env, cfg, userId) {
+function mainMenuKb(env, cfg, userId, origin) {
   const rows = [
     [btn("🛒 خرید شماره مجازی", "countries:0")],
     [btn("💰 موجودی من", "balance"), btn("💳 افزایش موجودی", "topup")],
     [btn("📱 سفارش‌های من", "orders")],
   ];
+  rows.push(origin
+    ? [urlBtn("📜 قوانین و مقررات", `${String(origin).replace(/\/+$/, "")}/terms`)]
+    : [btn("📜 قوانین و مقررات", "terms")]);
   if (cfg?.SUPPORT_USERNAME) rows.push([urlBtn("🎧 پشتیبانی", `https://t.me/${cfg.SUPPORT_USERNAME}`)]);
   if (isAdmin(env, userId)) {
     rows.push([btn("🛠 پنل مدیریت", "admin")]);
@@ -522,8 +525,9 @@ async function showHome(env, chatId, editMsgId) {
   const cfg = await getConfig(env);
   const tmn = await usdtTomanRate(env);
   const text = `سلام 👋\nبه فروشگاه <b>شماره مجازی</b> خوش آمدید.\n\n💰 موجودی شما: <b>${usdText(tmn, user.balance)}</b>\n\nبرای خرید، ابتدا کشور و سپس سرویس موردنظر را انتخاب کنید. کد پیامک به‌صورت خودکار همین‌جا نمایش داده می‌شود.`;
-  if (editMsgId) return edit(env, chatId, editMsgId, text, mainMenuKb(env, cfg, chatId));
-  return send(env, chatId, text, mainMenuKb(env, cfg, chatId));
+  const origin = cfg.WORKER_BASE_URL || (await kvGet(env, "sys:origin"))?.origin;
+  if (editMsgId) return edit(env, chatId, editMsgId, text, mainMenuKb(env, cfg, chatId, origin));
+  return send(env, chatId, text, mainMenuKb(env, cfg, chatId, origin));
 }
 
 function pageKb(items, page, perPage, makeCb, backTo, cols = 1, topRows = []) {
@@ -699,7 +703,7 @@ function activationText(act) {
     refunded: "↩️ بازپرداخت شده",
   }[act.status] || act.status;
   const codes = (act.codes || []).map((c) => `<code>${esc(c)}</code>`).join("  ");
-  return `📱 <b>شماره شما:</b> <code>+${esc(act.phoneNumber)}</code>\n\nوضعیت: ${statusFa}\n${act.latestCode ? `\n🔑 <b>کد:</b> <code>${esc(act.latestCode)}</code>\nهمه کدها: ${codes}` : "\nهنوز کدی دریافت نشده است. چند لحظه صبر کنید و «بررسی کد» را بزنید."}\n\n⏰ انقضا: ${faDigits(new Date(act.expiresAt).toLocaleString("fa-IR"))}`;
+  return `📱 <b>شماره شما:</b> <code>+${esc(act.phoneNumber)}</code>\n\nوضعیت: ${statusFa}\n${act.latestCode ? `\n🔑 <b>کد:</b> <code>${esc(act.latestCode)}</code>\nهمه کدها: ${codes}` : "\nهنوز کدی دریافت نشده است. چند لحظه صبر کنید و «بررسی کد» را بزنید."}\n\n⏰ انقضا: ${faDigits(new Date(act.expiresAt).toLocaleString("fa-IR", { timeZone: "Asia/Tehran" }))}`;
 }
 function activationKb(act) {
   const open = ["waitingSms", "codeReceived", "resendRequested"].includes(act.status);
@@ -774,7 +778,7 @@ async function refreshActivation(env, chatId, msgId, id, cbId = null) {
   }
   // Announce in the purchases group the first time a code is delivered.
   if (rec && act.latestCode) await postPurchaseToGroup(env, rec);
-  const t = new Date(now()).toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const t = new Date(now()).toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "Asia/Tehran" });
   const note = act.latestCode
     ? `\n\n🕐 آخرین بررسی: ${t}`
     : `\n\n🕐 آخرین بررسی: ${t} — هنوز کدی دریافت نشده است؛ چند لحظه دیگر دوباره «بررسی کد» را بزنید.`;
@@ -1223,6 +1227,15 @@ async function handleCallback(env, cq, baseUrl) {
   const [head, a, b] = data.split(":");
   try {
     if (data === "home") return showHome(env, chatId, msgId);
+    if (data === "terms") {
+      const cfgT = await getConfig(env);
+      const base = cfgT.WORKER_BASE_URL || (await kvGet(env, "sys:origin"))?.origin;
+      if (base) {
+        await answerCb(env, cq.id, "");
+        return send(env, chatId, "📜 قوانین و مقررات استفاده از BlueGate:", kb([[urlBtn("📜 مشاهده قوانین", `${String(base).replace(/\/+$/, "")}/terms`)]]));
+      }
+      return answerCb(env, cq.id, "لینک قوانین هنوز آماده نیست؛ چند دقیقه دیگر تلاش کنید.", true);
+    }
     if (data === "csearch") {
       const user = await getUser(env, chatId);
       user.state = "await_country_search";
@@ -1607,6 +1620,61 @@ async function checkStatusBtn(btn){btn.disabled=true;btn.textContent='در حا�
 ${poll ? "setInterval(pollStatus,5000);document.addEventListener('visibilitychange',function(){if(!document.hidden)pollStatus()});window.addEventListener('focus',pollStatus);pollStatus();" : ""}`;
 }
 
+// ---------- Terms page (/terms) ----------
+// Distilled, Persian-only version of the service rules under the BlueGate
+// brand (per Reza's request): only the rules that actually matter, no
+// mention of the upstream provider anywhere on the page.
+function termsPage(cfg) {
+  const support = cfg?.SUPPORT_USERNAME;
+  return `<!doctype html>
+<html lang="fa" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>قوانین و مقررات — BlueGate</title>
+<link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#000;color:#fff;font-family:Vazirmatn,Tahoma,sans-serif;padding:28px 16px 48px;line-height:1.9}
+.wrap{max-width:620px;margin:0 auto}
+.brand{color:#8e8e93;font-size:13px;letter-spacing:.5px}
+h1{font-size:24px;font-weight:800;margin:4px 0 6px}
+.intro{color:#c9c9ce;font-size:14.5px}
+hr{border:none;border-top:1px solid #1f1f22;margin:20px 0}
+section{padding:16px 0;border-bottom:1px solid #1f1f22}
+section:last-of-type{border-bottom:none}
+h2{font-size:16.5px;font-weight:700;margin-bottom:6px}
+p,li{color:#c9c9ce;font-size:14.5px}
+ul{padding-right:18px}
+a{color:#fff}
+.foot{color:#8e8e93;font-size:13px;margin-top:22px}
+</style></head><body><div class="wrap">
+<div class="brand">BlueGate</div>
+<h1>📜 قوانین و مقررات</h1>
+<p class="intro">استفاده از ربات و خدمات BlueGate به‌معنای خواندن و پذیرفتن این قوانین است. اگر با هر بخش مخالفید، از خدمات استفاده نکنید.</p>
+<hr>
+<section><h2>۱) ماهیت سرویس</h2><p>BlueGate شماره‌های مجازی <b>موقت</b> برای دریافت پیامک ارائه می‌کند. ارسال و تحویل پیامک به اپراتورها، زیرساخت مخابراتی و سیاست‌های سرویس مقصد بستگی دارد؛ بنابراین تحویل پیامک در همه موارد قابل تضمین نیست.</p></section>
+<section><h2>۲) حساب و امنیت</h2><p>مسئولیت امنیت حساب تلگرام و دستگاه‌های شما با خودتان است. هر عملیاتی که از حساب شما انجام شود، انجام‌شده توسط شما محسوب می‌شود. حساب خود را در اختیار دیگران قرار ندهید.</p></section>
+<section><h2>۳) استفاده مجاز</h2><p>استفاده از شماره‌ها فقط برای اهداف قانونی مجاز است. موارد زیر <b>ممنوع</b> است:</p><ul>
+<li>کلاهبرداری، فیشینگ و پول‌شویی</li>
+<li>سوءاستفاده از هویت دیگران</li>
+<li>اسپم، مزاحمت و آزار</li>
+<li>نفوذ یا دسترسی غیرمجاز به حساب دیگران</li>
+<li>ساخت یا اداره حساب با هدف نقض قوانین سرویس‌های دیگر</li>
+<li>هرگونه فعالیت غیرقانونی</li></ul>
+<p>مسئولیت کامل نحوه استفاده از شماره خریداری‌شده با کاربر است.</p></section>
+<section><h2>۴) مهلت شماره و فعال‌سازی</h2><p>هر شماره مهلت محدودی دارد که هنگام خرید نمایش داده می‌شود. پس از پایان مهلت، شماره از دسترس خارج می‌شود، پیام‌های قبلی حذف می‌شوند و شماره ممکن است دوباره عرضه شود. از شماره موقت به‌عنوان تنها روش بازیابی حساب‌های مهم استفاده نکنید.</p></section>
+<section><h2>۵) عدم تضمین پذیرش توسط سرویس مقصد</h2><p>BlueGate ساخت حساب، تأیید ثبت‌نام، ماندگاری حساب یا پذیرش شماره توسط سرویس مقصد (مانند تلگرام، واتس‌اپ و…) را تضمین نمی‌کند. رد شدن یک شماره توسط سرویس مقصد، به‌تنهایی به‌معنای خطای فنی BlueGate نیست. BlueGate با این سرویس‌ها وابستگی یا شراکت ندارد و نام آن‌ها صرفاً برای شناسایی سرویس درخواستی استفاده می‌شود.</p></section>
+<section><h2>۶) موجودی و قیمت‌ها</h2><p>موجودی حساب فقط برای خرید در همین ربات است و قابل فروش یا انتقال به دیگران نیست. قیمت‌ها بر اساس کشور، سرویس و موجودی تعیین می‌شوند و ممکن است در هر زمان تغییر کنند؛ تغییر قیمت بر خریدهای قبلی اثری ندارد.</p></section>
+<section><h2>۷) بازگشت وجه</h2><p>اگر پیامکی دریافت نشود و فعال‌سازی لغو یا منقضی شود، مبلغ به موجودی حساب شما برمی‌گردد. اگر شماره در سرویس مقصد مسدود یا قبلاً استفاده شده باشد، برای بررسی بازگشت وجه باید مدرک قابل‌بررسی — یک ویدیوی پیوسته که پیام مسدودی و فعال‌سازی شما در ربات را نشان دهد — برای پشتیبانی ارسال شود. مدرک ناقص یا نامرتبط با فعال‌سازی قابل پذیرش نیست.</p></section>
+<section><h2>۸) پرداخت و شارژ حساب</h2><p>سفارش‌های شارژ ممکن است برای بررسی‌های ضدتقلب مدتی در وضعیت انتظار بمانند. زمان تأیید پرداخت‌های رمزارزی به تأیید شبکه بلاک‌چین بستگی دارد.</p></section>
+<section><h2>۹) تعلیق دسترسی</h2><p>در صورت تقلب یا تلاش برای تقلب، سوءاستفاده، نقض این قوانین یا ایجاد ریسک امنیتی، BlueGate می‌تواند دسترسی حساب را محدود یا مسدود کند. مسدودی به‌معنای ضبط موجودی نیست و وضعیت موجودی از طریق پشتیبانی قابل پیگیری است.</p></section>
+<section><h2>۱۰) دسترس‌پذیری سرویس</h2><p>سرویس ممکن است برای نگهداری، به‌روزرسانی یا به‌علت اختلال زیرساخت و اپراتورها موقتاً در دسترس نباشد؛ کارکرد بدون وقفه و بدون خطا تضمین نمی‌شود.</p></section>
+<section><h2>۱۱) حریم خصوصی</h2><p>اطلاعات و سوابق فنی لازم برای ارائه سرویس، امنیت، جلوگیری از تقلب و پشتیبانی نگهداری می‌شوند و فقط در مواردی که قانون مقرر کند در اختیار مراجع ذی‌صلاح قرار می‌گیرند.</p></section>
+<section><h2>۱۲) پشتیبانی و پیگیری</h2><p>برای پیگیری هر مشکل، آیدی عددی، زمان خرید، شرح مشکل و در صورت نیاز رسید پرداخت یا تصویر/ویدیو را برای پشتیبانی ارسال کنید؛ اطلاعات ناقص، بررسی را به تأخیر می‌اندازد.</p>${support ? `<p style="margin-top:8px">پشتیبانی: <a href="https://t.me/${esc(support)}">@${esc(support)}</a></p>` : ""}</section>
+<section><h2>۱۳) تغییر قوانین</h2><p>این قوانین ممکن است به‌روزرسانی شوند. نسخه معتبر همیشه در همین صفحه منتشر می‌شود و ادامه استفاده از ربات به‌معنای پذیرش نسخه جدید است.</p></section>
+<p class="foot">BlueGate — دروازه‌ای امن به دنیای پرسرعت</p>
+</div></body></html>`;
+}
+
 async function payPage(env, cfg, topup) {
   const head = (step) => paySteps(step);
   if (!topup) {
@@ -1777,6 +1845,10 @@ export default {
       if (!topup) return Response.json({ status: "notfound" }, { status: 404 });
       topup = await settleTopupLazy(env, topup);
       return Response.json({ status: topup.status, method: topup.method, receipt: !!topup.receiptFileId, expiresAt: topupExpiresAt(topup) }, { headers: { "cache-control": "no-store" } });
+    }
+    if (url.pathname === "/terms") {
+      const cfgTerms = await getConfig(env);
+      return new Response(termsPage(cfgTerms), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
     }
     if (url.pathname === "/pay") {
       const t = url.searchParams.get("t");
