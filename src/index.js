@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "1.6.2"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "1.7.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -63,7 +63,7 @@ const CONFIG_KEYS = [
   "CARD_NUMBER", "CARD_HOLDER", "CARD_BANK", "TOMAN_PER_BRL",
   "WALLET_USDT_TRC20", "WALLET_TRX", "WALLET_BTC", "WALLET_TON",
   "WALLET_LTC", "WALLET_ETH", "WALLET_USDT_ERC20", "WALLET_USDT_BEP20",
-  "SUPPORT_USERNAME", "WORKER_BASE_URL", "PRICE_MARKUP_PERCENT", "TMN_RATE_MANUAL",
+  "SUPPORT_USERNAME", "WORKER_BASE_URL", "PRICE_MARKUP_PERCENT", "TMN_RATE_MANUAL", "GROUP_CHAT_ID",
 ];
 async function getConfig(env) {
   const stored = (await kvGet(env, "config")) || {};
@@ -717,6 +717,40 @@ async function showActivation(env, chatId, msgId, act) {
   if (msgId) return edit(env, chatId, msgId, text, activationKb(act));
   return send(env, chatId, text, activationKb(act));
 }
+function maskPhone(num) {
+  const d = String(num || "").replace(/\D/g, "");
+  if (!d) return "***";
+  if (d.length <= 6) return `+${d.slice(0, 2)}***${d.slice(-1)}`;
+  const head = d.slice(0, 4);
+  const tail = d.slice(-3);
+  const stars = "*".repeat(Math.min(8, Math.max(3, d.length - head.length - tail.length)));
+  return `+${head}${stars}${tail}`;
+}
+
+// Social-proof announcement: the first time a purchase's SMS code is
+// delivered, post a summary in the configured purchases group — masked
+// number, service and the buyer's numeric id. Only marked as posted after
+// Telegram confirms delivery, and it never breaks the purchase flow.
+async function postPurchaseToGroup(env, rec) {
+  try {
+    if (!rec || rec.groupPosted) return;
+    const cfg = await getConfig(env);
+    const gid = (cfg.GROUP_CHAT_ID || "").trim();
+    if (!gid) return;
+    if (now() - rec.createdAt > 2 * 3600 * 1000) {
+      rec.groupPosted = true; // too old to announce; don't flood the group later
+      await kvPut(env, `act:${rec.id}`, rec);
+      return;
+    }
+    const text = `✅ <b>خرید موفق</b>\n\n📱 شماره: <code>${esc(maskPhone(rec.phoneNumber))}</code>\n🧩 سرویس: <b>${esc(rec.serviceName || "")}</b>\n👤 آیدی خریدار: <code>${esc(rec.userId)}</code>`;
+    const res = await tg(env, "sendMessage", { chat_id: gid, text, parse_mode: "HTML" });
+    if (res?.ok) {
+      rec.groupPosted = true;
+      await kvPut(env, `act:${rec.id}`, rec);
+    }
+  } catch (_) { /* an announcement must never break a purchase */ }
+}
+
 async function refreshActivation(env, chatId, msgId, id) {
   const act = await smsfull(env, `/activations/${id}`);
   const rec = await kvGet(env, `act:${id}`);
@@ -730,6 +764,8 @@ async function refreshActivation(env, chatId, msgId, id) {
     await kvPut(env, `act:${id}`, rec);
     await send(env, chatId, `↩️ مبلغ ${usdText(await usdtTomanRate(env), rec.price)} بابت سفارش بدون پیامک به موجودی شما برگشت.`);
   }
+  // Announce in the purchases group the first time a code is delivered.
+  if (rec && act.latestCode) await postPurchaseToGroup(env, rec);
   return showActivation(env, chatId, msgId, act);
 }
 
@@ -967,6 +1003,7 @@ const SETTING_FIELDS = {
   PRICE_MARKUP_PERCENT: { label: "درصد سود فروشگاه", hint: "فقط عدد بفرستید، مثال: 20 یعنی ۲۰٪ روی قیمت تأمین‌کننده", numeric: true },
   SUPPORT_USERNAME: { label: "یوزرنیم پشتیبانی", hint: "بدون @ بفرستید، مثال: BlueGateSupport" },
   TMN_RATE_MANUAL: { label: "نرخ دستی تتر (تومان) — پشتیبان", hint: "فقط عدد بفرستید، مثال: 271000 — فقط وقتی استفاده می‌شود که نرخ زنده از والکس و اکسیر نرسد.", numeric: true },
+  GROUP_CHAT_ID: { label: "آیدی گروه اعلام خرید موفق", hint: "آیدی عددی گروه را با علامت منفی بفرستید، مثال: -1001234567890 — یا ساده‌تر: ربات را در گروه اضافه کنید و همان‌جا دستور /setgroup را بفرستید تا خودکار ثبت شود." },
   WORKER_BASE_URL: { label: "آدرس عمومی ورکر", hint: "آدرس کامل با https:// — برای اطمینان از تنظیم خودکار وبهوک" },
 };
 const walletField = (code) => ({
@@ -985,7 +1022,7 @@ function settingHint(key) {
 const CONFIG_GROUPS = {
   card: { title: "💳 تنظیمات پرداخت کارتی", keys: ["CARD_NUMBER", "CARD_HOLDER", "CARD_BANK"] },
   wallet: { title: "🪙 کیف‌پول‌های کریپتو", keys: Object.values(CRYPTOS).map((c) => c.envKey) },
-  general: { title: "🧰 تنظیمات عمومی", keys: ["PRICE_MARKUP_PERCENT", "TMN_RATE_MANUAL", "SUPPORT_USERNAME", "WORKER_BASE_URL"] },
+  general: { title: "🧰 تنظیمات عمومی", keys: ["PRICE_MARKUP_PERCENT", "TMN_RATE_MANUAL", "GROUP_CHAT_ID", "SUPPORT_USERNAME", "WORKER_BASE_URL"] },
 };
 const groupOfKey = (key) =>
   Object.entries(CONFIG_GROUPS).find(([, g]) => g.keys.includes(key))?.[0] || "general";
@@ -1032,6 +1069,10 @@ function validateSetting(key, raw) {
     const v = clean.replace(/[\s-]/g, "");
     return /^\d{12,19}$/.test(v) ? { value: v } : { error: "شماره کارت باید ۱۲ تا ۱۹ رقم باشد." };
   }
+  if (key === "GROUP_CHAT_ID") {
+    const v = clean.replace(/\s/g, "");
+    return /^-?\d{5,20}$/.test(v) ? { value: v } : { error: "آیدی عددی گروه معتبر نیست (مثال: -1001234567890). یا ربات را در گروه اضافه کنید و آنجا /setgroup بفرستید." };
+  }
   if (SETTING_FIELDS[key]?.numeric) {
     return /^\d+(\.\d+)?$/.test(clean) && Number(clean) > 0
       ? { value: clean } : { error: "فقط عدد بزرگ‌تر از صفر بفرستید." };
@@ -1059,6 +1100,22 @@ async function handleMessage(env, msg, baseUrl) {
   const text = enDigits((msg.text || "").trim());
 
   if (text === "/start") { user.state = null; await saveUser(env, user); return showHome(env, chatId); }
+
+  // Link/unlink this group for successful-purchase announcements (admin only,
+  // sent inside the group). Group ids are the chat id of group/supergroup chats.
+  const cmd = text.split("@")[0];
+  if ((cmd === "/setgroup" || cmd === "/unsetgroup") && (msg.chat?.type === "group" || msg.chat?.type === "supergroup")) {
+    if (String(msg.from?.id) !== String(env.ADMIN_CHAT_ID)) {
+      return send(env, chatId, "⛔️ فقط ادمین فروشگاه می‌تواند این دستور را اجرا کند.");
+    }
+    if (cmd === "/setgroup") {
+      await setConfigValue(env, "GROUP_CHAT_ID", String(chatId));
+      await send(env, env.ADMIN_CHAT_ID, `✅ گروه «${esc(msg.chat.title || "")}» برای اعلام خریدهای موفق ثبت شد.\nآیدی گروه: <code>${esc(chatId)}</code>`);
+      return send(env, chatId, "✅ <b>این گروه برای اعلام خریدهای موفق ثبت شد.</b>\nاز این به بعد، هر خرید موفقی که کدش به خریدار تحویل شود، با شماره ماسک‌شده اینجا اعلام می‌شود.");
+    }
+    await setConfigValue(env, "GROUP_CHAT_ID", "");
+    return send(env, chatId, "❌ اعلام خریدهای موفق غیرفعال شد (گروه از تنظیمات فروشگاه حذف شد).");
+  }
   if (text === "/admin" && isAdmin(env, chatId)) return showAdmin(env, chatId);
   if ((text === "/settings" || text === "تنظیمات") && isAdmin(env, chatId)) return showConfigOverview(env, chatId);
 
