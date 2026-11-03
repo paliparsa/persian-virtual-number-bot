@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "1.9.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "1.9.1"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -1790,7 +1790,20 @@ export default {
       const wallex = await probeWallex();
       const usdtToman = await usdtTomanRate(env);
       const tmnDiag = await kvGet(env, "diag:tmn");
-      return Response.json({ ok: true, kv: !!env.STORE, version: BOT_VERSION, usdtTomanRate: usdtToman, wallex, tmnDiag });
+      // Telegram delivery state: if the bot goes silent, this shows where
+      // updates are being sent and Telegram's last delivery error.
+      let webhook = null;
+      try {
+        const wi = await tg(env, "getWebhookInfo", {});
+        const r = wi?.result || {};
+        webhook = {
+          url: r.url || "",
+          pendingUpdates: r.pending_update_count ?? null,
+          lastError: r.last_error_message || null,
+          lastErrorAt: r.last_error_date ? new Date(r.last_error_date * 1000).toISOString() : null,
+        };
+      } catch (_) {}
+      return Response.json({ ok: true, kv: !!env.STORE, version: BOT_VERSION, usdtTomanRate: usdtToman, wallex, tmnDiag, webhook });
     }
     if (url.pathname === "/webhook" && request.method === "POST") {
       if (env.WEBHOOK_SECRET) {
