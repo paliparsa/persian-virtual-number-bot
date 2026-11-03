@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.4.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.5.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -28,6 +28,11 @@ const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").
 const uid = () => crypto.randomUUID();
 const now = () => Date.now();
 const markup = (cfg) => 1 + (parseFloat(cfg?.PRICE_MARKUP_PERCENT || "20") / 100);
+// Admin-set minimum top-up (USD). Falls back to $1 when unset/invalid.
+const minTopupUsd = (cfg) => {
+  const v = parseFloat(cfg?.MIN_TOPUP_USD);
+  return Number.isFinite(v) && v > 0 ? Math.min(v, 5000) : 1;
+};
 const sellPrice = (cfg, providerPrice) => Math.ceil(providerPrice * markup(cfg) * 100) / 100;
 const isAdmin = (env, chatId) => String(chatId) === String(env.ADMIN_CHAT_ID || "");
 
@@ -63,7 +68,7 @@ const CONFIG_KEYS = [
   "CARD_NUMBER", "CARD_HOLDER", "CARD_BANK", "TOMAN_PER_BRL",
   "WALLET_USDT_TRC20", "WALLET_TRX", "WALLET_BTC", "WALLET_TON",
   "WALLET_LTC", "WALLET_ETH", "WALLET_USDT_ERC20", "WALLET_USDT_BEP20",
-  "SUPPORT_USERNAME", "WORKER_BASE_URL", "PRICE_MARKUP_PERCENT", "TMN_RATE_MANUAL", "GROUP_CHAT_ID",
+  "SUPPORT_USERNAME", "WORKER_BASE_URL", "PRICE_MARKUP_PERCENT", "TMN_RATE_MANUAL", "GROUP_CHAT_ID", "MIN_TOPUP_USD",
   "FORCE_JOIN_ENABLED", "FORCE_JOIN_CHANNEL", "PHONE_VERIFY_ENABLED",
 ];
 async function getConfig(env) {
@@ -1212,6 +1217,7 @@ const SETTING_FIELDS = {
   CARD_BANK: { label: "نام بانک", hint: "نام بانک را بفرستید، مثلاً: بانک ملی" },
   TOMAN_PER_BRL: { label: "نرخ تومان (هر ۱ BRL)", hint: "فقط عدد بفرستید، مثال: 40000", numeric: true },
   PRICE_MARKUP_PERCENT: { label: "درصد سود فروشگاه", hint: "فقط عدد بفرستید، مثال: 20 یعنی ۲۰٪ روی قیمت تأمین‌کننده", numeric: true },
+  MIN_TOPUP_USD: { label: "حداقل مبلغ شارژ (دلار)", hint: "فقط عدد بفرستید، مثال: 5 — شارژ کمتر از این مبلغ (دلاری یا معادل تومانی) ساخته نمی‌شود. برای برگشت به پیش‌فرض ۱ دلار، مقدار را حذف کنید.", numeric: true },
   SUPPORT_USERNAME: { label: "یوزرنیم پشتیبانی", hint: "بدون @ بفرستید، مثال: BlueMajaziSupport" },
   TMN_RATE_MANUAL: { label: "نرخ دستی تتر (تومان) — پشتیبان", hint: "فقط عدد بفرستید، مثال: 271000 — فقط وقتی استفاده می‌شود که نرخ زنده از والکس و اکسیر نرسد.", numeric: true },
   GROUP_CHAT_ID: { label: "آیدی گروه اعلام خرید موفق", hint: "آیدی عددی گروه را با علامت منفی بفرستید، مثال: -1001234567890 — یا ساده‌تر: ربات را در گروه اضافه کنید و همان‌جا دستور /setgroup را بفرستید تا خودکار ثبت شود." },
@@ -1236,7 +1242,7 @@ function settingHint(key) {
 const CONFIG_GROUPS = {
   card: { title: "💳 تنظیمات پرداخت کارتی", keys: ["CARD_NUMBER", "CARD_HOLDER", "CARD_BANK"] },
   wallet: { title: "🪙 کیف‌پول‌های کریپتو", keys: Object.values(CRYPTOS).map((c) => c.envKey) },
-  general: { title: "🧰 تنظیمات عمومی", keys: ["PRICE_MARKUP_PERCENT", "TMN_RATE_MANUAL", "GROUP_CHAT_ID", "SUPPORT_USERNAME", "WORKER_BASE_URL"] },
+  general: { title: "🧰 تنظیمات عمومی", keys: ["PRICE_MARKUP_PERCENT", "MIN_TOPUP_USD", "TMN_RATE_MANUAL", "GROUP_CHAT_ID", "SUPPORT_USERNAME", "WORKER_BASE_URL"] },
   access: { title: "🔒 عضویت و احراز هویت", keys: ["FORCE_JOIN_ENABLED", "FORCE_JOIN_CHANNEL", "PHONE_VERIFY_ENABLED"] },
 };
 const groupOfKey = (key) =>
@@ -1300,6 +1306,10 @@ function validateSetting(key, raw) {
   if (key === "GROUP_CHAT_ID") {
     const v = clean.replace(/\s/g, "");
     return /^-?\d{5,20}$/.test(v) ? { value: v } : { error: "آیدی عددی گروه معتبر نیست (مثال: -1001234567890). یا ربات را در گروه اضافه کنید و آنجا /setgroup بفرستید." };
+  }
+  if (key === "MIN_TOPUP_USD") {
+    return /^\d+(\.\d+)?$/.test(clean) && Number(clean) > 0 && Number(clean) <= 5000
+      ? { value: clean } : { error: "حداقل مبلغ شارژ باید عددی بزرگ‌تر از صفر و حداکثر ۵۰۰۰ دلار باشد." };
   }
   if (SETTING_FIELDS[key]?.numeric) {
     return /^\d+(\.\d+)?$/.test(clean) && Number(clean) > 0
@@ -1520,8 +1530,9 @@ async function handleMessage(env, msg, baseUrl) {
     const creditUsd = Math.round(Number(text) * 100) / 100;
     user.state = null;
     await saveUser(env, user);
-    if (!(creditUsd >= 1 && creditUsd <= 5000)) {
-      return send(env, chatId, "مبلغ شارژ باید بین ۱ تا ۵۰۰۰ دلار باشد. از منوی «افزایش موجودی» دوباره تلاش کنید.", backKb);
+    const minTopup = minTopupUsd(await getConfig(env));
+    if (!(creditUsd >= minTopup && creditUsd <= 5000)) {
+      return send(env, chatId, `مبلغ شارژ باید بین ${faNum(minTopup)} تا ۵۰۰۰ دلار باشد. از منوی «افزایش موجودی» دوباره تلاش کنید.`, backKb);
     }
     const topup = await createPaySession(env, chatId, creditUsd);
     const m = await paySessionMessage(env, topup, baseUrl);
@@ -1537,8 +1548,9 @@ async function handleMessage(env, msg, baseUrl) {
       return send(env, chatId, "⚠️ نرخ تتر در حال حاضر در دسترس نیست؛ مبلغ را به دلار وارد کنید یا چند دقیقه دیگر تلاش کنید.", backKb);
     }
     const creditUsd = Math.round((tmnAmount / rate) * 100) / 100;
-    if (!(creditUsd >= 1 && creditUsd <= 5000)) {
-      return send(env, chatId, `مبلغ تومانی باید معادل ۱ تا ۵۰۰۰ دلار باشد (با نرخ فعلی تتر، حدود ${faInt(rate)} تا ${faInt(rate * 5000)} تومان). از منوی «افزایش موجودی» دوباره تلاش کنید.`, backKb);
+    const minTopup = minTopupUsd(await getConfig(env));
+    if (!(creditUsd >= minTopup && creditUsd <= 5000)) {
+      return send(env, chatId, `مبلغ تومانی باید معادل ${faNum(minTopup)} تا ۵۰۰۰ دلار باشد (با نرخ فعلی تتر، حدود ${faInt(Math.round(rate * minTopup))} تا ${faInt(rate * 5000)} تومان). از منوی «افزایش موجودی» دوباره تلاش کنید.`, backKb);
     }
     const topup = await createPaySession(env, chatId, creditUsd, { inputToman: tmnAmount, inputRate: rate });
     const m = await paySessionMessage(env, topup, baseUrl);
@@ -1655,13 +1667,13 @@ async function handleCallback(env, cq, baseUrl) {
         user.state = "await_link_amount_tmn";
         await saveUser(env, user);
         return edit(env, chatId, msgId,
-          `🇮🇷 <b>ساخت لینک پرداخت — تومان</b>\n\n✍️ مبلغ شارژ را به <b>تومان</b> بنویسید (فقط عدد، مثال: 5000000):\n\nنرخ لحظه‌ای تتر: هر تتر <b>${faInt(rate)} تومان</b> — مبلغ شما با همین نرخ به دلار تبدیل می‌شود (معادل ۱ تا ۵۰۰۰ دلار).\n\nروش پرداخت را بعداً داخل صفحه پرداخت انتخاب می‌کنید و هر پرداخت ۳۰ دقیقه مهلت دارد.`,
+          `🇮🇷 <b>ساخت لینک پرداخت — تومان</b>\n\n✍️ مبلغ شارژ را به <b>تومان</b> بنویسید (فقط عدد، مثال: 5000000):\n\nنرخ لحظه‌ای تتر: هر تتر <b>${faInt(rate)} تومان</b> — مبلغ شما با همین نرخ به دلار تبدیل می‌شود (معادل ${faNum(minTopupUsd(await getConfig(env)))} تا ۵۰۰۰ دلار).\n\nروش پرداخت را بعداً داخل صفحه پرداخت انتخاب می‌کنید و هر پرداخت ۳۰ دقیقه مهلت دارد.`,
           kb([[btn("⬅️ بازگشت", "link_new")]]));
       }
       user.state = "await_link_amount";
       await saveUser(env, user);
       return edit(env, chatId, msgId,
-        `💵 <b>ساخت لینک پرداخت — دلار</b>\n\n✍️ مبلغ شارژی را که می‌خواهید به <b>دلار</b> بنویسید (فقط عدد، مثال: 50):\n\nروش پرداخت را بعداً داخل صفحه پرداخت انتخاب می‌کنید و هر پرداخت ۳۰ دقیقه مهلت دارد.`,
+        `💵 <b>ساخت لینک پرداخت — دلار</b>\n\n✍️ مبلغ شارژی را که می‌خواهید به <b>دلار</b> بنویسید (فقط عدد، مثال: 50 — حداقل ${faNum(minTopupUsd(await getConfig(env)))} و حداکثر ۵۰۰۰ دلار):\n\nروش پرداخت را بعداً داخل صفحه پرداخت انتخاب می‌کنید و هر پرداخت ۳۰ دقیقه مهلت دارد.`,
         kb([[btn("⬅️ بازگشت", "link_new")]]));
     }
     if (head === "ses_cancel") {
@@ -2151,7 +2163,7 @@ async function handleApi(env, request, url) {
 
     if (path === "/api/me") {
       const [user, rate, cfg] = await Promise.all([getUser(env, userId), usdtTomanRate(env), getConfig(env)]);
-      return jsonResp({ id: userId, name: sess.name, username: sess.username, photoUrl: sess.photoUrl, balance: Number(user.balance), rate, support: cfg.SUPPORT_USERNAME || null });
+      return jsonResp({ id: userId, name: sess.name, username: sess.username, photoUrl: sess.photoUrl, balance: Number(user.balance), rate, support: cfg.SUPPORT_USERNAME || null, minTopup: minTopupUsd(cfg) });
     }
     if (path === "/api/countries") {
       const countries = await smsfull(env, "/countries");
@@ -2220,7 +2232,8 @@ async function handleApi(env, request, url) {
       } else {
         creditUsd = Number(body.amountUsd);
       }
-      if (!(creditUsd >= 1 && creditUsd <= 5000)) return jsonResp({ error: "مبلغ باید معادل ۱ تا ۵۰۰۰ دلار باشد" }, 400);
+      const minTopup = minTopupUsd(cfgJ);
+      if (!(creditUsd >= minTopup && creditUsd <= 5000)) return jsonResp({ error: `مبلغ باید معادل ${faNum(minTopup)} تا ۵۰۰۰ دلار باشد` }, 400);
       // Same rule as the bot: only one active payment session per user.
       const mine = (await kvList(env, "topup:")).filter((t) => t.userId === String(userId) && t.status === "pending");
       const active = mine.find((t) => !topupIsExpired(t));
@@ -2494,7 +2507,7 @@ function renderMe(){
   if (S.me.photoUrl) ava.innerHTML = '<img src="' + escH(S.me.photoUrl) + '" alt="">';
   else ava.textContent = (S.me.name || '؟').charAt(0);
 }
-function refreshMe(){ return api('/api/me').then(function(me){ S.me = me; renderMe(); }); }
+function refreshMe(){ return api('/api/me').then(function(me){ S.me = me; renderMe(); updTpHint(); }); }
 function logout(){ try { sessionStorage.removeItem('bg_tok'); } catch (e) {} api('/api/auth/logout', { method:'POST' }).then(function(){ location.reload(); }); }
 function showView(name){
   closeSheet();
@@ -2684,11 +2697,20 @@ function setTopupMode(m){
   $('chipTmn').classList.toggle('on', m==='tmn');
   $('tpAmt').placeholder = m==='usd' ? '$ مبلغ به دلار' : 'مبلغ به تومان';
   $('tpResult').innerHTML = '';
+  updTpHint();
+}
+function updTpHint(){
+  var el = $('tpHint'); if (!el) return;
+  var min = S.me && S.me.minTopup ? Number(S.me.minTopup) : 1;
+  el.textContent = S.topupMode === 'usd'
+    ? 'مبلغ بین ' + faUsd(min) + ' تا $۵٬۰۰۰. بعد از ساخت، به صفحه پرداخت می‌روید و روش پرداخت (رمزارز یا کارت‌به‌کارت) را آنجا انتخاب می‌کنید.'
+    : 'مبلغ را به تومان وارد کنید؛ معادل دلاری آن باید بین ' + faUsd(min) + ' تا $۵٬۰۰۰ باشد و با نرخ لحظه‌ای تتر تبدیل می‌شود.';
 }
 function doTopup(){
   var raw = String($('tpAmt').value||'').replace(/[^0-9.]/g,'');
   var val = Number(raw);
   if (!(val > 0)) { toast('مبلغ را وارد کنید'); return; }
+  if (S.topupMode === 'usd' && S.me && S.me.minTopup && val < Number(S.me.minTopup)) { toast('حداقل مبلغ شارژ ' + faUsd(Number(S.me.minTopup)) + ' است'); return; }
   var body = S.topupMode === 'usd' ? { amountUsd: val } : { amountTmn: Math.round(val) };
   api('/api/topup', { method:'POST', body: JSON.stringify(body) }).then(function(j){
     $('tpResult').innerHTML = '<div class="confirm"><div class="row"><span>صفحه پرداخت ساخته شد</span><b>۳۰ دقیقه مهلت</b></div><a class="wbtn" style="width:100%;margin-top:10px" href="' + escH(j.payUrl) + '">رفتن به صفحه پرداخت ←</a></div>';
