@@ -21,7 +21,7 @@ refunded automatically (the provider only charges on a finished activation with 
   inside the bot (you also get the receipt forwarded with Approve/Reject buttons).
   The Toman → USD credit conversion is automatic using the Wallex USDT rate
   (the rate used is stored on each top-up and shown to the admin).
-- **Payment sessions (v1.3.0):** the user only enters the USD amount in the bot;
+- **Payment sessions (v1.3.0, Toman entry added v1.5.0):** the user enters the top-up amount in the bot in USD, or in Toman — converted to USD at the live USDT/TMN rate, with the entered Toman and the rate shown on the session;
   that creates a payment session with a **30-minute deadline** and a link to the
   payment page on the bot's own domain (`/pay?t=<session-id>`). The payment
   method is chosen **on the page** (any configured crypto, or card-to-card);
