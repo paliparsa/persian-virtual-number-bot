@@ -26,7 +26,7 @@ refunded automatically (the provider only charges on a finished activation with 
   (`/pay?t=<topup-id>`), and checks the chain automatically (button + cron every
   2 minutes). On a match it tops up the user automatically.
   Auto-check supports USDT-TRC20, TRX, BTC, TON, LTC, and ETH / USDT-ERC20
-  (ERC20 needs a free `ETHERSCAN_API_KEY`). Crypto prices in USD come from CoinGecko.
+  (ERC20 needs a free `ETHERSCAN_API_KEY`). Crypto USD prices are fetched redundantly — CoinGecko → Coinbase → Wallex-derived, with USDT fixed at $1 and a stale-cache last resort — because CoinGecko's free API aggressively rate-limits Cloudflare Workers' shared IPs, which used to abort top-ups with “price unavailable”.
 
 ## 1. Deploy from GitHub to Cloudflare (no code changes needed)
 

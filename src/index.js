@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "1.2.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "1.2.1"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 
 // ---------- small helpers ----------
@@ -196,19 +196,47 @@ const usdText = (tmnRate, usd) => {
 const topupCredit = (t) => Number(t.creditUsd ?? t.creditBrl ?? 0);
 
 // ---------- crypto prices & on-chain checks ----------
-// CoinGecko free endpoint (no key) for USD prices, cached in KV for 5 minutes.
+// USD price of a coin, from several independent free sources.
+// Why so many: this used to rely on CoinGecko alone, whose free API
+// rate-limits (HTTP 429) the shared egress IPs of Cloudflare Workers very
+// often — every failure aborted crypto top-ups with "price unavailable".
+// Order: fresh cache -> USDT is a dollar stablecoin (no fetch needed) ->
+// CoinGecko -> Coinbase -> Wallex (TMN price / USDT-TMN rate) -> stale cache.
+const COINBASE_PAIR = { bitcoin: "BTC-USD", ethereum: "ETH-USD", tron: "TRX-USD", litecoin: "LTC-USD", "the-open-network": "TON-USD", tether: "USDT-USD" };
+const WALLEX_TMN_SYMBOL = { bitcoin: "BTCTMN", ethereum: "ETHTMN", tron: "TRXTMN", litecoin: "LTCTMN", "the-open-network": "GRAMTMN" };
 async function cryptoPriceUsd(env, coingeckoId) {
   const cacheKey = `priceUsd:${coingeckoId}`;
   const cached = await kvGet(env, cacheKey);
   if (cached && now() - cached.at < 5 * 60 * 1000) return cached.usd;
-  const r = await fetch(
-    `https://api.coingecko.com/api/v3/simple/price?ids=${coingeckoId}&vs_currencies=usd`
-  );
-  const d = await r.json().catch(() => ({}));
-  const usd = d?.[coingeckoId]?.usd;
-  if (!usd) throw new Error("priceUnavailable");
-  await kvPut(env, cacheKey, { usd, at: now() }, 600);
-  return usd;
+  const save = async (usd) => { try { await kvPut(env, cacheKey, { usd, at: now() }, 3600); } catch (_) {} return usd; };
+  if (coingeckoId === "tether") return save(1); // 1 USDT = $1 by design
+  try { // CoinGecko
+    const r = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${coingeckoId}&vs_currencies=usd`);
+    const d = await r.json().catch(() => ({}));
+    const usd = Number(d?.[coingeckoId]?.usd);
+    if (usd > 0) return save(usd);
+  } catch (_) {}
+  try { // Coinbase spot (no key)
+    const pair = COINBASE_PAIR[coingeckoId];
+    if (pair) {
+      const r = await fetch(`https://api.coinbase.com/v2/prices/${pair}/spot`);
+      const d = await r.json().catch(() => ({}));
+      const usd = Number(d?.data?.amount);
+      if (usd > 0) return save(usd);
+    }
+  } catch (_) {}
+  try { // Wallex: coin/TMN divided by USDT/TMN
+    const sym = WALLEX_TMN_SYMBOL[coingeckoId];
+    const tmnRate = await usdtTomanRate(env);
+    if (sym && tmnRate) {
+      const r = await fetch("https://api.wallex.ir/v1/markets");
+      const d = await r.json().catch(() => ({}));
+      const last = Number(d?.result?.symbols?.[sym]?.stats?.lastPrice);
+      if (last > 0) return save(last / tmnRate);
+    }
+  } catch (_) {}
+  if (cached?.usd > 0) return cached.usd; // stale price beats no price
+  throw new Error("priceUnavailable");
 }
 
 const CRYPTOS = {
