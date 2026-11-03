@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "1.10.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.0.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -649,23 +649,23 @@ async function showConfirm(env, chatId, msgId, countryId, serviceId) {
   ]));
 }
 
-async function doBuy(env, chatId, msgId, countryId, serviceId, cbId) {
+// Shared purchase core (bot AND web app): validate, reserve the number with
+// the provider, charge the sell price and record the order. Throws errors
+// with .kind: noService | noFx | insufficient | provider (provider errors
+// keep their .code from the provider).
+async function buyActivation(env, userId, countryId, serviceId, onProgress) {
   const services = await smsfull(env, `/services?countryId=${countryId}`);
   const s = services.find((x) => x.id === Number(serviceId));
-  if (!s) { await answerCb(env, cbId, "سرویس موجود نیست", true); return; }
+  if (!s) throw Object.assign(new Error("سرویس موجود نیست"), { kind: "noService" });
   const cfg = await getConfig(env);
   const fx = await brlToUsdRate(env);
-  if (!fx) { await answerCb(env, cbId, "نرخ تبدیل ارز در دسترس نیست؛ چند دقیقه دیگر تلاش کنید", true); return; }
+  if (!fx) throw Object.assign(new Error("نرخ تبدیل ارز در دسترس نیست؛ چند دقیقه دیگر تلاش کنید"), { kind: "noFx" });
   const price = sellPrice(cfg, s.price * fx);
-  const user = await getUser(env, chatId);
+  const user = await getUser(env, userId);
   if (Number(user.balance) < price) {
-    const tmn = await usdtTomanRate(env);
-    await answerCb(env, cbId, "موجودی کافی نیست", true);
-    return edit(env, chatId, msgId,
-      `❌ <b>موجودی کافی نیست.</b>\n\nقیمت: ${usdText(tmn, price)}\nموجودی شما: ${usdText(tmn, user.balance)}\n\nابتدا موجودی خود را افزایش دهید.`,
-      kb([[btn("💳 افزایش موجودی", "topup")], [btn("⬅️ منوی اصلی", "home")]]));
+    throw Object.assign(new Error("موجودی کافی نیست"), { kind: "insufficient", price, balance: Number(user.balance) });
   }
-  await answerCb(env, cbId, "در حال خرید شماره…");
+  if (onProgress) await onProgress();
   let act;
   try {
     act = await smsfull(env, "/activations", {
@@ -673,23 +673,43 @@ async function doBuy(env, chatId, msgId, countryId, serviceId, cbId) {
       body: { serviceId: Number(serviceId), countryId: Number(countryId) },
       headers: { "Idempotency-Key": uid() },
     });
-  } catch (e) {
-    const msgs = {
-      noNumbersAvailable: "متأسفانه در این لحظه شماره‌ای موجود نیست.",
-      insufficientBalance: "موجودی فروشگاه نزد تأمین‌کننده کافی نیست. لطفاً با پشتیبانی تماس بگیرید.",
-      priceChanged: "قیمت در لحظه خرید تغییر کرد. لطفاً دوباره تلاش کنید.",
-    };
-    return edit(env, chatId, msgId, `❌ خرید انجام نشد.\n${msgs[e.code] || esc(e.message)}`, backKb);
-  }
+  } catch (e) { e.kind = "provider"; throw e; }
   // Charge the user only for the sell price; provider reserves its own price.
   user.balance = Math.round((Number(user.balance) - price) * 100) / 100;
   await saveUser(env, user);
   await kvPut(env, `act:${act.id}`, {
-    id: act.id, userId: String(chatId), price, providerPriceBrl: act.price,
+    id: act.id, userId: String(userId), price, providerPriceBrl: act.price,
     phoneNumber: act.phoneNumber, serviceName: act.service?.name || s.name,
     status: act.status, createdAt: now(), charged: true,
   });
-  return showActivation(env, chatId, msgId, act);
+  return { act, price };
+}
+
+async function doBuy(env, chatId, msgId, countryId, serviceId, cbId) {
+  let r;
+  try {
+    r = await buyActivation(env, chatId, countryId, serviceId, () => answerCb(env, cbId, "در حال خرید شماره…"));
+  } catch (e) {
+    if (e.kind === "insufficient") {
+      const tmn = await usdtTomanRate(env);
+      const user = await getUser(env, chatId);
+      await answerCb(env, cbId, "موجودی کافی نیست", true);
+      return edit(env, chatId, msgId,
+        `❌ <b>موجودی کافی نیست.</b>\n\nقیمت: ${usdText(tmn, e.price)}\nموجودی شما: ${usdText(tmn, user.balance)}\n\nابتدا موجودی خود را افزایش دهید.`,
+        kb([[btn("💳 افزایش موجودی", "topup")], [btn("⬅️ منوی اصلی", "home")]]));
+    }
+    if (e.kind === "provider") {
+      const msgs = {
+        noNumbersAvailable: "متأسفانه در این لحظه شماره‌ای موجود نیست.",
+        insufficientBalance: "موجودی فروشگاه نزد تأمین‌کننده کافی نیست. لطفاً با پشتیبانی تماس بگیرید.",
+        priceChanged: "قیمت در لحظه خرید تغییر کرد. لطفاً دوباره تلاش کنید.",
+      };
+      return edit(env, chatId, msgId, `❌ خرید انجام نشد.\n${msgs[e.code] || esc(e.message)}`, backKb);
+    }
+    await answerCb(env, cbId, e.message, true);
+    return;
+  }
+  return showActivation(env, chatId, msgId, r.act);
 }
 
 function activationText(act) {
@@ -760,10 +780,10 @@ async function postPurchaseToGroup(env, rec) {
   } catch (_) { /* an announcement must never break a purchase */ }
 }
 
-async function refreshActivation(env, chatId, msgId, id, cbId = null) {
-  // Checking must never look frozen: instant toast, and the result message
-  // always changes because it carries a fresh "last check" line.
-  if (cbId) await answerCb(env, cbId, "🔄 در حال بررسی کد…");
+// Shared activation state sync (bot screens AND the web app): fetch the
+// provider state, persist it, refund a code-less cancelled/expired order and
+// fire the one-time group announcement. Returns { act, rec }.
+async function syncActivation(env, id) {
   const act = await smsfull(env, `/activations/${id}`);
   const rec = await kvGet(env, `act:${id}`);
   if (rec && rec.status !== act.status) { rec.status = act.status; await kvPut(env, `act:${id}`, rec); }
@@ -774,10 +794,40 @@ async function refreshActivation(env, chatId, msgId, id, cbId = null) {
     rec.charged = false;
     await saveUser(env, user);
     await kvPut(env, `act:${id}`, rec);
-    await send(env, chatId, `↩️ مبلغ ${usdText(await usdtTomanRate(env), rec.price)} بابت سفارش بدون پیامک به موجودی شما برگشت.`);
+    await send(env, rec.userId, `↩️ مبلغ ${usdText(await usdtTomanRate(env), rec.price)} بابت سفارش بدون پیامک به موجودی شما برگشت.`);
   }
   // Announce in the purchases group the first time a code is delivered.
   if (rec && act.latestCode) await postPurchaseToGroup(env, rec);
+  return { act, rec };
+}
+
+// Shared activation action (bot buttons AND the web app) with the shop's
+// rules: no cancel inside the provider's 2-minute window, no cancel after a
+// code, finish only after a code. Returns { ok, act } or { ok:false, error }.
+async function actAction(env, userId, id, action) {
+  const rec = await kvGet(env, `act:${id}`);
+  if (!rec || rec.userId !== String(userId)) return { ok: false, error: "سفارش یافت نشد" };
+  if (action === "cancel" || action === "finish") {
+    const fresh = await smsfull(env, `/activations/${id}`).catch(() => null);
+    const hasCode = !!(fresh?.latestCode || fresh?.status === "codeReceived" || fresh?.status === "finished");
+    if (action === "finish" && !hasCode) return { ok: false, error: "اتمام کار فقط بعد از دریافت کد ممکن است.", refresh: true };
+    if (action === "cancel" && hasCode) return { ok: false, error: "کد این سفارش دریافت شده و دیگر امکان لغو وجود ندارد.", refresh: true };
+    if (action === "cancel" && rec.createdAt && now() - rec.createdAt < 120000) {
+      const remain = Math.ceil((120000 - (now() - rec.createdAt)) / 1000);
+      return { ok: false, error: `⏳ طبق محدودیت سایت تأمین‌کننده، تا ۲ دقیقه از خرید امکان لغو نیست. ${faDigits(remain)} ثانیه دیگر دوباره تلاش کنید.` };
+    }
+  }
+  try { await smsfull(env, `/activations/${id}/${action}`, { method: "POST" }); }
+  catch (e) { return { ok: false, error: e.message || "خطایی رخ داد" }; }
+  const { act } = await syncActivation(env, id);
+  return { ok: true, act };
+}
+
+async function refreshActivation(env, chatId, msgId, id, cbId = null) {
+  // Checking must never look frozen: instant toast, and the result message
+  // always changes because it carries a fresh "last check" line.
+  if (cbId) await answerCb(env, cbId, "🔄 در حال بررسی کد…");
+  const { act } = await syncActivation(env, id);
   const t = new Date(now()).toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "Asia/Tehran" });
   const note = act.latestCode
     ? `\n\n🕐 آخرین بررسی: ${t}`
@@ -1264,29 +1314,12 @@ async function handleCallback(env, cq, baseUrl) {
     if (head === "buy") return doBuy(env, chatId, msgId, a, b, cq.id);
     if (head === "act") return refreshActivation(env, chatId, msgId, a, cq.id);
     if (head === "resend" || head === "cancel" || head === "finish") {
-      if (head === "cancel" || head === "finish") {
-        const fresh = await smsfull(env, `/activations/${a}`).catch(() => null);
-        const hasCode = !!(fresh?.latestCode || fresh?.status === "codeReceived" || fresh?.status === "finished");
-        if (head === "finish" && !hasCode) {
-          await answerCb(env, cq.id, "اتمام کار فقط بعد از دریافت کد ممکن است.", true);
-          return refreshActivation(env, chatId, msgId, a);
-        }
-        if (head === "cancel" && hasCode) {
-          await answerCb(env, cq.id, "کد این سفارش دریافت شده و دیگر امکان لغو وجود ندارد.", true);
-          return refreshActivation(env, chatId, msgId, a);
-        }
-        if (head === "cancel") {
-          // The provider itself forbids cancelling in the first 2 minutes;
-          // say so up front (with the remaining seconds) instead of erroring.
-          const rec = await kvGet(env, `act:${a}`);
-          if (rec?.createdAt && now() - rec.createdAt < 120000) {
-            const remain = Math.ceil((120000 - (now() - rec.createdAt)) / 1000);
-            await answerCb(env, cq.id, `⏳ طبق محدودیت سایت تأمین‌کننده، تا ۲ دقیقه از خرید امکان لغو نیست. ${faDigits(remain)} ثانیه دیگر دوباره تلاش کنید.`, true);
-            return;
-          }
-        }
+      const r = await actAction(env, chatId, a, head);
+      if (!r.ok) {
+        await answerCb(env, cq.id, r.error, true);
+        if (r.refresh) return refreshActivation(env, chatId, msgId, a);
+        return;
       }
-      await smsfull(env, `/activations/${a}/${head}`, { method: "POST" });
       await answerCb(env, cq.id, head === "cancel" ? "لغو شد" : head === "finish" ? "پایان یافت" : "درخواست پیامک مجدد ثبت شد");
       return refreshActivation(env, chatId, msgId, a);
     }
@@ -1675,6 +1708,558 @@ a{color:#fff}
 </div></body></html>`;
 }
 
+// ---------- web app: Telegram login, sessions, JSON API ----------
+const jsonResp = (obj, status = 200, extra = {}) => new Response(JSON.stringify(obj), {
+  status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...extra },
+});
+const bytesToHex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+async function hmacSha256Hex(keyBytes, data) {
+  const key = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return bytesToHex(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data)));
+}
+// Telegram Login Widget verification: secret = SHA256(bot token), then
+// HMAC-SHA256 over the sorted "key=value" lines of the payload.
+async function verifyTelegramAuth(env, data) {
+  if (!env.TELEGRAM_BOT_TOKEN || !data || !data.hash || !data.id) return false;
+  if (Math.abs(Math.floor(Date.now() / 1000) - Number(data.auth_date || 0)) > 86400) return false;
+  const secret = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.TELEGRAM_BOT_TOKEN));
+  const check = Object.keys(data).filter((k) => k !== "hash").sort().map((k) => `${k}=${data[k]}`).join("\n");
+  const sig = await hmacSha256Hex(secret, check);
+  const a = new TextEncoder().encode(sig);
+  const b = new TextEncoder().encode(String(data.hash));
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+async function kvDel(env, key) { if (env.STORE) await env.STORE.delete(key); }
+const SESSION_TTL = 30 * 24 * 3600;
+async function createSession(env, profile) {
+  const token = bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
+  await kvPut(env, `sess:${token}`, {
+    userId: String(profile.id), name: profile.first_name || "",
+    username: profile.username || "", photoUrl: profile.photo_url || "", createdAt: now(),
+  }, SESSION_TTL);
+  return token;
+}
+function sessionTokenFrom(request) {
+  const m = /(?:^|;\s*)bg_sess=([a-f0-9]{64})/.exec(request.headers.get("cookie") || "");
+  return m ? m[1] : null;
+}
+async function getSession(env, request) {
+  const t = sessionTokenFrom(request);
+  if (!t) return null;
+  const sess = await kvGet(env, `sess:${t}`);
+  return sess ? { token: t, ...sess } : null;
+}
+const sessionCookie = (token) => `bg_sess=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${SESSION_TTL}`;
+async function botUsername(env) {
+  const cached = await kvGet(env, "sys:botinfo");
+  if (cached?.username) return cached.username;
+  const me = await tg(env, "getMe", {}).catch(() => null);
+  const u = me?.result?.username || "";
+  if (u) { try { await kvPut(env, "sys:botinfo", { username: u, at: now() }); } catch (_) {} }
+  return u;
+}
+const apiAct = (act, rec) => ({
+  id: act.id ?? rec?.id,
+  phone: act.phoneNumber ? `+${act.phoneNumber}` : (rec?.phoneNumber ? `+${rec.phoneNumber}` : ""),
+  serviceName: rec?.serviceName || act.service?.name || "",
+  status: act.status || rec?.status || "",
+  code: act.latestCode || null,
+  codes: act.codes || [],
+  expiresAt: act.expiresAt || null,
+  createdAt: rec?.createdAt || null,
+  price: rec?.price ?? null,
+});
+
+async function handleApi(env, request, url) {
+  const path = url.pathname;
+  try {
+    if (path === "/api/auth/telegram" && request.method === "POST") {
+      const data = await request.json().catch(() => null);
+      if (!(await verifyTelegramAuth(env, data))) return jsonResp({ error: "ورود ناموفق بود؛ دوباره تلاش کنید" }, 401);
+      await getUser(env, data.id); // ensure the shared bot/web account exists
+      const token = await createSession(env, data);
+      return jsonResp({ ok: true }, 200, { "set-cookie": sessionCookie(token) });
+    }
+    if (path === "/api/auth/logout" && request.method === "POST") {
+      const sess = await getSession(env, request);
+      if (sess) await kvDel(env, `sess:${sess.token}`);
+      return jsonResp({ ok: true }, 200, { "set-cookie": "bg_sess=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0" });
+    }
+    const sess = await getSession(env, request);
+    if (!sess) return jsonResp({ error: "unauthorized" }, 401);
+    const userId = sess.userId;
+
+    if (path === "/api/me") {
+      const [user, rate, cfg] = await Promise.all([getUser(env, userId), usdtTomanRate(env), getConfig(env)]);
+      return jsonResp({ id: userId, name: sess.name, username: sess.username, photoUrl: sess.photoUrl, balance: Number(user.balance), rate, support: cfg.SUPPORT_USERNAME || null });
+    }
+    if (path === "/api/countries") {
+      const countries = await smsfull(env, "/countries");
+      return jsonResp({ countries: countries.map((c) => ({ id: c.id, name: countryEnName(c), emoji: c.emoji || "🌍" })) });
+    }
+    if (path === "/api/services") {
+      const countryId = url.searchParams.get("countryId");
+      const cfg = await getConfig(env);
+      const [fx, rate] = await Promise.all([brlToUsdRate(env), usdtTomanRate(env)]);
+      const services = await smsfull(env, `/services?countryId=${countryId}`);
+      return jsonResp({ rate, services: services.filter((x) => x.available > 0).map((x) => ({ id: x.id, name: x.name, available: x.available, priceUsd: fx ? sellPrice(cfg, x.price * fx) : null })) });
+    }
+    if (path === "/api/buy" && request.method === "POST") {
+      const body = await request.json().catch(() => ({}));
+      try {
+        const r = await buyActivation(env, userId, body.countryId, body.serviceId);
+        const rec = await kvGet(env, `act:${r.act.id}`);
+        return jsonResp({ activation: apiAct(r.act, rec) });
+      } catch (e) {
+        if (e.kind === "provider") {
+          const msgs = {
+            noNumbersAvailable: "متأسفانه در این لحظه شماره‌ای موجود نیست.",
+            insufficientBalance: "موجودی فروشگاه نزد تأمین‌کننده کافی نیست. لطفاً با پشتیبانی تماس بگیرید.",
+            priceChanged: "قیمت در لحظه خرید تغییر کرد. لطفاً دوباره تلاش کنید.",
+          };
+          return jsonResp({ error: msgs[e.code] || e.message }, 400);
+        }
+        return jsonResp({ error: e.message, kind: e.kind || null, price: e.price ?? null }, 400);
+      }
+    }
+    if (path === "/api/orders") {
+      const mine = (await kvList(env, "act:")).filter((x) => x.userId === String(userId))
+        .sort((x, y) => y.createdAt - x.createdAt).slice(0, 50);
+      return jsonResp({ orders: mine.map((o) => ({ id: o.id, phone: `+${o.phoneNumber}`, serviceName: o.serviceName, status: o.status, price: o.price, createdAt: o.createdAt })) });
+    }
+    if (path === "/api/activation") {
+      const id = url.searchParams.get("id");
+      const rec0 = await kvGet(env, `act:${id}`);
+      if (!rec0 || rec0.userId !== String(userId)) return jsonResp({ error: "سفارش یافت نشد" }, 404);
+      const { act, rec } = await syncActivation(env, id);
+      return jsonResp({ activation: apiAct(act, rec) });
+    }
+    if (path === "/api/activation/action" && request.method === "POST") {
+      const body = await request.json().catch(() => ({}));
+      if (!["resend", "cancel", "finish"].includes(body.action)) return jsonResp({ error: "عملیات نامعتبر" }, 400);
+      const r = await actAction(env, userId, body.id, body.action);
+      if (!r.ok) return jsonResp({ error: r.error }, 400);
+      const rec = await kvGet(env, `act:${body.id}`);
+      return jsonResp({ activation: apiAct(r.act, rec) });
+    }
+    if (path === "/api/topup" && request.method === "POST") {
+      const body = await request.json().catch(() => ({}));
+      let creditUsd = null;
+      const extra = {};
+      if (body.amountTmn != null) {
+        const rate = await usdtTomanRate(env);
+        if (!rate) return jsonResp({ error: "نرخ تتر در حال حاضر در دسترس نیست؛ مبلغ را به دلار وارد کنید" }, 400);
+        creditUsd = Math.round((Number(body.amountTmn) / rate) * 100) / 100;
+        extra.inputToman = Number(body.amountTmn);
+        extra.inputRate = rate;
+      } else {
+        creditUsd = Number(body.amountUsd);
+      }
+      if (!(creditUsd >= 1 && creditUsd <= 5000)) return jsonResp({ error: "مبلغ باید معادل ۱ تا ۵۰۰۰ دلار باشد" }, 400);
+      // Same rule as the bot: only one active payment session per user.
+      const mine = (await kvList(env, "topup:")).filter((t) => t.userId === String(userId) && t.status === "pending");
+      const active = mine.find((t) => !topupIsExpired(t));
+      if (active) return jsonResp({ error: "یک پرداخت فعال دارید؛ اول آن را تکمیل یا لغو کنید", payUrl: `${url.origin}/pay?t=${active.id}` }, 400);
+      const topup = await createPaySession(env, userId, creditUsd, extra);
+      return jsonResp({ payUrl: `${url.origin}/pay?t=${topup.id}`, expiresAt: topup.expiresAt });
+    }
+    return jsonResp({ error: "not found" }, 404);
+  } catch (e) {
+    return jsonResp({ error: String(e?.message || e) }, 500);
+  }
+}
+
+// ---------- web app page (/app) ----------
+// Single-page app in the same black-and-white design as /pay and the
+// approved preview: Telegram login, shop, services, live activation,
+// orders and top-up — all backed by the JSON API above and the same
+// accounts/balances as the bot.
+async function appPage(env, cfg) {
+  const username = await botUsername(env);
+  const widget = username
+    ? `<script async src="https://telegram.org/js/telegram-widget.js?22" data-telegram-login="${esc(username)}" data-size="large" data-radius="12" data-onauth="onTelegramAuth(user)" data-request-access="write"></script>`
+    : `<p class="small">دکمه ورود در دسترس نیست؛ از ربات تلگرام استفاده کنید.</p>`;
+  return `<!doctype html>
+<html lang="fa" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BlueGate — شماره مجازی</title>
+<link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#000;color:#fff;font-family:Vazirmatn,Tahoma,sans-serif;min-height:100vh}
+.wrap{max-width:430px;margin:0 auto;padding:22px 20px 96px;position:relative}
+.wrap:before{content:"";position:absolute;top:-120px;left:50%;transform:translateX(-50%);width:340px;height:220px;background:radial-gradient(closest-side,rgba(255,255,255,.09),transparent);pointer-events:none}
+.brandrow{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;position:relative}
+.logo{font-weight:800;font-size:17px}
+.logo span{color:#8e8e93;font-weight:400;font-size:12px;display:block}
+.userchip{display:flex;align-items:center;gap:8px}
+.balpill{border:1px solid #2c2c31;border-radius:999px;padding:5px 12px;font-size:13px;color:#fff;background:none;font-family:inherit;cursor:pointer}
+.avatar{width:32px;height:32px;border-radius:50%;background:#fff;color:#000;font-weight:800;display:flex;align-items:center;justify-content:center;font-size:14px;overflow:hidden;border:none;cursor:pointer;padding:0}
+.avatar img{width:100%;height:100%;object-fit:cover}
+.hero{text-align:center;padding:48px 6px 0}
+.hero .big{font-size:30px;font-weight:800;line-height:1.5}
+.hero .slogan{color:#9a9aa2;margin-top:8px;font-size:14.5px;line-height:1.9}
+.tgwrap{margin:30px 0 6px;display:flex;justify-content:center;min-height:48px}
+.feats{margin:22px 0 0;text-align:right}
+.feats div{padding:11px 2px;border-bottom:1px solid #1b1b1f;color:#c9c9ce;font-size:14px}
+.feats div:last-child{border-bottom:none}
+.foot{margin-top:26px;color:#6d6d75;font-size:12px;text-align:center;line-height:1.9}
+.foot a,.linklike{color:#9a9aa2}
+.balcard{border:1px solid #26262b;border-radius:18px;padding:16px;margin-bottom:16px;background:linear-gradient(180deg,#101012,#0a0a0b)}
+.balcard .lbl{color:#8e8e93;font-size:12.5px}
+.balcard .amt{font-size:27px;font-weight:800;margin:2px 0}
+.balcard .tmn{color:#9a9aa2;font-size:13px}
+.wbtn{background:#fff;color:#000;border:none;border-radius:11px;padding:11px 16px;font-family:inherit;font-weight:700;font-size:14px;cursor:pointer;display:inline-block;text-decoration:none;text-align:center}
+.gbtn{background:transparent;color:#fff;border:1px solid #333338;border-radius:11px;padding:11px 16px;font-family:inherit;font-size:14px;cursor:pointer}
+.gbtn:disabled{opacity:.45;cursor:default}
+.search{width:100%;background:#101012;border:1px solid #26262b;border-radius:12px;color:#fff;padding:11px 14px;font-family:inherit;font-size:14px;margin-bottom:14px}
+.search::placeholder{color:#6d6d75}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.country{border:1px solid #232328;border-radius:14px;padding:13px 12px;cursor:pointer;background:#0c0c0e;text-align:right;font-family:inherit;color:#fff;width:100%}
+.country .nm{font-size:15px;font-weight:700;margin-top:4px}
+.country .fl{font-size:21px}
+.nav{position:fixed;bottom:0;right:50%;transform:translateX(50%);width:100%;max-width:430px;background:rgba(0,0,0,.92);backdrop-filter:blur(8px);border-top:1px solid #1b1b1f;padding:11px 4px calc(11px + env(safe-area-inset-bottom));display:flex;justify-content:space-around;z-index:5}
+.nav button,.nav a{background:none;border:none;color:#8e8e93;font-size:12px;font-family:inherit;cursor:pointer;text-decoration:none}
+.nav .on{color:#fff;font-weight:700}
+.back{color:#9a9aa2;font-size:13.5px;cursor:pointer;margin-bottom:10px;background:none;border:none;font-family:inherit;padding:0}
+.svc{display:flex;align-items:center;justify-content:space-between;width:100%;padding:13px 2px;border-bottom:1px solid #1b1b1f;cursor:pointer;background:none;border-top:none;border-left:none;border-right:none;color:#fff;font-family:inherit;text-align:right}
+.svc.sel{background:#101013}
+.svc .nm{font-weight:700;font-size:15px}
+.svc .st{color:#8e8e93;font-size:12px;margin-top:1px}
+.svc .pr{text-align:left;flex:none}
+.svc .pr .usd{font-weight:800}
+.svc .pr .tmn{color:#8e8e93;font-size:12px}
+.confirm{border:1px solid #2e2e34;border-radius:16px;padding:15px;margin:16px 0 4px;background:#0c0c0e}
+.confirm .row{display:flex;justify-content:space-between;color:#c9c9ce;font-size:14px;padding:4px 0}
+.confirm .row b{color:#fff}
+.numcard{border-radius:18px;padding:18px;background:linear-gradient(135deg,#17171a,#0b0b0d 55%,#121215);border:1px solid #26262b;position:relative;overflow:hidden;cursor:pointer;width:100%;text-align:right;color:#fff;font-family:inherit}
+.numcard .lbl{color:#8e8e93;font-size:12.5px}
+.numcard .num{font-size:24px;font-weight:800;letter-spacing:1px;direction:ltr;text-align:left;margin:4px 0 2px}
+.pill{display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:5px 12px;font-size:12.5px;border:1px solid #3a2c17;color:#ff9f43;background:rgba(255,159,67,.07)}
+.pill.ok{border-color:#2c2c31;color:#fff;background:#141416}
+.pill.bad{border-color:#3d1d1a;color:#ff453a;background:rgba(255,69,58,.06)}
+.dot{width:7px;height:7px;border-radius:50%;background:#ff9f43;animation:pl 1.2s infinite}
+@keyframes pl{50%{opacity:.25}}
+.codezone{margin:20px 0 6px;text-align:center;padding:22px 10px;border:1px dashed #2c2c31;border-radius:16px;color:#9a9aa2;font-size:14px;line-height:2}
+.codeboxes{display:flex;gap:7px;justify-content:center;direction:ltr;margin:16px 0 2px;cursor:pointer}
+.codeboxes span{min-width:44px;height:54px;padding:0 4px;border:1px solid #333338;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:800;background:#0c0c0e}
+.btnrow{display:flex;gap:9px;margin-top:16px}
+.btnrow button{flex:1}
+.small{color:#6d6d75;font-size:12px;text-align:center;margin-top:12px;line-height:1.9}
+.ord{display:flex;justify-content:space-between;align-items:center;width:100%;padding:13px 2px;border-bottom:1px solid #1b1b1f;background:none;border-top:none;border-left:none;border-right:none;color:#fff;font-family:inherit;cursor:pointer;text-align:right}
+.ord .ph{font-weight:700;direction:ltr;text-align:left}
+.ord .mt{color:#8e8e93;font-size:12px;margin-top:2px}
+.chips{display:flex;gap:8px;margin-bottom:14px}
+.chips button{flex:1;background:#141416;color:#c9c9ce;border:1px solid #26262b;border-radius:12px;padding:10px;font-family:inherit;font-size:14px;cursor:pointer}
+.chips button.on{background:#fff;color:#000;font-weight:700}
+.amtin{width:100%;background:#101012;border:1px solid #26262b;border-radius:12px;color:#fff;padding:13px 14px;font-family:inherit;font-size:17px;margin-bottom:12px;text-align:center}
+#toast{position:fixed;bottom:86px;right:50%;transform:translateX(50%) translateY(16px);background:#fff;color:#000;border-radius:999px;padding:9px 18px;font-size:13.5px;font-weight:700;opacity:0;pointer-events:none;transition:.25s;z-index:9;max-width:92vw;text-align:center}
+#toast.show{opacity:1;transform:translateX(50%) translateY(0)}
+.view{display:none}.view.on{display:block;animation:in .3s ease}
+@keyframes in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
+.loading{color:#8e8e93;text-align:center;padding:26px 0;font-size:14px}
+</style></head><body>
+<div class="wrap">
+
+  <div id="viewLogin">
+    <div class="brandrow"><div class="logo">BlueGate<span>دروازه‌ای امن به دنیای پرسرعت</span></div></div>
+    <div class="hero">
+      <div class="big">شماره مجازی،<br>بدون مرز 🌍</div>
+      <p class="slogan">خرید شماره از سراسر دنیا و دریافت آنی کد پیامک —<br>همان حساب و موجودی ربات تلگرام شما.</p>
+      <div class="tgwrap">${widget}</div>
+      <p class="small">اگر دکمه ورود نمایش داده نشد، چند ثانیه صبر کنید یا صفحه را تازه کنید.</p>
+      <div class="feats">
+        <div>✅ بدون ثبت‌نام و رمز عبور — ورود رسمی تلگرام</div>
+        <div>💰 موجودی مشترک با ربات؛ شارژ از هرجا، خرج از هرجا</div>
+        <div>⚡ کد به‌صورت خودکار و زنده روی صفحه می‌آید</div>
+      </div>
+    </div>
+    <p class="foot">با ورود، <a href="/terms">قوانین و مقررات</a> BlueGate را می‌پذیرید.</p>
+  </div>
+
+  <div id="viewApp" style="display:none">
+    <div class="brandrow">
+      <div class="logo">BlueGate</div>
+      <div class="userchip">
+        <button class="balpill" id="hdrBal" onclick="showView('topup')">💰 …</button>
+        <button class="avatar" id="hdrAva" title="خروج" onclick="logout()">؟</button>
+      </div>
+    </div>
+
+    <section class="view on" id="v-shop">
+      <div class="balcard">
+        <div class="lbl" id="greetName">موجودی شما</div>
+        <div class="amt" id="balAmt">…</div>
+        <div class="tmn" id="balTmn"></div>
+        <div style="margin-top:12px;display:flex;gap:8px">
+          <button class="wbtn" onclick="showView('topup')">💳 افزایش موجودی</button>
+          <button class="gbtn" onclick="logout()">خروج</button>
+        </div>
+      </div>
+      <input class="search" id="cSearch" placeholder="🔍 جستجوی کشور…">
+      <div class="grid" id="cGrid"><div class="loading">در حال بارگذاری کشورها…</div></div>
+    </section>
+
+    <section class="view" id="v-services">
+      <button class="back" onclick="showView('shop')">‹ بازگشت به کشورها</button>
+      <h2 class="title" id="svcTitle">سرویس‌ها</h2>
+      <input class="search" id="sSearch" placeholder="🔍 جستجوی سرویس…">
+      <div id="svcList"><div class="loading">در حال بارگذاری…</div></div>
+      <div id="confirmCard"></div>
+    </section>
+
+    <section class="view" id="v-act">
+      <button class="back" onclick="showView('shop')">‹ فروشگاه</button>
+      <div id="actBox"><div class="loading">در حال بارگذاری سفارش…</div></div>
+    </section>
+
+    <section class="view" id="v-orders">
+      <h2 class="title">📱 سفارش‌های من</h2>
+      <div id="ordList"><div class="loading">در حال بارگذاری…</div></div>
+    </section>
+
+    <section class="view" id="v-topup">
+      <h2 class="title">💳 افزایش موجودی</h2>
+      <div class="chips">
+        <button id="chipUsd" class="on" onclick="setTopupMode('usd')">💵 مبلغ به دلار</button>
+        <button id="chipTmn" onclick="setTopupMode('tmn')">🇮🇷 مبلغ به تومان</button>
+      </div>
+      <input class="amtin" id="tpAmt" inputmode="numeric" placeholder="$ مبلغ">
+      <p class="small" id="tpHint">مبلغ بین ۱ تا ۵۰۰۰ دلار. بعد از ساخت، به صفحه پرداخت می‌روید و روش پرداخت (رمزارز یا کارت‌به‌کارت) را آنجا انتخاب می‌کنید.</p>
+      <button class="wbtn" style="width:100%" onclick="doTopup()">ساخت صفحه پرداخت</button>
+      <div id="tpResult"></div>
+    </section>
+
+    <nav class="nav">
+      <button data-nav="shop" class="on" onclick="showView('shop')">🛒 فروشگاه</button>
+      <button data-nav="orders" onclick="showView('orders')">📱 سفارش‌ها</button>
+      <button data-nav="topup" onclick="showView('topup')">💳 شارژ</button>
+      <a href="/terms">📜 قوانین</a>
+    </nav>
+  </div>
+</div>
+<div id="toast"></div>
+<script>
+var S = { me:null, countries:[], country:null, services:[], rate:null, sel:null, act:null, poll:null, cd:null, topupMode:'usd' };
+function $(id){ return document.getElementById(id); }
+function faDigits(s){ return String(s).replace(/[0-9]/g, function(d){ return '۰۱۲۳۴۵۶۷۸۹'[Number(d)]; }); }
+function faUsd(v){ return '$' + Number(v||0).toLocaleString('fa-IR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function faTmn(v){ return Math.round(Number(v||0)).toLocaleString('fa-IR') + ' تومان'; }
+function faN(v){ return Number(v||0).toLocaleString('fa-IR'); }
+function escH(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+var toastTimer=null;
+function toast(msg){ var t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer=setTimeout(function(){ t.classList.remove('show'); }, 3600); }
+function api(path, opts){
+  opts = opts || {};
+  opts.headers = { 'content-type':'application/json' };
+  return fetch(path, opts).then(function(r){
+    return r.json().catch(function(){ return {}; }).then(function(j){
+      if (r.status === 401 && path.indexOf('/api/auth/') !== 0) { showLogin(); throw new Error('unauthorized'); }
+      if (!r.ok) { var e = new Error(j.error || 'خطایی رخ داد'); e.data = j; throw e; }
+      return j;
+    });
+  });
+}
+function onTelegramAuth(user){
+  api('/api/auth/telegram', { method:'POST', body: JSON.stringify(user) })
+    .then(function(){ boot(); })
+    .catch(function(e){ toast(e.message); });
+}
+function showLogin(){ stopActTimers(); $('viewApp').style.display='none'; $('viewLogin').style.display='block'; }
+function showApp(){ $('viewLogin').style.display='none'; $('viewApp').style.display='block'; }
+function boot(){
+  api('/api/me').then(function(me){
+    S.me = me; showApp(); renderMe(); loadCountries();
+  }).catch(function(){ showLogin(); });
+}
+function renderMe(){
+  if (!S.me) return;
+  $('hdrBal').textContent = '💰 ' + faUsd(S.me.balance);
+  $('balAmt').textContent = faUsd(S.me.balance);
+  $('balTmn').textContent = S.me.rate ? '≈ ' + faTmn(S.me.balance * S.me.rate) : '';
+  $('greetName').textContent = S.me.name ? ('سلام، ' + S.me.name + ' 👋 — موجودی شما') : 'موجودی شما';
+  var ava = $('hdrAva');
+  if (S.me.photoUrl) ava.innerHTML = '<img src="' + escH(S.me.photoUrl) + '" alt="">';
+  else ava.textContent = (S.me.name || '؟').charAt(0);
+}
+function refreshMe(){ return api('/api/me').then(function(me){ S.me = me; renderMe(); }); }
+function logout(){ api('/api/auth/logout', { method:'POST' }).then(function(){ location.reload(); }); }
+function showView(name){
+  ['shop','services','act','orders','topup'].forEach(function(v){ $('v-'+v).classList.toggle('on', v===name); });
+  document.querySelectorAll('[data-nav]').forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-nav')===name); });
+  if (name !== 'act') stopActTimers();
+  if (name === 'orders') loadOrders();
+  window.scrollTo(0,0);
+}
+function loadCountries(){
+  api('/api/countries').then(function(j){ S.countries = j.countries || []; renderCountries(''); })
+    .catch(function(e){ $('cGrid').innerHTML = '<div class="loading">' + escH(e.message) + '</div>'; });
+}
+function renderCountries(q){
+  q = (q||'').toLowerCase();
+  var html = '';
+  S.countries.forEach(function(c){
+    if (q && c.name.toLowerCase().indexOf(q) === -1) return;
+    html += '<button class="country" onclick="pickCountry(' + c.id + ')"><div class="fl">' + escH(c.emoji) + '</div><div class="nm">' + escH(c.name) + '</div></button>';
+  });
+  $('cGrid').innerHTML = html || '<div class="loading">کشوری پیدا نشد</div>';
+}
+$('cSearch').addEventListener('input', function(){ renderCountries(this.value); });
+function pickCountry(id){
+  S.country = null;
+  S.countries.forEach(function(c){ if (c.id === id) S.country = c; });
+  S.sel = null; $('confirmCard').innerHTML = '';
+  showView('services');
+  $('svcTitle').textContent = S.country ? (S.country.emoji + ' ' + S.country.name) : 'سرویس‌ها';
+  $('svcList').innerHTML = '<div class="loading">در حال بارگذاری…</div>';
+  api('/api/services?countryId=' + id).then(function(j){
+    S.rate = j.rate; S.services = j.services || []; renderServices('');
+  }).catch(function(e){ $('svcList').innerHTML = '<div class="loading">' + escH(e.message) + '</div>'; });
+}
+function renderServices(q){
+  q = (q||'').toLowerCase();
+  var html = '';
+  S.services.forEach(function(s){
+    if (q && s.name.toLowerCase().indexOf(q) === -1) return;
+    var tmn = (S.rate && s.priceUsd != null) ? '<div class="tmn">≈ ' + faTmn(s.priceUsd * S.rate) + '</div>' : '';
+    html += '<button class="svc' + (S.sel && S.sel.id === s.id ? ' sel' : '') + '" onclick="pickService(' + s.id + ')"><span><span class="nm">' + escH(s.name) + '</span><div class="st">موجود: ' + faN(s.available) + ' شماره</div></span><span class="pr"><div class="usd">' + (s.priceUsd != null ? faUsd(s.priceUsd) : '—') + '</div>' + tmn + '</span></button>';
+  });
+  $('svcList').innerHTML = html || '<div class="loading">سرویسی موجود نیست</div>';
+}
+$('sSearch').addEventListener('input', function(){ renderServices(this.value); });
+function pickService(id){
+  S.sel = null;
+  S.services.forEach(function(s){ if (s.id === id) S.sel = s; });
+  renderServices($('sSearch').value);
+  if (!S.sel) { $('confirmCard').innerHTML=''; return; }
+  var bal = S.me ? Number(S.me.balance) : 0;
+  var tmnRow = (S.rate && S.sel.priceUsd != null) ? '<div class="row"><span>معادل تومانی</span><b>' + faTmn(S.sel.priceUsd * S.rate) + '</b></div>' : '';
+  $('confirmCard').innerHTML = '<div class="confirm">'
+    + '<div class="row"><span>سرویس</span><b>' + escH(S.sel.name) + (S.country ? ' — ' + escH(S.country.emoji + ' ' + S.country.name) : '') + '</b></div>'
+    + '<div class="row"><span>مبلغ</span><b>' + (S.sel.priceUsd != null ? faUsd(S.sel.priceUsd) : '—') + '</b></div>'
+    + tmnRow
+    + '<div class="row"><span>موجودی بعد از خرید</span><b>' + faUsd(bal - Number(S.sel.priceUsd||0)) + '</b></div>'
+    + '<button class="wbtn" style="width:100%;margin-top:12px" onclick="doBuy()">تأیید و خرید</button></div>';
+}
+function doBuy(){
+  if (!S.country || !S.sel) return;
+  api('/api/buy', { method:'POST', body: JSON.stringify({ countryId: S.country.id, serviceId: S.sel.id }) })
+    .then(function(j){ refreshMe(); openAct(j.activation); })
+    .catch(function(e){ toast(e.message); });
+}
+var STATUS_FA = { waitingSms:'در انتظار پیامک', resendRequested:'درخواست پیامک مجدد ثبت شد', codeReceived:'کد دریافت شد', finished:'پایان‌یافته', cancelled:'لغو شده', expired:'منقضی شده', refunded:'برگشت‌وجه‌شده' };
+function statusPill(a){
+  if (a.status === 'codeReceived') return '<span class="pill ok">✓ کد دریافت شد</span>';
+  if (a.status === 'finished') return '<span class="pill ok">🏁 پایان‌یافته</span>';
+  if (['cancelled','expired','refunded'].indexOf(a.status) !== -1) return '<span class="pill bad">' + (STATUS_FA[a.status]||a.status) + '</span>';
+  return '<span class="pill"><span class="dot"></span>' + (STATUS_FA[a.status]||'در انتظار پیامک') + '</span>';
+}
+function stopActTimers(){ if (S.poll) { clearInterval(S.poll); S.poll = null; } if (S.cd) { clearInterval(S.cd); S.cd = null; } }
+function openAct(a){ S.act = a; showView('act'); renderAct(); startActTimers(); }
+function openOrder(id){
+  api('/api/activation?id=' + encodeURIComponent(id)).then(function(j){ openAct(j.activation); })
+    .catch(function(e){ toast(e.message); });
+}
+function startActTimers(){
+  stopActTimers();
+  S.cd = setInterval(tickCountdown, 1000); tickCountdown();
+  var open = S.act && ['waitingSms','resendRequested','codeReceived'].indexOf(S.act.status) !== -1;
+  if (open) S.poll = setInterval(pollAct, 4000);
+}
+function tickCountdown(){
+  var el = $('cdLeft'); if (!el || !S.act || !S.act.expiresAt) return;
+  var left = Math.max(0, Math.floor((new Date(S.act.expiresAt).getTime() - Date.now()) / 1000));
+  var mm = String(Math.floor(left/60)), ss = String(left%60); if (ss.length<2) ss='0'+ss;
+  el.textContent = '⏰ ' + faDigits(mm + ':' + ss) + ' تا پایان مهلت';
+}
+function pollAct(){
+  if (!S.act) return;
+  api('/api/activation?id=' + encodeURIComponent(S.act.id)).then(function(j){
+    var had = S.act.code; S.act = j.activation; renderAct();
+    if (!had && j.activation.code) refreshMe();
+    if (['finished','cancelled','expired','refunded'].indexOf(j.activation.status) !== -1) { stopActTimers(); refreshMe(); }
+  }).catch(function(){});
+}
+function renderAct(){
+  var a = S.act; if (!a) return;
+  var html = '<h2 class="title">شماره شما آماده است 🎉</h2>';
+  html += '<button class="numcard" onclick="copyTxt(\'' + escH(a.phone) + '\', this)"><div class="lbl">' + escH(a.serviceName) + '</div><div class="num">' + escH(a.phone) + '</div><div class="lbl">برای کپی، روی شماره بزنید</div></button>';
+  html += '<div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center">' + statusPill(a) + '<span style="color:#9a9aa2;font-size:13px" id="cdLeft"></span></div>';
+  if (a.code) {
+    var boxes = '';
+    String(a.code).split('').forEach(function(ch){ boxes += '<span>' + escH(ch) + '</span>'; });
+    html += '<div class="codeboxes" onclick="copyTxt(\'' + escH(a.code) + '\', this)">' + boxes + '</div>';
+    html += '<p class="small" style="color:#c9c9ce">کد را در سرویس مقصد وارد کنید — برای کپی روی کد بزنید.</p>';
+    if (a.status === 'codeReceived') {
+      html += '<div class="btnrow"><button class="wbtn" onclick="actDo(\'finish\')">🏁 اتمام کار</button><button class="gbtn" onclick="actDo(\'resend\')">📩 پیامک مجدد</button></div>';
+      html += '<p class="small">با دریافت کد، امکان لغو این سفارش به پایان رسیده است.</p>';
+    }
+  } else if (['waitingSms','resendRequested'].indexOf(a.status) !== -1) {
+    html += '<div class="codezone">در حال گوش دادن به پیامک… 📩<br>به‌محض رسیدن، کد به‌صورت <b style="color:#fff">خودکار</b> اینجا نمایش داده می‌شود؛ نیازی به رفرش نیست.</div>';
+    html += '<div class="btnrow"><button class="gbtn" onclick="actDo(\'resend\')">📩 پیامک مجدد</button><button class="gbtn" onclick="actDo(\'cancel\')">🚫 لغو سفارش</button></div>';
+    html += '<p class="small">طبق محدودیت تأمین‌کننده، لغو در ۲ دقیقه اول ممکن نیست؛ اگر کدی نرسد و سفارش لغو یا منقضی شود، مبلغ خودکار به موجودی برمی‌گردد.</p>';
+  } else {
+    html += '<p class="small">این سفارش به پایان رسیده است (' + escH(STATUS_FA[a.status]||a.status) + '). اگر کدی دریافت نشده بود، مبلغ به موجودی شما برگشته است.</p>';
+    html += '<div class="btnrow"><button class="gbtn" onclick="showView(\'orders\')">📱 سفارش‌های من</button></div>';
+  }
+  $('actBox').innerHTML = html;
+  tickCountdown();
+}
+function actDo(action){
+  if (!S.act) return;
+  api('/api/activation/action', { method:'POST', body: JSON.stringify({ id: S.act.id, action: action }) })
+    .then(function(j){ S.act = j.activation; renderAct(); startActTimers(); refreshMe(); })
+    .catch(function(e){ toast(e.message); pollAct(); });
+}
+function copyTxt(txt, el){
+  function done(){ toast('کپی شد ✓'); }
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(done).catch(done);
+  else {
+    var ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch(e) {}
+    document.body.removeChild(ta); done();
+  }
+}
+function loadOrders(){
+  $('ordList').innerHTML = '<div class="loading">در حال بارگذاری…</div>';
+  api('/api/orders').then(function(j){
+    var html = '';
+    (j.orders||[]).forEach(function(o){
+      var dt = o.createdAt ? new Date(o.createdAt).toLocaleString('fa-IR', { timeZone:'Asia/Tehran' }) : '';
+      html += '<button class="ord" onclick="openOrder(' + o.id + ')"><span><span class="ph">' + escH(o.phone) + '</span><div class="mt">' + escH(o.serviceName) + ' — ' + escH(STATUS_FA[o.status]||o.status) + '</div></span><span class="mt">' + escH(dt) + '</span></button>';
+    });
+    $('ordList').innerHTML = html || '<div class="loading">هنوز سفارشی ندارید</div>';
+  }).catch(function(e){ $('ordList').innerHTML = '<div class="loading">' + escH(e.message) + '</div>'; });
+}
+function setTopupMode(m){
+  S.topupMode = m;
+  $('chipUsd').classList.toggle('on', m==='usd');
+  $('chipTmn').classList.toggle('on', m==='tmn');
+  $('tpAmt').placeholder = m==='usd' ? '$ مبلغ به دلار' : 'مبلغ به تومان';
+  $('tpResult').innerHTML = '';
+}
+function doTopup(){
+  var raw = String($('tpAmt').value||'').replace(/[^0-9.]/g,'');
+  var val = Number(raw);
+  if (!(val > 0)) { toast('مبلغ را وارد کنید'); return; }
+  var body = S.topupMode === 'usd' ? { amountUsd: val } : { amountTmn: Math.round(val) };
+  api('/api/topup', { method:'POST', body: JSON.stringify(body) }).then(function(j){
+    $('tpResult').innerHTML = '<div class="confirm"><div class="row"><span>صفحه پرداخت ساخته شد</span><b>۳۰ دقیقه مهلت</b></div><a class="wbtn" style="width:100%;margin-top:10px" href="' + escH(j.payUrl) + '">رفتن به صفحه پرداخت ←</a></div>';
+  }).catch(function(e){
+    if (e.data && e.data.payUrl) {
+      $('tpResult').innerHTML = '<div class="confirm"><div class="row"><span>' + escH(e.message) + '</span></div><a class="wbtn" style="width:100%;margin-top:10px" href="' + escH(e.data.payUrl) + '">ادامه پرداخت قبلی ←</a></div>';
+    } else toast(e.message);
+  });
+}
+boot();
+</script>
+</body></html>`;
+}
+
 async function payPage(env, cfg, topup) {
   const head = (step) => paySteps(step);
   if (!topup) {
@@ -1832,7 +2417,7 @@ export default {
       const webhook = await ensureWebhook(env, cfgSetup.WORKER_BASE_URL || url.origin, true);
       return Response.json({ ok: webhook.ok, kv: !!env.STORE, webhook });
     }
-    if (url.pathname === "/" ) return Response.redirect(`${url.origin}/pay`, 302);
+    if (url.pathname === "/" ) return Response.redirect(`${url.origin}/app`, 302);
     if (url.pathname === "/pay/select" && request.method === "POST") {
       return handlePaySelect(env, request);
     }
@@ -1845,6 +2430,11 @@ export default {
       if (!topup) return Response.json({ status: "notfound" }, { status: 404 });
       topup = await settleTopupLazy(env, topup);
       return Response.json({ status: topup.status, method: topup.method, receipt: !!topup.receiptFileId, expiresAt: topupExpiresAt(topup) }, { headers: { "cache-control": "no-store" } });
+    }
+    if (url.pathname.startsWith("/api/")) return handleApi(env, request, url);
+    if (url.pathname === "/app") {
+      const cfgApp = await getConfig(env);
+      return new Response(await appPage(env, cfgApp), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
     }
     if (url.pathname === "/terms") {
       const cfgTerms = await getConfig(env);
