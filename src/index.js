@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "1.2.1"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "1.2.2"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 
 // ---------- small helpers ----------
@@ -875,34 +875,90 @@ async function handleCallback(env, cq, baseUrl) {
 }
 
 // ---------- wallet / payment web page (Persian) ----------
+// Minimal professional design: pure black background, white text,
+// hairline dividers instead of boxes, Vazirmatn with system fallbacks.
 function walletPage(env, cfg, topup) {
+  const copyBtn = (val, label = "کپی") =>
+    `<button class="copy" onclick="copyText(this,'${esc(val)}')">${label}</button>`;
   const wallets = configuredCryptos(cfg).map(([code, c]) => {
     const addr = cfg[c.envKey];
     const hot = topup && topup.crypto === code;
-    return `<section class="card${hot ? " hot" : ""}"><h2>${esc(c.label)}${hot ? " ⭐️ پرداخت شما" : ""}</h2>
-      <code class="addr">${esc(addr)}</code>
-      <button onclick="navigator.clipboard.writeText('${esc(addr)}')">کپی آدرس</button>
-      <img alt="QR" src="https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(addr)}">
+    return `<section class="row${hot ? " hot" : ""}">
+      <div class="row-head"><h2>${esc(c.label)}</h2>${hot ? `<span class="badge">پرداخت شما</span>` : ""}</div>
+      <div class="addr-box"><code class="addr">${esc(addr)}</code>${copyBtn(addr, "کپی آدرس")}</div>
+      <img class="qr" alt="QR" width="132" height="132" loading="lazy" src="https://api.qrserver.com/v1/create-qr-code/?size=132x132&margin=8&data=${encodeURIComponent(addr)}">
     </section>`;
   }).join("\n");
   const topupBox = topup
-    ? `<section class="card hot"><h2>مبلغ دقیق پرداخت</h2><p class="amt">${esc(topup.expectedCrypto)} — ${esc(CRYPTOS[topup.crypto]?.label || "")}</p><p>دقیقاً همین مبلغ را به آدرس بالا واریز کنید. شارژ به‌صورت خودکار پس از دیده‌شدن تراکنش در شبکه انجام می‌شود.</p></section>`
+    ? `<section class="paybox">
+        <div class="paybox-label">مبلغ دقیق پرداختی — ${esc(CRYPTOS[topup.crypto]?.label || "")}</div>
+        <div class="paybox-amt"><span>${esc(topup.expectedCrypto)}</span>${copyBtn(String(topup.expectedCrypto), "کپی مبلغ")}</div>
+        <p class="hint">دقیقاً همین مبلغ را واریز کنید؛ شارژ پس از دیده‌شدن تراکنش در شبکه، به‌صورت خودکار انجام می‌شود.</p>
+      </section>`
     : "";
   const cardBox = cfg.CARD_NUMBER
-    ? `<section class="card"><h2>کارت به کارت</h2><code class="addr">${esc(cfg.CARD_NUMBER)}</code><p>به نام: ${esc(cfg.CARD_HOLDER || "")}${cfg.CARD_BANK ? ` — ${esc(cfg.CARD_BANK)}` : ""}</p><p>پس از واریز، رسید را داخل ربات تلگرام بفرستید.</p></section>`
+    ? `<section class="row">
+        <div class="row-head"><h2>کارت به کارت</h2></div>
+        <div class="addr-box"><code class="addr">${esc(cfg.CARD_NUMBER)}</code>${copyBtn(cfg.CARD_NUMBER, "کپی شماره کارت")}</div>
+        <p class="hint">به نام ${esc(cfg.CARD_HOLDER || "")}${cfg.CARD_BANK ? ` — ${esc(cfg.CARD_BANK)}` : ""}<br>پس از واریز، رسید را داخل ربات تلگرام ارسال کنید.</p>
+      </section>`
     : "";
   return `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>کیف‌پول و پرداخت — فروشگاه شماره مجازی</title>
-<style>body{font-family:Tahoma,Arial,sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:20px}
-main{max-width:640px;margin:0 auto}h1{font-size:20px}.card{background:#1e293b;border-radius:14px;padding:16px;margin:12px 0}
-.hot{outline:2px solid #22c55e}.addr{display:block;word-break:break-all;background:#0f172a;padding:10px;border-radius:8px;direction:ltr;text-align:left}
-button{margin-top:8px;padding:8px 14px;border:0;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer}
-img{display:block;margin-top:10px;border-radius:8px;background:#fff;padding:4px}.amt{font-size:20px;font-weight:bold;direction:ltr;text-align:right}</style></head>
-<body><main><h1>💳 صفحه پرداخت فروشگاه شماره مجازی</h1>
-<p>برای افزایش موجودی، یکی از روش‌های زیر را استفاده کنید. در پرداخت ارزی، حتماً <b>مبلغ دقیق</b> نمایش‌داده‌شده در ربات را واریز کنید.</p>
-${topupBox}${wallets}${cardBox}
-<p>بعد از پرداخت ارزی، در ربات دکمه «بررسی پرداخت» را بزنید؛ بررسی خودکار هم انجام می‌شود.</p>
-</main></body></html>`;
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#000000">
+<title>پرداخت — فروشگاه شماره مجازی</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
+<link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html{background:#000}
+body{background:#000;color:#fff;font-family:Vazirmatn,Tahoma,Arial,sans-serif;-webkit-font-smoothing:antialiased;line-height:1.9}
+main{max-width:600px;margin:0 auto;padding:56px 22px 64px}
+.brand{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+.mark{width:34px;height:34px;border:1px solid #fff;border-radius:10px;display:grid;place-items:center;font-size:15px;font-weight:700}
+.brand span{font-size:13px;color:#a3a3a3;letter-spacing:.02em}
+h1{font-size:30px;font-weight:800;letter-spacing:-.01em}
+.lead{color:#a3a3a3;font-size:14.5px;margin:10px 0 40px;max-width:46ch}
+.paybox{border:1px solid #fff;border-radius:18px;padding:22px;margin-bottom:8px}
+.paybox-label{font-size:12.5px;color:#a3a3a3;margin-bottom:6px}
+.paybox-amt{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.paybox-amt span{font-size:27px;font-weight:800;direction:ltr;font-variant-numeric:tabular-nums}
+.row{padding:28px 0;border-top:1px solid #1c1c1c}
+.row.hot{border-top-color:#fff}
+.row-head{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+h2{font-size:16.5px;font-weight:700}
+.badge{font-size:11px;color:#000;background:#fff;border-radius:999px;padding:2px 10px;font-weight:700}
+.addr-box{display:flex;align-items:center;gap:10px;background:#0a0a0a;border:1px solid #262626;border-radius:12px;padding:10px 12px}
+.addr{flex:1;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;word-break:break-all;direction:ltr;text-align:left;color:#e5e5e5}
+.copy{flex:none;background:transparent;color:#fff;border:1px solid #3f3f3f;border-radius:999px;padding:5px 14px;font-family:inherit;font-size:12.5px;cursor:pointer;transition:all .15s}
+.copy:hover{background:#fff;color:#000;border-color:#fff}
+.qr{display:block;margin-top:16px;background:#fff;border-radius:12px;padding:6px}
+.hint{color:#a3a3a3;font-size:13px;margin-top:12px}
+footer{margin-top:44px;padding-top:20px;border-top:1px solid #1c1c1c;color:#737373;font-size:12.5px}
+#toast{position:fixed;bottom:26px;left:50%;transform:translate(-50%,16px);background:#fff;color:#000;font-size:13px;font-weight:700;padding:8px 20px;border-radius:999px;opacity:0;pointer-events:none;transition:all .25s}
+#toast.show{opacity:1;transform:translate(-50%,0)}
+@media (max-width:480px){h1{font-size:25px}.paybox-amt span{font-size:22px}main{padding-top:40px}}
+</style></head>
+<body><main>
+<header>
+  <div class="brand"><div class="mark">S</div><span>فروشگاه شماره مجازی</span></div>
+  <h1>پرداخت و افزایش موجودی</h1>
+  <p class="lead">برای شارژ حساب، یکی از روش‌های زیر را انتخاب کنید. در پرداخت ارزی، مبلغ دقیق نمایش‌داده‌شده در ربات را واریز کنید تا سیستم به‌صورت خودکار آن را شناسایی کند.</p>
+</header>
+${topupBox}
+${wallets}
+${cardBox}
+<footer>پیش از واریز، آدرس کیف‌پول و مبلغ را یک‌بار دیگر بررسی کنید. پس از پرداخت ارزی، در ربات دکمه «بررسی پرداخت» را بزنید؛ بررسی خودکار نیز هر چند دقیقه انجام می‌شود.</footer>
+</main>
+<div id="toast">کپی شد</div>
+<script>
+function copyText(btn, text){
+  var done=function(){var t=document.getElementById('toast');t.classList.add('show');setTimeout(function(){t.classList.remove('show')},1600)};
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done).catch(done)}
+  else{var ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();try{document.execCommand('copy')}catch(e){}ta.remove();done()}
+}
+</script>
+</body></html>`;
 }
 
 // ---------- Worker entry ----------
