@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "1.9.1"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "1.9.2"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -107,13 +107,13 @@ const urlBtn = (text, url) => ({ text, url });
 // Runs when any non-webhook page is opened (/, /pay, /health, /setup) and
 // again from the cron job using the last seen / configured public origin,
 // so a changed domain or a deleted webhook heals without manual curl calls.
-async function ensureWebhook(env, origin) {
+async function ensureWebhook(env, origin, force = false) {
   if (!env.TELEGRAM_BOT_TOKEN) return { ok: false, reason: "TELEGRAM_BOT_TOKEN is not set" };
   if (!origin) return { ok: false, reason: "public origin unknown yet" };
   const target = `${String(origin).replace(/\/+$/, "")}/webhook`;
   try {
     const cached = await kvGet(env, "sys:webhook");
-    if (cached?.url === target && now() - cached.at < 6 * 3600 * 1000) {
+    if (!force && cached?.url === target && now() - cached.at < 6 * 3600 * 1000) {
       return { ok: true, url: target, cached: true };
     }
     const info = await tg(env, "getWebhookInfo", {});
@@ -1761,7 +1761,7 @@ export default {
     if (url.pathname !== "/webhook") ctx.waitUntil(rememberOriginAndWebhook(env, url.origin));
     if (url.pathname === "/setup") {
       const cfgSetup = await getConfig(env);
-      const webhook = await ensureWebhook(env, cfgSetup.WORKER_BASE_URL || url.origin);
+      const webhook = await ensureWebhook(env, cfgSetup.WORKER_BASE_URL || url.origin, true);
       return Response.json({ ok: webhook.ok, kv: !!env.STORE, webhook });
     }
     if (url.pathname === "/" ) return Response.redirect(`${url.origin}/pay`, 302);
@@ -1828,7 +1828,11 @@ export default {
       const storedOrigin = await kvGet(env, "sys:origin");
       const cfgCron = await getConfig(env);
       const origin = cfgCron.WORKER_BASE_URL || storedOrigin?.origin;
-      if (origin) await ensureWebhook(env, origin);
+      // Forced live verification every cron tick: the KV cache alone once let
+      // an externally-cleared webhook go unnoticed for hours (bot fully
+      // silent with updates piling up). A getWebhookInfo call every 2 min is
+      // cheap; setWebhook is only sent when Telegram's URL actually differs.
+      if (origin) await ensureWebhook(env, origin, true);
       for (const t of await kvList(env, "topup:")) {
         if (t.status === "pending") await settleTopupLazy(env, t);
       }
