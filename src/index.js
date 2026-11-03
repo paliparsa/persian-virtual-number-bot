@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.7.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.7.1"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -44,7 +44,11 @@ async function kvGet(env, key, fallback = null) {
 }
 async function kvPut(env, key, value, ttlSeconds) {
   if (!env.STORE) throw new Error("KV binding STORE is not configured");
-  const opts = ttlSeconds ? { expirationTtl: ttlSeconds } : undefined;
+  // Cloudflare KV rejects expirationTtl below 60s — clamp here, at the single
+  // choke point, so short-lived values (locks, rate-limit buckets) can never
+  // take down the operation that writes them. Callers that need a shorter
+  // *logical* lifetime (e.g. locks) check the stored timestamp themselves.
+  const opts = ttlSeconds ? { expirationTtl: Math.max(60, Math.floor(ttlSeconds)) } : undefined;
   await env.STORE.put(key, JSON.stringify(value), opts);
 }
 async function kvList(env, prefix) {
@@ -2187,6 +2191,16 @@ footer a{color:#a3a3a3}
 #toast.show{opacity:1;transform:translate(-50%,0)}
 @media (max-width:480px){.amtbox .amt span{font-size:23px}h1{font-size:21px}.method .ap{display:none}}
 .payfoot{display:flex;gap:10px;margin-top:26px;padding-top:18px;border-top:1px solid #1c1c1e}
+.cmodal{position:fixed;inset:0;z-index:80;display:flex;align-items:flex-end;justify-content:center;background:rgba(0,0,0,.66);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);opacity:0;pointer-events:none;transition:opacity .22s}
+.cmodal.on{opacity:1;pointer-events:auto}
+.cmodal .mbox{background:#101012;border:1px solid rgba(255,255,255,.13);border-radius:24px 24px 0 0;padding:14px 22px calc(24px + env(safe-area-inset-bottom));width:100%;max-width:560px;transform:translateY(26px);transition:transform .28s cubic-bezier(.32,.9,.35,1)}
+.cmodal.on .mbox{transform:none}
+.cmodal .handle{width:38px;height:4px;border-radius:99px;background:rgba(255,255,255,.22);margin:0 auto 16px}
+.cmodal h3{font-size:17.5px;font-weight:800;margin-bottom:8px}
+.cmodal p{color:#a3a3a3;font-size:13.5px;line-height:2}
+.cmodal .mbtns{display:flex;gap:10px;margin-top:18px}
+.cmodal .mbtns .btn{flex:1}
+.cmodal .btn.dangerb{background:#ff453a;border-color:#ff453a;color:#fff}
 .footbtn{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:7px;background:transparent;color:#d6d6da;border:1px solid #2c2c31;border-radius:12px;padding:11px 10px;font-family:inherit;font-size:13.5px;cursor:pointer;text-decoration:none}
 .footbtn.danger{color:#ff6b61;border-color:#3d1d1a}
 </style></head>
@@ -2628,6 +2642,7 @@ h2.title .icn{vertical-align:-5px;margin-left:2px}
 .sheet .srow b{font-weight:700;text-align:left}
 .sheet .snote{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:11px 13px;font-size:12.8px;line-height:1.95;color:#c7c7cc;margin-top:12px}
 .sheet .sbtns{display:flex;gap:10px;margin-top:16px}
+.sheet .wbtn.dangerb{background:#ff453a;color:#fff}
 .sheet .sbtns .wbtn{flex:1}
 .sheet .sbtns .gbtn{flex:0 0 108px;background:transparent;color:#fff;border:1px solid rgba(255,255,255,.3);border-radius:14px;font:inherit;font-weight:700;font-size:15px;padding:13px 0;cursor:pointer}
 .confirm{border:1px solid #2e2e34;border-radius:16px;padding:15px;margin:16px 0 4px;background:#0c0c0e}
@@ -3110,16 +3125,24 @@ function openPayCard(t){
   var st = payStatusInfo(t);
   return '<div class="payc"><div class="prow1"><b>' + faUsd(t.creditUsd) + '</b><span class="pstatus">' + st.txt + '</span></div>'
     + '<div class="pmeta">' + methodLabel(t) + '<br>مهلت پرداخت تا ساعت ' + tehranHM(t.expiresAt) + '</div>'
-    + '<div class="pbtns"><a class="wbtn" href="' + t.payUrl + '">ادامه پرداخت</a><button class="gbtn" data-tid="' + t.id + '" onclick="cancelOpenPay(this)">لغو پرداخت</button></div></div>';
+    + '<div class="pbtns"><a class="wbtn" href="' + t.payUrl + '">ادامه پرداخت</a><button class="gbtn" data-tid="' + t.id + '" data-amt="' + faUsd(t.creditUsd) + '" onclick="cancelOpenPay(this)">لغو پرداخت</button></div></div>';
 }
+var pendingCancelId = null;
 function cancelOpenPay(btn){
-  var tid = btn.getAttribute('data-tid');
-  if (!confirm('این پرداخت لغو شود؟')) return;
-  btn.disabled = true;
-  fetch('/pay/cancel', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ t: tid }) })
+  pendingCancelId = btn.getAttribute('data-tid');
+  var amt = btn.getAttribute('data-amt') || '';
+  openSheet('<h3 style="margin-top:6px">لغو پرداخت</h3><p class="sdesc">پرداخت ' + amt + ' لغو و بسته شود؟ اگر مبلغی واریز کرده‌اید، پیش از لغو با پشتیبانی هماهنگ کنید.</p><div class="sbtns"><button class="wbtn dangerb" onclick="doCancelOpenPay(this)">بله، لغو شود</button><button class="gbtn" onclick="closeSheet()">برگرد</button></div>');
+}
+function doCancelOpenPay(btn){
+  if (!pendingCancelId) return;
+  btn.disabled = true; btn.textContent = 'در حال لغو…';
+  fetch('/pay/cancel', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ t: pendingCancelId }) })
     .then(function(r){ return r.json(); })
-    .then(function(d){ if (d.ok) { toast('پرداخت لغو شد'); loadOpenPays(); loadPayHistory(); } else { toast(d.error || 'خطا در لغو'); btn.disabled = false; } })
-    .catch(function(){ toast('خطای شبکه'); btn.disabled = false; });
+    .then(function(d){
+      if (d.ok) { closeSheet(); pendingCancelId = null; toast('پرداخت لغو شد'); loadOpenPays(); loadPayHistory(); }
+      else { toast(d.error || 'خطا در لغو'); btn.disabled = false; btn.textContent = 'بله، لغو شود'; }
+    })
+    .catch(function(){ toast('خطای شبکه'); btn.disabled = false; btn.textContent = 'بله، لغو شود'; });
 }
 function loadOpenPays(){
   api('/api/topups').then(function(d){
@@ -3180,8 +3203,14 @@ async function payPage(env, cfg, topup) {
   const script = payScript(topup, topup.method === "crypto" || topup.method === "card");
   const icoX = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>';
   const icoHome = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5 12 3l9 6.5V20a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22v-8h6v8"/></svg>';
-  const actions = `<div class="payfoot"><button class="footbtn danger" onclick="cancelPay(this)">${icoX} لغو پرداخت</button><a class="footbtn" href="/app">${icoHome} بازگشت به صفحه اصلی</a></div>
-  <script>async function cancelPay(btn){if(!confirm('این پرداخت لغو شود؟ اگر مبلغی واریز کرده‌اید، پیش از لغو با پشتیبانی هماهنگ کنید.'))return;btn.disabled=true;try{var r=await fetch('/pay/cancel',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({t:'${topup.id}'})});var d=await r.json();if(d.ok){location.reload()}else{toast(d.error||'خطا در لغو');btn.disabled=false}}catch(e){toast('خطای شبکه');btn.disabled=false}}</script>`;
+  const actions = `<div class="payfoot"><button class="footbtn danger" onclick="openCancelPay()">${icoX} لغو پرداخت</button><a class="footbtn" href="/app">${icoHome} بازگشت به صفحه اصلی</a></div>
+  <div class="cmodal" id="cmodal" onclick="if(event.target===this)closeCancelPay()"><div class="mbox"><div class="handle"></div>
+  <h3>لغو پرداخت</h3>
+  <p>این پرداخت لغو و بسته شود؟ اگر مبلغی واریز کرده‌اید، پیش از لغو با پشتیبانی هماهنگ کنید؛ بعد از لغو، این لینک دیگر کار نمی‌کند.</p>
+  <div class="mbtns"><button class="btn dangerb" onclick="doCancelPay(this)">بله، لغو شود</button><button class="btn ghost" onclick="closeCancelPay()">برگرد</button></div></div></div>
+  <script>function openCancelPay(){document.getElementById('cmodal').classList.add('on')}
+  function closeCancelPay(){document.getElementById('cmodal').classList.remove('on')}
+  async function doCancelPay(btn){btn.disabled=true;btn.textContent='در حال لغو…';try{var r=await fetch('/pay/cancel',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({t:'${topup.id}'})});var d=await r.json();if(d.ok){location.reload()}else{closeCancelPay();toast(d.error||'خطا در لغو');btn.disabled=false;btn.textContent='بله، لغو شود'}}catch(e){closeCancelPay();toast('خطای شبکه');btn.disabled=false;btn.textContent='بله، لغو شود'}}</script>`;
 
   if (topup.status === "approved") {
     const user = await getUser(env, topup.userId);
