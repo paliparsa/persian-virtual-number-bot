@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.3.2"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.4.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -1212,7 +1212,7 @@ const SETTING_FIELDS = {
   CARD_BANK: { label: "نام بانک", hint: "نام بانک را بفرستید، مثلاً: بانک ملی" },
   TOMAN_PER_BRL: { label: "نرخ تومان (هر ۱ BRL)", hint: "فقط عدد بفرستید، مثال: 40000", numeric: true },
   PRICE_MARKUP_PERCENT: { label: "درصد سود فروشگاه", hint: "فقط عدد بفرستید، مثال: 20 یعنی ۲۰٪ روی قیمت تأمین‌کننده", numeric: true },
-  SUPPORT_USERNAME: { label: "یوزرنیم پشتیبانی", hint: "بدون @ بفرستید، مثال: BlueGateSupport" },
+  SUPPORT_USERNAME: { label: "یوزرنیم پشتیبانی", hint: "بدون @ بفرستید، مثال: BlueMajaziSupport" },
   TMN_RATE_MANUAL: { label: "نرخ دستی تتر (تومان) — پشتیبان", hint: "فقط عدد بفرستید، مثال: 271000 — فقط وقتی استفاده می‌شود که نرخ زنده از والکس و اکسیر نرسد.", numeric: true },
   GROUP_CHAT_ID: { label: "آیدی گروه اعلام خرید موفق", hint: "آیدی عددی گروه را با علامت منفی بفرستید، مثال: -1001234567890 — یا ساده‌تر: ربات را در گروه اضافه کنید و همان‌جا دستور /setgroup را بفرستید تا خودکار ثبت شود." },
   FORCE_JOIN_ENABLED: { label: "عضویت اجباری کانال", hint: "" },
@@ -2247,7 +2247,7 @@ async function appPage(env, cfg) {
   return `<!doctype html>
 <html lang="fa" dir="rtl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BlueGate — شماره مجازی</title>
+<title>BlueMajazi — شماره مجازی</title>
 <link href="https://fonts.cdnfonts.com/css/yekan-bakh" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -2297,6 +2297,22 @@ h2.title .icn{vertical-align:-5px;margin-left:2px}
 .svc .pr{text-align:left;flex:none}
 .svc .pr .usd{font-weight:800}
 .svc .pr .tmn{color:#8e8e93;font-size:12px}
+.sheetwrap{position:fixed;inset:0;background:rgba(0,0,0,.62);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);opacity:0;pointer-events:none;transition:opacity .25s;z-index:60}
+.sheetwrap.open{opacity:1;pointer-events:auto}
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:61;max-width:560px;margin:0 auto;background:#101013;border:1px solid rgba(255,255,255,.12);border-bottom:0;border-radius:26px 26px 0 0;padding:8px 20px calc(20px + env(safe-area-inset-bottom));transform:translateY(106%);transition:transform .34s cubic-bezier(.32,.72,.24,1)}
+.sheet.open{transform:none}
+.sheet .grab{width:40px;height:4.5px;border-radius:99px;background:rgba(255,255,255,.28);margin:4px auto 14px}
+.sheet .sflag{font-size:52px;text-align:center;line-height:1.15}
+.sheet h3{font-size:19px;font-weight:800;text-align:center;margin:2px 0 4px}
+.sheet .ssub{text-align:center;color:#c7c7cc;font-size:14px;margin:0 0 6px}
+.sheet .sdesc{color:#aeaeb2;font-size:13.5px;line-height:2;text-align:center;margin:8px 2px 4px}
+.sheet .srow{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10.5px 2px;border-top:1px solid rgba(255,255,255,.08);font-size:14px}
+.sheet .srow span{color:#aeaeb2}
+.sheet .srow b{font-weight:700;text-align:left}
+.sheet .snote{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:11px 13px;font-size:12.8px;line-height:1.95;color:#c7c7cc;margin-top:12px}
+.sheet .sbtns{display:flex;gap:10px;margin-top:16px}
+.sheet .sbtns .wbtn{flex:1}
+.sheet .sbtns .gbtn{flex:0 0 108px;background:transparent;color:#fff;border:1px solid rgba(255,255,255,.3);border-radius:14px;font:inherit;font-weight:700;font-size:15px;padding:13px 0;cursor:pointer}
 .confirm{border:1px solid #2e2e34;border-radius:16px;padding:15px;margin:16px 0 4px;background:#0c0c0e}
 .confirm .row{display:flex;justify-content:space-between;color:#c9c9ce;font-size:14px;padding:4px 0}
 .confirm .row b{color:#fff}
@@ -2331,7 +2347,7 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
 <div class="wrap">
 
   <div id="viewLogin">
-    <div class="brandrow"><div class="logo">BlueGate<span>دروازه‌ای امن به دنیای پرسرعت</span></div></div>
+    <div class="brandrow"><div class="logo">BlueMajazi<span>دروازه‌ای امن به دنیای پرسرعت</span></div></div>
     <div class="hero">
       <div class="big">شماره مجازی،<br>بدون مرز <svg class="icn" width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>
       <p class="slogan">خرید شماره از سراسر دنیا و دریافت آنی کد پیامک —<br>همان حساب و موجودی ربات تلگرام شما.</p>
@@ -2344,12 +2360,12 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
         <div><svg class="icn" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>کد به‌صورت خودکار و زنده روی صفحه می‌آید</div>
       </div>
     </div>
-    <p class="foot">با ورود، <a href="/terms">قوانین و مقررات</a> BlueGate را می‌پذیرید.</p>
+    <p class="foot">با ورود، <a href="/terms">قوانین و مقررات</a> BlueMajazi را می‌پذیرید.</p>
   </div>
 
   <div id="viewApp" style="display:none">
     <div class="brandrow">
-      <div class="logo">BlueGate</div>
+      <div class="logo">BlueMajazi</div>
       <div class="userchip">
         <button class="balpill" id="hdrBal" onclick="showView('topup')">…</button>
         <button class="avatar" id="hdrAva" title="خروج" onclick="logout()">؟</button>
@@ -2375,7 +2391,6 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
       <h2 class="title" id="svcTitle">سرویس‌ها</h2>
       <input class="search" id="sSearch" placeholder="جستجوی سرویس…">
       <div id="svcList"><div class="loading">در حال بارگذاری…</div></div>
-      <div id="confirmCard"></div>
     </section>
 
     <section class="view" id="v-act">
@@ -2409,6 +2424,8 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
   </div>
 </div>
 <div id="toast"></div>
+<div class="sheetwrap" id="sheetWrap" onclick="closeSheet()"></div>
+<div class="sheet" id="sheet" role="dialog" aria-modal="true"><div class="grab"></div><div id="sheetBody"></div></div>
 <script>
 var S = { me:null, countries:[], country:null, services:[], rate:null, sel:null, act:null, poll:null, cd:null, topupMode:'usd' };
 function $(id){ return document.getElementById(id); }
@@ -2480,6 +2497,7 @@ function renderMe(){
 function refreshMe(){ return api('/api/me').then(function(me){ S.me = me; renderMe(); }); }
 function logout(){ try { sessionStorage.removeItem('bg_tok'); } catch (e) {} api('/api/auth/logout', { method:'POST' }).then(function(){ location.reload(); }); }
 function showView(name){
+  closeSheet();
   ['shop','services','act','orders','topup'].forEach(function(v){ $('v-'+v).classList.toggle('on', v===name); });
   document.querySelectorAll('[data-nav]').forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-nav')===name); });
   if (name !== 'act') stopActTimers();
@@ -2500,14 +2518,34 @@ function renderCountries(q){
   $('cGrid').innerHTML = html || '<div class="loading">کشوری پیدا نشد</div>';
 }
 $('cSearch').addEventListener('input', function(){ renderCountries(this.value); });
+function openSheet(html){ $('sheetBody').innerHTML = html; $('sheetWrap').classList.add('open'); $('sheet').classList.add('open'); }
+function closeSheet(){ var w = $('sheetWrap'), s = $('sheet'); if (w) w.classList.remove('open'); if (s) s.classList.remove('open'); }
+function sheetBtns(okLabel, okFn){
+  return '<div class="sbtns"><button class="wbtn" onclick="' + okFn + '">' + okLabel + '</button><button class="gbtn" onclick="closeSheet()">لغو</button></div>';
+}
+var pendingCountry = null;
 function pickCountry(id){
-  S.country = null;
-  S.countries.forEach(function(c){ if (c.id === id) S.country = c; });
-  S.sel = null; $('confirmCard').innerHTML = '';
+  pendingCountry = null;
+  S.countries.forEach(function(c){ if (c.id === id) pendingCountry = c; });
+  if (!pendingCountry) return;
+  var c = pendingCountry;
+  openSheet(
+    '<div class="sflag">' + escH(c.emoji) + '</div>'
+    + '<h3>' + escH(c.name) + '</h3>'
+    + '<p class="ssub">تأیید انتخاب کشور</p>'
+    + '<p class="sdesc">شما کشور «' + escH(c.name) + '» را انتخاب کردید. با ادامه، سرویس‌های این کشور را می‌بینید و یک شماره مجازی از ' + escH(c.name) + ' می‌گیرید؛ کد پیامکی همان‌جا روی صفحه شماره نمایش داده می‌شود.</p>'
+    + sheetBtns('ادامه — مشاهده سرویس‌ها', 'goCountry()')
+  );
+}
+function goCountry(){
+  var c = pendingCountry; closeSheet();
+  if (!c) return;
+  S.country = c;
+  S.sel = null;
   showView('services');
-  $('svcTitle').textContent = S.country ? (S.country.emoji + ' ' + S.country.name) : 'سرویس‌ها';
+  $('svcTitle').textContent = c.emoji + ' ' + c.name;
   $('svcList').innerHTML = '<div class="loading">در حال بارگذاری…</div>';
-  api('/api/services?countryId=' + id).then(function(j){
+  api('/api/services?countryId=' + c.id).then(function(j){
     S.rate = j.rate; S.services = j.services || []; renderServices('');
   }).catch(function(e){ $('svcList').innerHTML = '<div class="loading">' + escH(e.message) + '</div>'; });
 }
@@ -2526,16 +2564,28 @@ function pickService(id){
   S.sel = null;
   S.services.forEach(function(s){ if (s.id === id) S.sel = s; });
   renderServices($('sSearch').value);
-  if (!S.sel) { $('confirmCard').innerHTML=''; return; }
-  var bal = S.me ? Number(S.me.balance) : 0;
-  var tmnRow = (S.rate && S.sel.priceUsd != null) ? '<div class="row"><span>معادل تومانی</span><b>' + faTmn(S.sel.priceUsd * S.rate) + '</b></div>' : '';
-  $('confirmCard').innerHTML = '<div class="confirm">'
-    + '<div class="row"><span>سرویس</span><b>' + escH(S.sel.name) + (S.country ? ' — ' + escH(S.country.emoji + ' ' + S.country.name) : '') + '</b></div>'
-    + '<div class="row"><span>مبلغ</span><b>' + (S.sel.priceUsd != null ? faUsd(S.sel.priceUsd) : '—') + '</b></div>'
+  if (!S.sel || !S.country) return;
+  var s = S.sel, bal = S.me ? Number(S.me.balance) : 0;
+  var price = Number(s.priceUsd || 0);
+  var tmnRow = (S.rate && s.priceUsd != null) ? '<div class="srow"><span>معادل تومانی</span><b>' + faTmn(s.priceUsd * S.rate) + '</b></div>' : '';
+  var rows = '<div class="srow"><span>سرویس</span><b>' + escH(s.name) + '</b></div>'
+    + '<div class="srow"><span>کشور</span><b>' + escH(S.country.emoji + ' ' + S.country.name) + '</b></div>'
+    + '<div class="srow"><span>موجودی</span><b>' + faN(s.available) + ' شماره</b></div>'
+    + '<div class="srow"><span>مبلغ خرید</span><b>' + (s.priceUsd != null ? faUsd(s.priceUsd) : '—') + '</b></div>'
     + tmnRow
-    + '<div class="row"><span>موجودی بعد از خرید</span><b>' + faUsd(bal - Number(S.sel.priceUsd||0)) + '</b></div>'
-    + '<button class="wbtn" style="width:100%;margin-top:12px" onclick="doBuy()">تأیید و خرید</button></div>';
+    + '<div class="srow"><span>موجودی شما</span><b>' + faUsd(bal) + '</b></div>'
+    + '<div class="srow"><span>موجودی بعد از خرید</span><b>' + faUsd(bal - price) + '</b></div>';
+  var note = '<div class="snote">با تأیید خرید، مبلغ از موجودی‌تان کسر و شماره بلافاصله تحویل داده می‌شود. اگر پیامک کد نرسد و به‌موقع لغو کنید، مبلغ کامل به موجودی‌تان برمی‌گردد.</div>';
+  var btns;
+  if (s.priceUsd != null && bal < price) {
+    btns = '<div class="sbtns"><button class="wbtn" onclick="sheetTopup()">موجودی کافی نیست — افزایش موجودی</button><button class="gbtn" onclick="closeSheet()">لغو</button></div>';
+  } else {
+    btns = sheetBtns('تأیید و خرید', 'sheetBuy()');
+  }
+  openSheet('<h3 style="margin-top:6px">تأیید خرید</h3><p class="ssub">' + escH(s.name) + ' — ' + escH(S.country.name) + '</p>' + rows + note + btns);
 }
+function sheetBuy(){ closeSheet(); doBuy(); }
+function sheetTopup(){ closeSheet(); showView("topup"); }
 function doBuy(){
   if (!S.country || !S.sel) return;
   api('/api/buy', { method:'POST', body: JSON.stringify({ countryId: S.country.id, serviceId: S.sel.id }) })
