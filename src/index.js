@@ -24,8 +24,8 @@ const faInt = (v) => faDigits(Number(v || 0).toLocaleString("en-US"));
 const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const uid = () => crypto.randomUUID();
 const now = () => Date.now();
-const markup = (env) => 1 + (parseFloat(env.PRICE_MARKUP_PERCENT || "20") / 100);
-const sellPrice = (env, providerPrice) => Math.ceil(providerPrice * markup(env) * 100) / 100;
+const markup = (cfg) => 1 + (parseFloat(cfg?.PRICE_MARKUP_PERCENT || "20") / 100);
+const sellPrice = (cfg, providerPrice) => Math.ceil(providerPrice * markup(cfg) * 100) / 100;
 const isAdmin = (env, chatId) => String(chatId) === String(env.ADMIN_CHAT_ID || "");
 
 // ---------- KV storage ----------
@@ -53,6 +53,30 @@ async function kvList(env, prefix) {
   } while (cursor);
   return out;
 }
+// ---------- runtime config: editable by the admin inside Telegram ----------
+// Values saved from the admin panel live in KV under "config" and override the
+// Cloudflare variables of the same name (which now act only as initial defaults).
+const CONFIG_KEYS = [
+  "CARD_NUMBER", "CARD_HOLDER", "CARD_BANK", "TOMAN_PER_BRL",
+  "WALLET_USDT_TRC20", "WALLET_TRX", "WALLET_BTC", "WALLET_TON",
+  "WALLET_LTC", "WALLET_ETH", "WALLET_USDT_ERC20",
+  "SUPPORT_USERNAME", "WORKER_BASE_URL", "PRICE_MARKUP_PERCENT",
+];
+async function getConfig(env) {
+  const stored = (await kvGet(env, "config")) || {};
+  const cfg = {};
+  for (const k of CONFIG_KEYS) cfg[k] = stored[k] ?? env[k] ?? "";
+  if (!cfg.PRICE_MARKUP_PERCENT) cfg.PRICE_MARKUP_PERCENT = "20";
+  cfg._stored = stored;
+  return cfg;
+}
+async function setConfigValue(env, key, value) {
+  const stored = (await kvGet(env, "config")) || {};
+  if (value === "" || value === null) delete stored[key]; else stored[key] = value;
+  await kvPut(env, "config", stored);
+  return getConfig(env);
+}
+
 const getUser = async (env, id) =>
   (await kvGet(env, `user:${id}`)) || { id: String(id), balance: 0, state: null, createdAt: now() };
 const saveUser = (env, u) => kvPut(env, `user:${u.id}`, u);
@@ -154,8 +178,8 @@ const CRYPTOS = {
   USDT_ERC20: { label: "تتر (ERC20)", envKey: "WALLET_USDT_ERC20", cg: "tether", decimals: 4 },
   ETH: { label: "اتریوم (ETH)", envKey: "WALLET_ETH", cg: "ethereum", decimals: 6 },
 };
-const configuredCryptos = (env) =>
-  Object.entries(CRYPTOS).filter(([, c]) => env[c.envKey]);
+const configuredCryptos = (cfg) =>
+  Object.entries(CRYPTOS).filter(([, c]) => cfg?.[c.envKey]);
 
 // Returns true when a matching incoming transfer is found on-chain.
 async function checkCryptoPaid(env, topup) {
@@ -238,20 +262,21 @@ async function creditTopup(env, topup, note) {
   const user = await getUser(env, fresh.userId);
   user.balance = Math.round((Number(user.balance) + Number(fresh.creditBrl)) * 100) / 100;
   await saveUser(env, user);
+  const cfg = await getConfig(env);
   await send(env, fresh.userId,
     `✅ <b>موجودی شما افزایش یافت</b>\n\nمبلغ ${faNum(fresh.creditBrl)} واحد (BRL) به حساب شما اضافه شد.\nموجودی فعلی: ${faNum(user.balance)}`,
-    mainMenuKb(env, fresh.userId));
+    mainMenuKb(env, cfg, fresh.userId));
   return true;
 }
 
 // ---------- bot UI (Persian) ----------
-function mainMenuKb(env, userId) {
+function mainMenuKb(env, cfg, userId) {
   const rows = [
     [btn("🛒 خرید شماره مجازی", "countries:0")],
     [btn("💰 موجودی من", "balance"), btn("💳 افزایش موجودی", "topup")],
     [btn("📱 سفارش‌های من", "orders")],
   ];
-  if (env.SUPPORT_USERNAME) rows.push([urlBtn("🎧 پشتیبانی", `https://t.me/${env.SUPPORT_USERNAME}`)]);
+  if (cfg?.SUPPORT_USERNAME) rows.push([urlBtn("🎧 پشتیبانی", `https://t.me/${cfg.SUPPORT_USERNAME}`)]);
   if (isAdmin(env, userId)) rows.push([btn("🛠 پنل مدیریت", "admin")]);
   return kb(rows);
 }
@@ -259,9 +284,10 @@ const backKb = kb([[btn("⬅️ منوی اصلی", "home")]]);
 
 async function showHome(env, chatId, editMsgId) {
   const user = await getUser(env, chatId);
+  const cfg = await getConfig(env);
   const text = `سلام 👋\nبه فروشگاه <b>شماره مجازی</b> خوش آمدید.\n\n💰 موجودی شما: <b>${faNum(user.balance)}</b> واحد\n\nبرای خرید، ابتدا کشور و سپس سرویس موردنظر را انتخاب کنید. کد پیامک به‌صورت خودکار همین‌جا نمایش داده می‌شود.`;
-  if (editMsgId) return edit(env, chatId, editMsgId, text, mainMenuKb(env, chatId));
-  return send(env, chatId, text, mainMenuKb(env, chatId));
+  if (editMsgId) return edit(env, chatId, editMsgId, text, mainMenuKb(env, cfg, chatId));
+  return send(env, chatId, text, mainMenuKb(env, cfg, chatId));
 }
 
 function pageKb(items, page, perPage, makeCb, backTo) {
@@ -285,10 +311,11 @@ async function showCountries(env, chatId, msgId, page) {
 }
 
 async function showServices(env, chatId, msgId, countryId, page) {
+  const cfg = await getConfig(env);
   const services = await smsfull(env, `/services?countryId=${countryId}`);
   const avail = services.filter((s) => s.available > 0);
   const items = avail.map((s) => ({
-    label: `${s.name} — ${faNum(sellPrice(env, s.price))} | موجود: ${faInt(s.available)}`,
+    label: `${s.name} — ${faNum(sellPrice(cfg, s.price))} | موجود: ${faInt(s.available)}`,
     id: s.id,
   }));
   const text = items.length
@@ -302,7 +329,8 @@ async function showConfirm(env, chatId, msgId, countryId, serviceId) {
   const services = await smsfull(env, `/services?countryId=${countryId}`);
   const s = services.find((x) => x.id === Number(serviceId));
   if (!s) return edit(env, chatId, msgId, "این سرویس دیگر موجود نیست.", backKb);
-  const price = sellPrice(env, s.price);
+  const cfg = await getConfig(env);
+  const price = sellPrice(cfg, s.price);
   const user = await getUser(env, chatId);
   const text = `🧾 <b>تأیید خرید</b>\n\nسرویس: <b>${esc(s.name)}</b>\nقیمت: <b>${faNum(price)}</b> واحد\nموجودی شما: ${faNum(user.balance)} واحد\nموجودی لحظه‌ای: ${faInt(s.available)} شماره\n\nپس از خرید، شماره نمایش داده می‌شود و تا ${faDigits(20)} دقیقه منتظر کد پیامک می‌ماند. اگر کدی نیاید، مبلغی از موجودی کسر نخواهد شد.`;
   return edit(env, chatId, msgId, text, kb([
@@ -315,7 +343,8 @@ async function doBuy(env, chatId, msgId, countryId, serviceId, cbId) {
   const services = await smsfull(env, `/services?countryId=${countryId}`);
   const s = services.find((x) => x.id === Number(serviceId));
   if (!s) { await answerCb(env, cbId, "سرویس موجود نیست", true); return; }
-  const price = sellPrice(env, s.price);
+  const cfg = await getConfig(env);
+  const price = sellPrice(cfg, s.price);
   const user = await getUser(env, chatId);
   if (Number(user.balance) < price) {
     await answerCb(env, cbId, "موجودی کافی نیست", true);
@@ -400,9 +429,10 @@ function topupMenuText() {
   return `💳 <b>افزایش موجودی</b>\n\nیکی از روش‌ها را انتخاب کنید:\n\n💳 <b>کارت به کارت:</b> مبلغ را به کارت فروشگاه واریز کنید و رسید را همین‌جا بفرستید. پس از تأیید مدیر، موجودی شارژ می‌شود.\n\n🪙 <b>ارز دیجیتال:</b> از صفحه کیف‌پول، آدرس ارز موردنظر را بردارید، <b>مبلغ دقیق</b> نمایش‌داده‌شده را واریز کنید؛ سیستم به‌صورت خودکار واریز را بررسی و حسابتان را شارژ می‌کند.`;
 }
 async function showTopup(env, chatId, msgId) {
+  const cfg = await getConfig(env);
   const rows = [];
-  if (env.CARD_NUMBER) rows.push([btn("💳 کارت به کارت + ارسال رسید", "topup_card")]);
-  if (configuredCryptos(env).length) rows.push([btn("🪙 پرداخت با ارز دیجیتال", "topup_crypto")]);
+  if (cfg.CARD_NUMBER) rows.push([btn("💳 کارت به کارت + ارسال رسید", "topup_card")]);
+  if (configuredCryptos(cfg).length) rows.push([btn("🪙 پرداخت با ارز دیجیتال", "topup_crypto")]);
   rows.push([btn("⬅️ منوی اصلی", "home")]);
   const text = rows.length > 1 ? topupMenuText()
     : "روش پرداختی هنوز توسط مدیر تنظیم نشده است. لطفاً با پشتیبانی تماس بگیرید.";
@@ -413,19 +443,22 @@ async function startCardTopup(env, chatId, msgId) {
   const user = await getUser(env, chatId);
   user.state = "await_card_amount";
   await saveUser(env, user);
-  const rate = env.TOMAN_PER_BRL ? `نرخ فعلی: هر واحد = ${faInt(env.TOMAN_PER_BRL)} تومان` : "نرخ توسط مدیر هنگام تأیید محاسبه می‌شود.";
+  const cfg = await getConfig(env);
+  const rate = cfg.TOMAN_PER_BRL ? `نرخ فعلی: هر واحد = ${faInt(cfg.TOMAN_PER_BRL)} تومان` : "نرخ توسط مدیر هنگام تأیید محاسبه می‌شود.";
   return edit(env, chatId, msgId,
-    `💳 <b>کارت به کارت</b>\n\nشماره کارت: <code>${esc(env.CARD_NUMBER)}</code>\nبه نام: ${esc(env.CARD_HOLDER || "")}${env.CARD_BANK ? `\nبانک: ${esc(env.CARD_BANK)}` : ""}\n\n${rate}\n\n✍️ مبلغی را که واریز می‌کنید به <b>تومان</b> بنویسید (فقط عدد):`,
+    `💳 <b>کارت به کارت</b>\n\nشماره کارت: <code>${esc(cfg.CARD_NUMBER)}</code>\nبه نام: ${esc(cfg.CARD_HOLDER || "")}${cfg.CARD_BANK ? `\nبانک: ${esc(cfg.CARD_BANK)}` : ""}\n\n${rate}\n\n✍️ مبلغی را که واریز می‌کنید به <b>تومان</b> بنویسید (فقط عدد):`,
     kb([[btn("⬅️ بازگشت", "topup")]]));
 }
 
 async function startCryptoTopup(env, chatId, msgId) {
-  const rows = configuredCryptos(env).map(([code, c]) => [btn(c.label, `crypto_new:${code}`)]);
+  const cfg = await getConfig(env);
+  const rows = configuredCryptos(cfg).map(([code, c]) => [btn(c.label, `crypto_new:${code}`)]);
   rows.push([btn("⬅️ بازگشت", "topup")]);
   return edit(env, chatId, msgId, `🪙 <b>ارز را انتخاب کنید:</b>\n\nدر مرحله بعد مبلغ شارژ (به واحد BRL) را می‌نویسید و مبلغ دقیق ارزی و آدرس کیف‌پول به شما نشان داده می‌شود.`, kb(rows));
 }
 
 async function createCryptoTopup(env, chatId, cryptoCode, creditBrl, baseUrl) {
+  const cfg = await getConfig(env);
   const c = CRYPTOS[cryptoCode];
   const price = await cryptoPriceBrl(env, c.cg); // BRL per 1 coin
   const base = creditBrl / price;
@@ -436,7 +469,7 @@ async function createCryptoTopup(env, chatId, cryptoCode, creditBrl, baseUrl) {
   const expected = Number((base + tail).toFixed(c.decimals));
   const topup = {
     id: uid(), userId: String(chatId), method: "crypto", crypto: cryptoCode,
-    walletAddress: env[c.envKey], creditBrl, expectedCrypto: expected,
+    walletAddress: cfg[c.envKey], creditBrl, expectedCrypto: expected,
     status: "pending", createdAt: now(), expiresAt: now() + 60 * 60 * 1000,
   };
   await kvPut(env, `topup:${topup.id}`, topup, 2 * 24 * 3600);
@@ -454,6 +487,7 @@ async function showAdmin(env, chatId, msgId) {
   const rows = [
     [btn("🧾 رسیدهای در انتظار تأیید", "adm_pending")],
     [btn("🪙 پرداخت‌های کریپتوی در انتظار", "adm_crypto_pending")],
+    [btn("⚙️ تنظیمات فروشگاه", "cfg")],
     [btn("⬅️ منوی اصلی", "home")],
   ];
   if (msgId) return edit(env, chatId, msgId, text, kb(rows));
@@ -477,6 +511,99 @@ async function showPending(env, chatId, msgId, method) {
   return edit(env, chatId, msgId, text, kb(rows));
 }
 
+// ---------- shop settings (admin panel, stored in KV config) ----------
+const SETTING_FIELDS = {
+  CARD_NUMBER: { label: "شماره کارت", hint: "فقط عددهای شماره کارت را بفرستید (با فاصله هم می‌شود)." },
+  CARD_HOLDER: { label: "نام صاحب کارت", hint: "نام و نام خانوادگی صاحب کارت را بفرستید." },
+  CARD_BANK: { label: "نام بانک", hint: "نام بانک را بفرستید، مثلاً: بانک ملی" },
+  TOMAN_PER_BRL: { label: "نرخ تومان (هر ۱ BRL)", hint: "فقط عدد بفرستید، مثال: 40000", numeric: true },
+  PRICE_MARKUP_PERCENT: { label: "درصد سود فروشگاه", hint: "فقط عدد بفرستید، مثال: 20 یعنی ۲۰٪ روی قیمت تأمین‌کننده", numeric: true },
+  SUPPORT_USERNAME: { label: "یوزرنیم پشتیبانی", hint: "بدون @ بفرستید، مثال: BlueGateSupport" },
+  WORKER_BASE_URL: { label: "آدرس عمومی ورکر", hint: "آدرس کامل با https:// — برای اطمینان از تنظیم خودکار وبهوک" },
+};
+const walletField = (code) => ({
+  label: `کیف‌پول ${CRYPTOS[code].label}`,
+  hint: "آدرس کیف‌پول را دقیق و بدون فاصله بفرستید.",
+});
+function settingLabel(key) {
+  if (SETTING_FIELDS[key]) return SETTING_FIELDS[key].label;
+  const code = Object.keys(CRYPTOS).find((c) => CRYPTOS[c].envKey === key);
+  return code ? walletField(code).label : key;
+}
+function settingHint(key) {
+  if (SETTING_FIELDS[key]) return SETTING_FIELDS[key].hint;
+  return walletField(Object.keys(CRYPTOS).find((c) => CRYPTOS[c].envKey === key)).hint;
+}
+const CONFIG_GROUPS = {
+  card: { title: "💳 تنظیمات پرداخت کارتی", keys: ["CARD_NUMBER", "CARD_HOLDER", "CARD_BANK", "TOMAN_PER_BRL"] },
+  wallet: { title: "🪙 کیف‌پول‌های کریپتو", keys: Object.values(CRYPTOS).map((c) => c.envKey) },
+  general: { title: "🧰 تنظیمات عمومی", keys: ["PRICE_MARKUP_PERCENT", "SUPPORT_USERNAME", "WORKER_BASE_URL"] },
+};
+const groupOfKey = (key) =>
+  Object.entries(CONFIG_GROUPS).find(([, g]) => g.keys.includes(key))?.[0] || "general";
+const shortVal = (v) => !v ? "— تنظیم نشده" : v.length > 26 ? `${v.slice(0, 12)}…${v.slice(-8)}` : v;
+
+function configGroupText(cfg, group) {
+  const g = CONFIG_GROUPS[group];
+  let text = `⚙️ <b>${g.title}</b>\n\nبرای ویرایش، روی هر مورد بزنید. دکمه 🗑 مقدار را حذف می‌کند.\n`;
+  for (const k of g.keys) text += `\n<b>${esc(settingLabel(k))}:</b> <code>${esc(shortVal(cfg[k]))}</code>`;
+  return text;
+}
+function configGroupKb(cfg, group) {
+  const g = CONFIG_GROUPS[group];
+  const rows = g.keys.map((k) => [
+    btn(`${settingLabel(k)}: ${shortVal(cfg[k])}`, `cfg_set:${k}`),
+    btn("🗑", `cfg_del:${k}`),
+  ]);
+  rows.push([btn("⬅️ همه تنظیمات", "cfg"), btn("🛠 پنل مدیریت", "admin")]);
+  return kb(rows);
+}
+async function showConfigOverview(env, chatId, msgId) {
+  const cfg = await getConfig(env);
+  const status = (keys) => keys.some((k) => cfg[k]) ? "✅" : "⚪️";
+  const text = `⚙️ <b>تنظیمات فروشگاه</b>\n\nهمه این موارد از همین‌جا قابل تغییر است و بلافاصله (بدون دیپلوی دوباره) اعمال می‌شود. مقادیر در دیتابیس فروشگاه ذخیره می‌شوند و اگر قبلاً در Cloudflare هم ست شده باشند، مقدار این پنل اولویت دارد.\n\n💳 کارت: ${status(CONFIG_GROUPS.card.keys)}\n🪙 کیف‌پول‌ها: ${faInt(CONFIG_GROUPS.wallet.keys.filter((k) => cfg[k]).length)} مورد ست شده\n🧰 عمومی: سود ${faDigits(cfg.PRICE_MARKUP_PERCENT)}٪`;
+  const rows = [
+    [btn(CONFIG_GROUPS.card.title, "cfg_g:card")],
+    [btn(CONFIG_GROUPS.wallet.title, "cfg_g:wallet")],
+    [btn(CONFIG_GROUPS.general.title, "cfg_g:general")],
+    [btn("🛠 پنل مدیریت", "admin"), btn("⬅️ منوی اصلی", "home")],
+  ];
+  if (msgId) return edit(env, chatId, msgId, text, kb(rows));
+  return send(env, chatId, text, kb(rows));
+}
+async function showConfigGroup(env, chatId, msgId, group) {
+  const cfg = await getConfig(env);
+  const text = configGroupText(cfg, group);
+  if (msgId) return edit(env, chatId, msgId, text, configGroupKb(cfg, group));
+  return send(env, chatId, text, configGroupKb(cfg, group));
+}
+function validateSetting(key, raw) {
+  const clean = raw.replace(/\s+/g, " ").trim();
+  if (!clean) return { error: "مقدار خالی است." };
+  if (key === "CARD_NUMBER") {
+    const v = clean.replace(/[\s-]/g, "");
+    return /^\d{12,19}$/.test(v) ? { value: v } : { error: "شماره کارت باید ۱۲ تا ۱۹ رقم باشد." };
+  }
+  if (SETTING_FIELDS[key]?.numeric) {
+    return /^\d+(\.\d+)?$/.test(clean) && Number(clean) > 0
+      ? { value: clean } : { error: "فقط عدد بزرگ‌تر از صفر بفرستید." };
+  }
+  if (key === "SUPPORT_USERNAME") {
+    const v = clean.replace(/^@/, "").replace(/\s/g, "");
+    return /^[A-Za-z0-9_]{3,}$/.test(v) ? { value: v } : { error: "یوزرنیم معتبر نیست (حروف انگلیسی، عدد و _)." };
+  }
+  if (key === "WORKER_BASE_URL") {
+    const v = clean.replace(/\/+$/, "");
+    return v.startsWith("https://") ? { value: v } : { error: "آدرس باید با https:// شروع شود." };
+  }
+  if (key.startsWith("WALLET_")) {
+    const v = clean.replace(/\s/g, "");
+    return v.length >= 15 && /^[A-Za-z0-9:_\-\.]+$/.test(v)
+      ? { value: v } : { error: "آدرس کیف‌پول معتبر نیست؛ بدون فاصله و کامل بفرستید." };
+  }
+  return { value: clean };
+}
+
 // ---------- message / callback router ----------
 async function handleMessage(env, msg, baseUrl) {
   const chatId = msg.chat.id;
@@ -485,6 +612,24 @@ async function handleMessage(env, msg, baseUrl) {
 
   if (text === "/start") { user.state = null; await saveUser(env, user); return showHome(env, chatId); }
   if (text === "/admin" && isAdmin(env, chatId)) return showAdmin(env, chatId);
+
+  // Admin is editing a shop setting: this message is the new value.
+  if (isAdmin(env, chatId) && user.state?.startsWith("setcfg:")) {
+    const key = user.state.slice("setcfg:".length);
+    if (text === "/cancel") {
+      user.state = null; await saveUser(env, user);
+      return send(env, chatId, "لغو شد.", kb([[btn("⚙️ تنظیمات فروشگاه", "cfg")]]));
+    }
+    const { value, error } = validateSetting(key, text);
+    if (error) return send(env, chatId, `❌ ${error}\nدوباره بفرستید یا /cancel بزنید.`);
+    await setConfigValue(env, key, value);
+    user.state = null; await saveUser(env, user);
+    const group = groupOfKey(key);
+    const cfg = await getConfig(env);
+    return send(env, chatId,
+      `✅ <b>ذخیره شد</b>\n${esc(settingLabel(key))}: <code>${esc(value)}</code>\n\n${configGroupText(cfg, group)}`,
+      configGroupKb(cfg, group));
+  }
 
   // Receipt photo for a pending card top-up
   if (user.state === "await_card_receipt" && (msg.photo || msg.document)) {
@@ -495,7 +640,7 @@ async function handleMessage(env, msg, baseUrl) {
     await kvPut(env, `topup:${topup.id}`, topup, 7 * 24 * 3600);
     user.state = null; user.stateData = null;
     await saveUser(env, user);
-    await send(env, chatId, "🧾 رسید شما دریافت شد و برای تأیید نزد مدیر ارسال شد. پس از تأیید، موجودی‌تان شارژ می‌شود.", mainMenuKb(env, chatId));
+    await send(env, chatId, "🧾 رسید شما دریافت شد و برای تأیید نزد مدیر ارسال شد. پس از تأیید، موجودی‌تان شارژ می‌شود.", mainMenuKb(env, await getConfig(env), chatId));
     // Forward receipt to admin with approve/reject buttons
     const cap = `🧾 <b>رسید جدید</b>\nکاربر: ${faDigits(chatId)}\nمبلغ کارت: ${faInt(topup.amountToman)} تومان\nشارژ درخواستی: ${faNum(topup.creditBrl)} واحد`;
     const adminKb = kb([[btn("✅ تأیید و شارژ", `apr:${topup.id}`), btn("❌ رد رسید", `rej:${topup.id}`)]]);
@@ -506,7 +651,7 @@ async function handleMessage(env, msg, baseUrl) {
 
   if (user.state === "await_card_amount" && /^[0-9]+$/.test(text.replace(/[,٬]/g, ""))) {
     const amountToman = Number(text.replace(/[,٬]/g, ""));
-    const rate = Number(env.TOMAN_PER_BRL || 0);
+    const rate = Number((await getConfig(env)).TOMAN_PER_BRL || 0);
     const creditBrl = rate > 0 ? Math.floor((amountToman / rate) * 100) / 100 : 0;
     const topup = {
       id: uid(), userId: String(chatId), method: "card", amountToman,
@@ -593,6 +738,27 @@ async function handleCallback(env, cq, baseUrl) {
       await answerCb(env, cq.id, "هنوز واریزی با مبلغ دقیق پیدا نشد. اگر تازه واریز کرده‌اید چند دقیقه صبر کنید.", true);
       return;
     }
+    if (data === "cfg" && isAdmin(env, chatId)) return showConfigOverview(env, chatId, msgId);
+    if (head === "cfg_g" && isAdmin(env, chatId)) return showConfigGroup(env, chatId, msgId, a);
+    if (head === "cfg_set" && isAdmin(env, chatId)) {
+      const user = await getUser(env, chatId);
+      user.state = `setcfg:${a}`;
+      await saveUser(env, user);
+      const cfg = await getConfig(env);
+      return edit(env, chatId, msgId,
+        `✏️ <b>${esc(settingLabel(a))}</b>\n\nمقدار فعلی: <code>${esc(cfg[a] || "— تنظیم نشده")}</code>\n\n${esc(settingHint(a))}\nمقدار جدید را همین‌جا بفرستید، یا برای لغو دکمه زیر را بزنید:`,
+        kb([[btn("❌ انصراف", "cfg_cancel")]]));
+    }
+    if (data === "cfg_cancel" && isAdmin(env, chatId)) {
+      const user = await getUser(env, chatId);
+      user.state = null; await saveUser(env, user);
+      return showConfigOverview(env, chatId, msgId);
+    }
+    if (head === "cfg_del" && isAdmin(env, chatId)) {
+      await setConfigValue(env, a, "");
+      await answerCb(env, cq.id, "حذف شد 🗑");
+      return showConfigGroup(env, chatId, msgId, groupOfKey(a));
+    }
     if (data === "admin" && isAdmin(env, chatId)) return showAdmin(env, chatId, msgId);
     if (data === "adm_pending" && isAdmin(env, chatId)) return showPending(env, chatId, msgId, "card");
     if (data === "adm_crypto_pending" && isAdmin(env, chatId)) return showPending(env, chatId, msgId, "crypto");
@@ -611,7 +777,7 @@ async function handleCallback(env, cq, baseUrl) {
       } else {
         topup.status = "rejected"; topup.resolvedAt = now();
         await kvPut(env, `topup:${topup.id}`, topup);
-        await send(env, topup.userId, "❌ درخواست افزایش موجودی شما رد شد. برای پیگیری با پشتیبانی در تماس باشید.", mainMenuKb(env, topup.userId));
+        await send(env, topup.userId, "❌ درخواست افزایش موجودی شما رد شد. برای پیگیری با پشتیبانی در تماس باشید.", mainMenuKb(env, await getConfig(env), topup.userId));
         await answerCb(env, cq.id, "رد شد");
       }
       return showAdmin(env, chatId, msgId);
@@ -622,9 +788,9 @@ async function handleCallback(env, cq, baseUrl) {
 }
 
 // ---------- wallet / payment web page (Persian) ----------
-function walletPage(env, topup) {
-  const wallets = configuredCryptos(env).map(([code, c]) => {
-    const addr = env[c.envKey];
+function walletPage(env, cfg, topup) {
+  const wallets = configuredCryptos(cfg).map(([code, c]) => {
+    const addr = cfg[c.envKey];
     const hot = topup && topup.crypto === code;
     return `<section class="card${hot ? " hot" : ""}"><h2>${esc(c.label)}${hot ? " ⭐️ پرداخت شما" : ""}</h2>
       <code class="addr">${esc(addr)}</code>
@@ -635,8 +801,8 @@ function walletPage(env, topup) {
   const topupBox = topup
     ? `<section class="card hot"><h2>مبلغ دقیق پرداخت</h2><p class="amt">${esc(topup.expectedCrypto)} — ${esc(CRYPTOS[topup.crypto]?.label || "")}</p><p>دقیقاً همین مبلغ را به آدرس بالا واریز کنید. شارژ به‌صورت خودکار پس از دیده‌شدن تراکنش در شبکه انجام می‌شود.</p></section>`
     : "";
-  const cardBox = env.CARD_NUMBER
-    ? `<section class="card"><h2>کارت به کارت</h2><code class="addr">${esc(env.CARD_NUMBER)}</code><p>به نام: ${esc(env.CARD_HOLDER || "")}${env.CARD_BANK ? ` — ${esc(env.CARD_BANK)}` : ""}</p><p>پس از واریز، رسید را داخل ربات تلگرام بفرستید.</p></section>`
+  const cardBox = cfg.CARD_NUMBER
+    ? `<section class="card"><h2>کارت به کارت</h2><code class="addr">${esc(cfg.CARD_NUMBER)}</code><p>به نام: ${esc(cfg.CARD_HOLDER || "")}${cfg.CARD_BANK ? ` — ${esc(cfg.CARD_BANK)}` : ""}</p><p>پس از واریز، رسید را داخل ربات تلگرام بفرستید.</p></section>`
     : "";
   return `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>کیف‌پول و پرداخت — فروشگاه شماره مجازی</title>
@@ -661,14 +827,16 @@ export default {
     // in the background — no manual setWebhook call is needed after deploy.
     if (url.pathname !== "/webhook") ctx.waitUntil(rememberOriginAndWebhook(env, url.origin));
     if (url.pathname === "/setup") {
-      const webhook = await ensureWebhook(env, env.WORKER_BASE_URL || url.origin);
+      const cfgSetup = await getConfig(env);
+      const webhook = await ensureWebhook(env, cfgSetup.WORKER_BASE_URL || url.origin);
       return Response.json({ ok: webhook.ok, kv: !!env.STORE, webhook });
     }
     if (url.pathname === "/" ) return Response.redirect(`${url.origin}/pay`, 302);
     if (url.pathname === "/pay") {
       const t = url.searchParams.get("t");
       const topup = t ? await kvGet(env, `topup:${t}`) : null;
-      return new Response(walletPage(env, topup), { headers: { "content-type": "text/html; charset=utf-8" } });
+      const cfg = await getConfig(env);
+      return new Response(walletPage(env, cfg, topup), { headers: { "content-type": "text/html; charset=utf-8" } });
     }
     if (url.pathname === "/health") return Response.json({ ok: true, kv: !!env.STORE });
     if (url.pathname === "/webhook" && request.method === "POST") {
@@ -692,7 +860,8 @@ export default {
       // Keep the Telegram webhook pointed at this Worker (uses the configured
       // public URL, or the last origin seen from a real visit).
       const storedOrigin = await kvGet(env, "sys:origin");
-      const origin = env.WORKER_BASE_URL || storedOrigin?.origin;
+      const cfgCron = await getConfig(env);
+      const origin = cfgCron.WORKER_BASE_URL || storedOrigin?.origin;
       if (origin) await ensureWebhook(env, origin);
       const pending = (await kvList(env, "topup:")).filter(
         (t) => t.method === "crypto" && t.status === "pending" && t.expiresAt > now());

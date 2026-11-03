@@ -47,6 +47,15 @@ namespace manually and add its `id = "…"` under the `[[kv_namespaces]]` block 
 
 ## 3. Set variables & secrets
 
+> **Shop settings are managed inside Telegram now.** Card details, the Toman
+> rate, all crypto wallet addresses, the markup %, the support username and the
+> public Worker URL are edited from the bot itself: **Admin panel → ⚙️ تنظیمات
+> فروشگاه** (button-based, with edit/delete per field, validation included).
+> They are stored in KV and apply immediately — no redeploy, no Cloudflare visit.
+> The Cloudflare variables of the same name below now only act as *initial
+> defaults*; a value saved in the Telegram panel overrides them. Only the three
+> secrets (bot token, admin ID, SmsFull key) must live in Cloudflare.
+
 Worker → **Settings → Variables and Secrets**:
 
 | Name | Type | What it is |
@@ -107,7 +116,15 @@ Base: `https://core.smsfullbot.com/api/v1`, header `Authorization: Bearer <key>`
 ## Admin (inside Telegram)
 
 Send `/start` as the admin (or open «پنل مدیریت»): see provider balance,
-approve/reject card receipts, review pending crypto payments and force a chain check.
+approve/reject card receipts, review pending crypto payments and force a chain check,
+and open **⚙️ تنظیمات فروشگاه** — a full button panel with three groups:
+
+- **💳 پرداخت کارتی:** card number, card holder, bank name, Toman-per-BRL rate
+- **🪙 کیف‌پول‌های کریپتو:** one editable wallet address per crypto (USDT-TRC20, TRX, BTC, TON, LTC, ETH, USDT-ERC20)
+- **🧰 عمومی:** markup %, support username, public Worker URL
+
+Tap a field → send the new value as a message → it's validated and saved to KV
+instantly. The 🗑 button next to a field clears it.
 
 ## Known limits of v1
 
