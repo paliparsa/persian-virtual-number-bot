@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "1.5.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "1.6.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -806,6 +806,67 @@ function expectedCryptoAmount(code, creditUsd, price) {
   return Number((base + tail).toFixed(c.decimals));
 }
 
+// Caption sent to the admin with every card receipt (bot or web upload):
+// the receipt photo itself + user id + the order (payment) details, with the
+// apr:/rej: approve-reject buttons attached by the caller.
+function receiptCaption(topup, via) {
+  return `🧾 <b>رسید جدید</b> (${via})\nکاربر: ${faDigits(topup.userId)}\nشناسه پرداخت: <code>${esc(topup.id)}</code>\nمبلغ کارت: ${faInt(topup.amountToman)} تومان\nشارژ درخواستی: $${faNum(topupCredit(topup))}${topup.rateUsed ? ` (با نرخ تتر ${faInt(topup.rateUsed)} تومان)` : ""}${topup.receiptCount > 1 ? `\n♻️ رسید جایگزین (شماره ${faDigits(topup.receiptCount)})` : ""}`;
+}
+
+// Upload a user-supplied image file to a Telegram chat (multipart sendPhoto).
+async function tgUploadPhoto(env, chatId, blob, filename, caption, replyMarkup) {
+  const fd = new FormData();
+  fd.append("chat_id", String(chatId));
+  fd.append("photo", blob, filename || "receipt.jpg");
+  fd.append("caption", caption);
+  fd.append("parse_mode", "HTML");
+  if (replyMarkup) fd.append("reply_markup", JSON.stringify(replyMarkup));
+  const r = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendPhoto`, { method: "POST", body: fd });
+  const d = await r.json().catch(() => ({}));
+  if (!d.ok) throw new Error(d.description || "sendPhoto failed");
+  const photos = d.result?.photo || [];
+  return photos.length ? photos[photos.length - 1].file_id : null;
+}
+
+// Receipt upload from the /pay page (card-to-card): the file goes straight to
+// the admin on Telegram with approve/reject buttons, and the user gets a bot
+// message that the receipt is awaiting admin approval.
+async function handlePayReceipt(env, request) {
+  const json = (body, status = 200) => Response.json(body, { status });
+  const t = new URL(request.url).searchParams.get("t");
+  let topup = t ? await kvGet(env, `topup:${t}`) : null;
+  if (!topup) return json({ ok: false, error: "پرداخت پیدا نشد" }, 404);
+  topup = await settleTopupLazy(env, topup);
+  if (topup.status !== "pending") return json({ ok: false, error: "این پرداخت بسته شده است" });
+  if (topup.method !== "card") return json({ ok: false, error: "اول روش کارت‌به‌کارت را انتخاب کنید" });
+  let form;
+  try { form = await request.formData(); } catch (_) { return json({ ok: false, error: "فرم نامعتبر است" }, 400); }
+  const file = form.get("receipt");
+  if (!file || typeof file === "string") return json({ ok: false, error: "عکس رسید را انتخاب کنید" });
+  if (!String(file.type || "").startsWith("image/")) return json({ ok: false, error: "فقط عکس رسید (JPG یا PNG) قابل قبول است" });
+  if (file.size > 8 * 1024 * 1024) return json({ ok: false, error: "حجم عکس باید کمتر از ۸ مگابایت باشد" });
+  topup.receiptCount = (topup.receiptCount || 0) + 1;
+  const adminKb = kb([[btn("✅ تأیید و شارژ", `apr:${topup.id}`), btn("❌ رد رسید", `rej:${topup.id}`)]]);
+  let fileId;
+  try {
+    fileId = await tgUploadPhoto(env, env.ADMIN_CHAT_ID, file, file.name || "receipt.jpg", receiptCaption(topup, "از صفحه پرداخت"), adminKb);
+  } catch (_) {
+    return json({ ok: false, error: "ارسال رسید ناموفق بود؛ رسید را داخل ربات بفرستید" });
+  }
+  topup.receiptFileId = fileId;
+  topup.receiptVia = "web";
+  await kvPut(env, `topup:${topup.id}`, topup, 7 * 24 * 3600);
+  const user = await getUser(env, topup.userId);
+  if (user.state === "await_card_receipt" && user.stateData === topup.id) {
+    user.state = null; user.stateData = null; await saveUser(env, user);
+  }
+  const cfg = await getConfig(env);
+  await send(env, topup.userId,
+    `🧾 <b>رسید شما دریافت شد</b>\n\nرسید پرداخت کارت‌به‌کارت ثبت شد و <b>منتظر تأیید ادمین</b> است. پس از تأیید، موجودی‌تان شارژ می‌شود و همین‌جا اطلاع می‌دهیم.`,
+    mainMenuKb(env, cfg, topup.userId));
+  return json({ ok: true });
+}
+
 // Called from the web payment page when the user picks (or resets) a method.
 async function applyPayMethod(env, topup, method) {
   const cfg = await getConfig(env);
@@ -1024,13 +1085,15 @@ async function handleMessage(env, msg, baseUrl) {
     const topup = await kvGet(env, `topup:${user.stateData}`);
     if (!topup) { user.state = null; await saveUser(env, user); return send(env, chatId, "درخواست شارژ پیدا نشد. دوباره تلاش کنید.", backKb); }
     topup.receiptFileId = msg.photo ? msg.photo[msg.photo.length - 1].file_id : msg.document.file_id;
+    topup.receiptVia = "bot";
+    topup.receiptCount = (topup.receiptCount || 0) + 1;
     topup.status = "pending";
     await kvPut(env, `topup:${topup.id}`, topup, 7 * 24 * 3600);
     user.state = null; user.stateData = null;
     await saveUser(env, user);
     await send(env, chatId, "🧾 رسید شما دریافت شد و برای تأیید نزد مدیر ارسال شد. پس از تأیید، موجودی‌تان شارژ می‌شود.", mainMenuKb(env, await getConfig(env), chatId));
     // Forward receipt to admin with approve/reject buttons
-    const cap = `🧾 <b>رسید جدید</b>\nکاربر: ${faDigits(chatId)}\nمبلغ کارت: ${faInt(topup.amountToman)} تومان\nشارژ درخواستی: $${faNum(topup.creditUsd)}${topup.rateUsed ? ` (با نرخ تتر ${faInt(topup.rateUsed)} تومان)` : ""}`;
+    const cap = receiptCaption(topup, "از ربات");
     const adminKb = kb([[btn("✅ تأیید و شارژ", `apr:${topup.id}`), btn("❌ رد رسید", `rej:${topup.id}`)]]);
     if (msg.photo) await tg(env, "sendPhoto", { chat_id: env.ADMIN_CHAT_ID, photo: topup.receiptFileId, caption: cap, parse_mode: "HTML", reply_markup: adminKb });
     else await tg(env, "sendDocument", { chat_id: env.ADMIN_CHAT_ID, document: topup.receiptFileId, caption: cap, parse_mode: "HTML", reply_markup: adminKb });
@@ -1370,6 +1433,28 @@ h1{font-size:24px;font-weight:800;letter-spacing:-.01em}
 .state h1{margin-bottom:6px}
 .state p{color:#a3a3a3;font-size:14px;max-width:40ch;margin:0 auto}
 .state .big{font-size:21px;font-weight:800;color:#fff;direction:ltr;margin-top:12px}
+.bankcard{position:relative;overflow:hidden;aspect-ratio:1.586;max-width:430px;margin:0 auto 16px;border-radius:20px;padding:20px 22px;color:#fff;background:linear-gradient(130deg,#0b1e4b 0%,#0e4d7a 48%,#0a7a6e 100%);box-shadow:0 18px 40px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.25);display:flex;flex-direction:column;justify-content:space-between;text-align:start}
+.bankcard:before{content:"";position:absolute;inset:0;background:radial-gradient(420px 200px at 85% -10%,rgba(255,255,255,.22),transparent 60%),radial-gradient(300px 300px at -10% 110%,rgba(255,255,255,.10),transparent 60%);pointer-events:none}
+.bankcard>*{position:relative}
+.bc-top{display:flex;justify-content:space-between;align-items:center;font-weight:800;font-size:15px}
+.bc-type{font-size:11px;font-weight:600;opacity:.75}
+.bc-mid{display:flex;justify-content:space-between;align-items:center}
+.bc-chip{width:46px;height:34px;flex:none;border-radius:7px;background:linear-gradient(145deg,#f6d789,#c9a227 55%,#e9cd7a);box-shadow:inset 0 0 0 1px rgba(90,64,0,.35);position:relative}
+.bc-chip:before,.bc-chip:after{content:"";position:absolute;left:0;right:0;height:1px;background:rgba(90,64,0,.4)}
+.bc-chip:before{top:11px}
+.bc-chip:after{top:22px}
+.bc-num{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:clamp(16px,5.2vw,22px);letter-spacing:.13em;text-align:left;font-weight:700;text-shadow:0 1px 2px rgba(0,0,0,.35);white-space:nowrap}
+.bc-bot{display:flex;justify-content:space-between;align-items:flex-end;gap:10px}
+.bc-k{font-size:10px;opacity:.7;margin-bottom:2px}
+.bc-holder{font-size:14.5px;font-weight:700}
+.bc-copy{border-color:rgba(255,255,255,.55);color:#fff}
+.bc-copy:hover{background:#fff;color:#0b1e4b;border-color:#fff}
+.upload{border:1.5px dashed #3a3a3a;border-radius:16px;padding:18px;text-align:center;margin:16px 0 6px}
+.upload .uic{font-size:26px}
+.upload p{color:#a3a3a3;font-size:13px;margin:6px 0 4px;line-height:1.9}
+.upload p b{color:#fff}
+.upload img{max-width:180px;max-height:180px;border-radius:12px;margin:10px auto 4px;display:none}
+.upload .fname{font-size:12px;color:#8a8a8a;direction:ltr}
 footer{margin-top:38px;padding-top:18px;border-top:1px solid #1c1c1c;color:#737373;font-size:12.5px}
 footer a{color:#a3a3a3}
 #toast{position:fixed;bottom:26px;left:50%;transform:translate(-50%,16px);background:#fff;color:#000;font-size:13px;font-weight:700;padding:8px 20px;border-radius:999px;opacity:0;pointer-events:none;transition:all .25s;z-index:9;max-width:88vw;text-align:center}
@@ -1403,13 +1488,15 @@ function paySteps(active) {
 function payScript(topup, poll) {
   const expiresAt = topupExpiresAt(topup);
   return `
-var TID='${esc(topup.id)}', EXP=${expiresAt}, SPAN=${PAY_TTL_MS};
+var TID='${esc(topup.id)}', EXP=${expiresAt}, SPAN=${PAY_TTL_MS}, HAS_RECEIPT=${topup.receiptFileId ? "true" : "false"};
 function pad(n){return (n<10?'0':'')+n}
 function tick(){var ms=EXP-Date.now();var s=Math.max(0,Math.floor(ms/1000));var txt=pad(Math.floor(s/60))+':'+pad(s%60);document.querySelectorAll('.cd').forEach(function(e){e.textContent=txt});var bar=document.getElementById('timebar');if(bar)bar.style.width=Math.max(0,ms/SPAN*100)+'%';var ring=document.getElementById('ringfg');if(ring){var C=163.36;ring.style.strokeDashoffset=C*(1-Math.max(0,ms)/SPAN)}if(ms<=0&&!window._exp){window._exp=1;setTimeout(function(){location.reload()},1500)}}
 setInterval(tick,250);tick();
 async function selectMethod(m){toast('در حال ثبت روش پرداخت…');try{var r=await fetch('/pay/select',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({t:TID,m:m})});var d=await r.json().catch(function(){return{}});if(d.ok){location.reload()}else{toast(d.error||'خطا رخ داد')}}catch(e){toast('خطا در ارتباط')}};
 async function checkNow(btn){btn.disabled=true;btn.textContent='در حال بررسی…';try{var r=await fetch('/pay/status?t='+TID);var d=await r.json();if(d.status!=='pending'){location.reload();return}toast('هنوز پرداختی پیدا نشد؛ اگر تازه واریز کرده‌اید چند دقیقه صبر کنید')}catch(e){toast('خطا در بررسی')}btn.disabled=false;btn.textContent='🔄 بررسی پرداخت'}
-${poll ? "setInterval(async function(){try{var r=await fetch('/pay/status?t='+TID);var d=await r.json();if(d.status!=='pending')location.reload()}catch(e){}},15000);" : ""}`;
+function onReceiptFile(inp){var f=inp.files&&inp.files[0];var prev=document.getElementById('rcPrev');var btn=document.getElementById('rcBtn');var nm=document.getElementById('rcName');if(!f){if(btn)btn.disabled=true;return}if(nm)nm.textContent=f.name;if(prev){prev.src=URL.createObjectURL(f);prev.style.display='block'}if(btn)btn.disabled=false}
+async function submitReceipt(btn){var inp=document.getElementById('rcFile');if(!inp||!inp.files||!inp.files[0]){toast('اول عکس رسید را انتخاب کنید');return}btn.disabled=true;btn.textContent='در حال ارسال…';try{var fd=new FormData();fd.append('receipt',inp.files[0]);var r=await fetch('/pay/receipt?t='+TID,{method:'POST',body:fd});var d=await r.json().catch(function(){return{}});if(d.ok){toast('رسید ثبت شد');setTimeout(function(){location.reload()},700)}else{toast(d.error||'خطا در ثبت رسید');btn.disabled=false;btn.textContent='📤 ثبت رسید'}}catch(e){toast('خطا در ارتباط');btn.disabled=false;btn.textContent='📤 ثبت رسید'}}
+${poll ? "setInterval(async function(){try{var r=await fetch('/pay/status?t='+TID);var d=await r.json();if(d.status!=='pending'||(!!d.receipt)!==HAS_RECEIPT)location.reload()}catch(e){}},15000);" : ""}`;
 }
 
 async function payPage(env, cfg, topup) {
@@ -1430,7 +1517,7 @@ async function payPage(env, cfg, topup) {
   const tomanText = tmn ? `≈ ${faInt(Math.round(credit * tmn))} تومان` : "";
   const summary = `<div class="summary"><div><div class="k">مبلغ شارژ</div><div class="v">$${esc(credit)}</div><div class="vt">${tomanText}</div></div>
     <div class="timer"><div class="cd">30:00</div><div class="k">مهلت باقی‌مانده</div></div></div><div class="timebar"><i id="timebar"></i></div>`;
-  const script = payScript(topup, topup.method === "crypto" || (topup.method === "card" && !!topup.receiptFileId));
+  const script = payScript(topup, topup.method === "crypto" || topup.method === "card");
 
   if (topup.status === "approved") {
     const user = await getUser(env, topup.userId);
@@ -1483,24 +1570,44 @@ async function payPage(env, cfg, topup) {
 
   // --- card view ---
   if (topup.method === "card") {
+    const cardDigits = (cfg.CARD_NUMBER || "").replace(/[^0-9]/g, "");
+    const cardGrouped = cardDigits.replace(/(.{4})/g, "$1 ").trim() || esc(cfg.CARD_NUMBER || "");
+    const bankCard = `<div class="bankcard">
+      <div class="bc-top"><span>${esc(cfg.CARD_BANK || "بانک")}</span><span class="bc-type">کارت بانکی • کارت‌به‌کارت</span></div>
+      <div class="bc-mid"><span class="bc-chip"></span>
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.85)" stroke-width="2" stroke-linecap="round"><path d="M6 8a8 8 0 0 1 0 8"/><path d="M9.5 5.5a12 12 0 0 1 0 13"/><path d="M13 3a16 16 0 0 1 0 18"/></svg></div>
+      <div class="bc-num" dir="ltr">${esc(cardGrouped)}</div>
+      <div class="bc-bot"><div><div class="bc-k">به نام</div><div class="bc-holder">${esc(cfg.CARD_HOLDER || "")}</div></div>
+      <button class="copy bc-copy" onclick="copyText('${esc(cardDigits || cfg.CARD_NUMBER || "")}')">کپی شماره کارت</button></div>
+    </div>`;
+    const uploadBlock = `<div class="upload">
+      <div class="uic">🧾</div>
+      <p><b>آپلود رسید پرداخت</b><br>بعد از واریز، عکس رسید را همین‌جا بارگذاری و ثبت کنید؛ رسید مستقیم برای ادمین ارسال می‌شود.</p>
+      <img id="rcPrev" alt="پیش‌نمایش رسید">
+      <div class="fname" id="rcName"></div>
+      <input type="file" id="rcFile" accept="image/*" hidden onchange="onReceiptFile(this)">
+      <div class="btnrow" style="margin-top:12px"><button class="btn ghost" onclick="document.getElementById('rcFile').click()">📎 انتخاب عکس رسید</button><button class="btn" id="rcBtn" disabled onclick="submitReceipt(this)">📤 ثبت رسید</button></div>
+    </div>`;
     if (topup.receiptFileId) {
       return payShell(`${head(2)}
         <h1>رسید شما دریافت شد</h1>
-        <p class="sub">رسید برای مدیر ارسال شده است؛ پس از تأیید، موجودی شما شارژ می‌شود و همین صفحه به‌صورت خودکار به‌روز می‌شود.</p>
-        ${summary}`, script);
+        <p class="sub"><span class="pulse"></span>رسید برای ادمین ارسال شده و <b style="color:#fff">منتظر تأیید ادمین</b> است؛ پس از تأیید، موجودی شما شارژ می‌شود و همین صفحه به‌صورت خودکار به‌روز می‌شود.</p>
+        ${summary}
+        <div class="btnrow"><button class="btn ghost" onclick="document.getElementById('reUp').style.display='block';this.style.display='none'">ارسال رسید جایگزین</button></div>
+        <div id="reUp" style="display:none">${uploadBlock}</div>`, script);
     }
     return payShell(`${head(2)}
       <h1>کارت به کارت</h1>
-      <p class="sub">مبلغ زیر را به کارت فروشگاه واریز کنید و رسید را داخل ربات ارسال کنید.</p>
+      <p class="sub">مبلغ زیر را به کارت فروشگاه واریز کنید و رسید را همین‌جا آپلود کنید.</p>
       ${summary}
+      ${bankCard}
       <div class="amtbox"><div class="k">مبلغ دقیق واریزی — تومان</div>
         <div class="amt"><span>${esc(String(topup.amountToman || 0))}</span><button class="copy" onclick="copyText('${esc(topup.amountToman || "")}')">کپی مبلغ</button></div></div>
-      <div class="addr-box"><code class="addr">${esc(cfg.CARD_NUMBER || "")}</code><button class="copy" onclick="copyText('${esc(cfg.CARD_NUMBER || "")}')">کپی شماره کارت</button></div>
-      <p class="sub" style="margin:8px 0 0">به نام ${esc(cfg.CARD_HOLDER || "")}${cfg.CARD_BANK ? ` — ${esc(cfg.CARD_BANK)}` : ""}</p>
+      ${uploadBlock}
       <ul class="notes">
-        <li><b>۱</b> دقیقاً همین مبلغ را کارت‌به‌کارت کنید.</li>
-        <li><b>۲</b> به ربات برگردید و <b>عکس رسید</b> را همان‌جا بفرستید؛ رسید به‌صورت خودکار به همین پرداخت وصل می‌شود.</li>
-        <li><b>۳</b> پس از تأیید مدیر، موجودی‌تان شارژ می‌شود.</li>
+        <li><b>۱</b> دقیقاً همین مبلغ را به کارت بالا کارت‌به‌کارت کنید.</li>
+        <li><b>۲</b> عکس رسید را همین‌جا آپلود و «ثبت رسید» را بزنید (یا عکس رسید را داخل ربات بفرستید).</li>
+        <li><b>۳</b> رسید برای ادمین ارسال می‌شود؛ پس از تأیید، موجودی‌تان شارژ می‌شود.</li>
       </ul>
       <div class="btnrow"><button class="btn ghost" onclick="selectMethod('')">تغییر روش پرداخت</button></div>`, script);
   }
@@ -1546,12 +1653,15 @@ export default {
     if (url.pathname === "/pay/select" && request.method === "POST") {
       return handlePaySelect(env, request);
     }
+    if (url.pathname === "/pay/receipt" && request.method === "POST") {
+      return handlePayReceipt(env, request);
+    }
     if (url.pathname === "/pay/status") {
       const t = url.searchParams.get("t");
       let topup = t ? await kvGet(env, `topup:${t}`) : null;
       if (!topup) return Response.json({ status: "notfound" }, { status: 404 });
       topup = await settleTopupLazy(env, topup);
-      return Response.json({ status: topup.status, method: topup.method, expiresAt: topupExpiresAt(topup) });
+      return Response.json({ status: topup.status, method: topup.method, receipt: !!topup.receiptFileId, expiresAt: topupExpiresAt(topup) });
     }
     if (url.pathname === "/pay") {
       const t = url.searchParams.get("t");
