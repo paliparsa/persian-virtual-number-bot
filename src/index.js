@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.1.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.1.1"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -1883,6 +1883,10 @@ async function createSession(env, profile) {
   return token;
 }
 function sessionTokenFrom(request) {
+  // Bearer first: some browsers/WebViews drop or delay cookies on fetch,
+  // which used to strand users on the login screen right after a good login.
+  const bm = /^Bearer ([a-f0-9]{64})$/.exec(request.headers.get("authorization") || "");
+  if (bm) return bm[1];
   const m = /(?:^|;\s*)bg_sess=([a-f0-9]{64})/.exec(request.headers.get("cookie") || "");
   return m ? m[1] : null;
 }
@@ -1921,7 +1925,7 @@ async function handleApi(env, request, url) {
       if (!(await verifyTelegramAuth(env, data))) return jsonResp({ error: "ورود ناموفق بود؛ دوباره تلاش کنید" }, 401);
       await getUser(env, data.id); // ensure the shared bot/web account exists
       const token = await createSession(env, data);
-      return jsonResp({ ok: true }, 200, { "set-cookie": sessionCookie(token) });
+      return jsonResp({ ok: true, token }, 200, { "set-cookie": sessionCookie(token) });
     }
     if (path === "/api/auth/logout" && request.method === "POST") {
       const sess = await getSession(env, request);
@@ -2115,6 +2119,7 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
       <div class="big">شماره مجازی،<br>بدون مرز 🌍</div>
       <p class="slogan">خرید شماره از سراسر دنیا و دریافت آنی کد پیامک —<br>همان حساب و موجودی ربات تلگرام شما.</p>
       <div class="tgwrap">${widget}</div>
+      <p class="small" id="loginErr" style="color:#ff9f43;min-height:18px"></p>
       <p class="small">اگر دکمه ورود نمایش داده نشد، چند ثانیه صبر کنید یا صفحه را تازه کنید.</p>
       <div class="feats">
         <div>✅ بدون ثبت‌نام و رمز عبور — ورود رسمی تلگرام</div>
@@ -2200,6 +2205,9 @@ function toast(msg){ var t=$('toast'); t.textContent=msg; t.classList.add('show'
 function api(path, opts){
   opts = opts || {};
   opts.headers = { 'content-type':'application/json' };
+  var tok = null;
+  try { tok = sessionStorage.getItem('bg_tok'); } catch (e) {}
+  if (tok) opts.headers['authorization'] = 'Bearer ' + tok;
   return fetch(path, opts).then(function(r){
     return r.json().catch(function(){ return {}; }).then(function(j){
       if (r.status === 401 && path.indexOf('/api/auth/') !== 0) { showLogin(); throw new Error('unauthorized'); }
@@ -2210,15 +2218,28 @@ function api(path, opts){
 }
 function onTelegramAuth(user){
   api('/api/auth/telegram', { method:'POST', body: JSON.stringify(user) })
-    .then(function(){ boot(); })
-    .catch(function(e){ toast(e.message); });
+    .then(function(j){
+      try { if (j.token) sessionStorage.setItem('bg_tok', j.token); } catch (e) {}
+      $('loginErr').textContent = '';
+      boot();
+    })
+    .catch(function(e){ $('loginErr').textContent = e.message; toast(e.message); });
 }
 function showLogin(){ stopActTimers(); $('viewApp').style.display='none'; $('viewLogin').style.display='block'; }
 function showApp(){ $('viewLogin').style.display='none'; $('viewApp').style.display='block'; }
-function boot(){
+function boot(tries){
+  tries = tries || 0;
   api('/api/me').then(function(me){
     S.me = me; showApp(); renderMe(); loadCountries();
-  }).catch(function(){ showLogin(); });
+  }).catch(function(){
+    // KV is eventually consistent: a just-created session can take a few
+    // seconds to become readable. Retry a few times before giving up.
+    var hasTok = false;
+    try { hasTok = !!sessionStorage.getItem('bg_tok'); } catch (e) {}
+    if (hasTok && tries < 4) { setTimeout(function(){ boot(tries + 1); }, 1500); return; }
+    try { sessionStorage.removeItem('bg_tok'); } catch (e) {}
+    showLogin();
+  });
 }
 function renderMe(){
   if (!S.me) return;
@@ -2231,7 +2252,7 @@ function renderMe(){
   else ava.textContent = (S.me.name || '؟').charAt(0);
 }
 function refreshMe(){ return api('/api/me').then(function(me){ S.me = me; renderMe(); }); }
-function logout(){ api('/api/auth/logout', { method:'POST' }).then(function(){ location.reload(); }); }
+function logout(){ try { sessionStorage.removeItem('bg_tok'); } catch (e) {} api('/api/auth/logout', { method:'POST' }).then(function(){ location.reload(); }); }
 function showView(name){
   ['shop','services','act','orders','topup'].forEach(function(v){ $('v-'+v).classList.toggle('on', v===name); });
   document.querySelectorAll('[data-nav]').forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-nav')===name); });
@@ -2331,26 +2352,28 @@ function pollAct(){
 function renderAct(){
   var a = S.act; if (!a) return;
   var html = '<h2 class="title">شماره شما آماده است 🎉</h2>';
-  html += '<button class="numcard" onclick="copyTxt(\'' + escH(a.phone) + '\', this)"><div class="lbl">' + escH(a.serviceName) + '</div><div class="num">' + escH(a.phone) + '</div><div class="lbl">برای کپی، روی شماره بزنید</div></button>';
+  html += '<button class=\"numcard\" id=\"numCard\"><div class=\"lbl\">' + escH(a.serviceName) + '</div><div class=\"num\">' + escH(a.phone) + '</div><div class=\"lbl\">برای کپی، روی شماره بزنید</div></button>';
   html += '<div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center">' + statusPill(a) + '<span style="color:#9a9aa2;font-size:13px" id="cdLeft"></span></div>';
   if (a.code) {
     var boxes = '';
     String(a.code).split('').forEach(function(ch){ boxes += '<span>' + escH(ch) + '</span>'; });
-    html += '<div class="codeboxes" onclick="copyTxt(\'' + escH(a.code) + '\', this)">' + boxes + '</div>';
+    html += '<div class=\"codeboxes\" id=\"codeBoxes\">' + boxes + '</div>';
     html += '<p class="small" style="color:#c9c9ce">کد را در سرویس مقصد وارد کنید — برای کپی روی کد بزنید.</p>';
     if (a.status === 'codeReceived') {
-      html += '<div class="btnrow"><button class="wbtn" onclick="actDo(\'finish\')">🏁 اتمام کار</button><button class="gbtn" onclick="actDo(\'resend\')">📩 پیامک مجدد</button></div>';
+      html += '<div class=\"btnrow\"><button class=\"wbtn\" onclick=\"actDo(&#39;finish&#39;)\">🏁 اتمام کار</button><button class=\"gbtn\" onclick=\"actDo(&#39;resend&#39;)\">📩 پیامک مجدد</button></div>';
       html += '<p class="small">با دریافت کد، امکان لغو این سفارش به پایان رسیده است.</p>';
     }
   } else if (['waitingSms','resendRequested'].indexOf(a.status) !== -1) {
     html += '<div class="codezone">در حال گوش دادن به پیامک… 📩<br>به‌محض رسیدن، کد به‌صورت <b style="color:#fff">خودکار</b> اینجا نمایش داده می‌شود؛ نیازی به رفرش نیست.</div>';
-    html += '<div class="btnrow"><button class="gbtn" onclick="actDo(\'resend\')">📩 پیامک مجدد</button><button class="gbtn" onclick="actDo(\'cancel\')">🚫 لغو سفارش</button></div>';
+    html += '<div class=\"btnrow\"><button class=\"gbtn\" onclick=\"actDo(&#39;resend&#39;)\">📩 پیامک مجدد</button><button class=\"gbtn\" onclick=\"actDo(&#39;cancel&#39;)\">🚫 لغو سفارش</button></div>';
     html += '<p class="small">طبق محدودیت تأمین‌کننده، لغو در ۲ دقیقه اول ممکن نیست؛ اگر کدی نرسد و سفارش لغو یا منقضی شود، مبلغ خودکار به موجودی برمی‌گردد.</p>';
   } else {
     html += '<p class="small">این سفارش به پایان رسیده است (' + escH(STATUS_FA[a.status]||a.status) + '). اگر کدی دریافت نشده بود، مبلغ به موجودی شما برگشته است.</p>';
-    html += '<div class="btnrow"><button class="gbtn" onclick="showView(\'orders\')">📱 سفارش‌های من</button></div>';
+    html += '<div class=\"btnrow\"><button class=\"gbtn\" onclick=\"showView(&#39;orders&#39;)\">📱 سفارش‌های من</button></div>';
   }
   $('actBox').innerHTML = html;
+  var nc = $('numCard'); if (nc) nc.onclick = function(){ copyTxt(S.act.phone); };
+  var cbx = $('codeBoxes'); if (cbx) cbx.onclick = function(){ copyTxt(S.act.code); };
   tickCountdown();
 }
 function actDo(action){
