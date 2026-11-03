@@ -10,8 +10,10 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "1.2.2"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "1.2.3"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
+// USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
+const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
 
 // ---------- small helpers ----------
 const faDigits = (v) => String(v).replace(/[0-9]/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[+d]);
@@ -60,7 +62,7 @@ async function kvList(env, prefix) {
 const CONFIG_KEYS = [
   "CARD_NUMBER", "CARD_HOLDER", "CARD_BANK", "TOMAN_PER_BRL",
   "WALLET_USDT_TRC20", "WALLET_TRX", "WALLET_BTC", "WALLET_TON",
-  "WALLET_LTC", "WALLET_ETH", "WALLET_USDT_ERC20",
+  "WALLET_LTC", "WALLET_ETH", "WALLET_USDT_ERC20", "WALLET_USDT_BEP20",
   "SUPPORT_USERNAME", "WORKER_BASE_URL", "PRICE_MARKUP_PERCENT",
 ];
 async function getConfig(env) {
@@ -241,6 +243,7 @@ async function cryptoPriceUsd(env, coingeckoId) {
 
 const CRYPTOS = {
   USDT_TRC20: { label: "تتر (TRC20)", envKey: "WALLET_USDT_TRC20", cg: "tether", decimals: 4 },
+  USDT_BEP20: { label: "تتر (BEP20)", envKey: "WALLET_USDT_BEP20", cg: "tether", decimals: 4 },
   TRX: { label: "ترون (TRX)", envKey: "WALLET_TRX", cg: "tron", decimals: 3 },
   BTC: { label: "بیت‌کوین (BTC)", envKey: "WALLET_BTC", cg: "bitcoin", decimals: 8 },
   TON: { label: "تون (TON)", envKey: "WALLET_TON", cg: "the-open-network", decimals: 4 },
@@ -295,6 +298,37 @@ async function checkCryptoPaid(env, topup) {
         const msg = tx.in_msg;
         return msg && Number(msg.value || 0) / 1e9 >= want - 1e-4 && Number(tx.utime) >= sinceSec;
       });
+    }
+    if (topup.crypto === "USDT_BEP20") {
+      // Keyless: read Transfer logs straight from BSC public RPC nodes.
+      const rpcCall = async (rpc, method, params) => {
+        const r = await fetch(rpc, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+        });
+        const d = await r.json();
+        if (d.error) throw new Error(d.error.message || "rpc error");
+        return d.result;
+      };
+      const toTopic = "0x" + "0".repeat(24) + addr.replace(/^0x/i, "").toLowerCase();
+      const transferTopic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+      const elapsedBlocks = Math.ceil((now() - topup.createdAt) / 3000) + 300; // BSC: ~3s blocks
+      const span = Math.min(Math.max(elapsedBlocks, 600), 5000); // public RPC log-range limits
+      for (const rpc of ["https://bsc-dataseed.bnbchain.org", "https://bsc.publicnode.com", "https://bsc-dataseed1.defibit.io"]) {
+        try {
+          const latest = parseInt(await rpcCall(rpc, "eth_blockNumber", []), 16);
+          const logs = await rpcCall(rpc, "eth_getLogs", [{
+            fromBlock: "0x" + Math.max(0, latest - span).toString(16),
+            toBlock: "latest",
+            address: USDT_BSC_CONTRACT,
+            topics: [transferTopic, null, toTopic],
+          }]);
+          if (Array.isArray(logs)) {
+            return logs.some((l) => Number(BigInt(l.data)) / 1e18 >= want - 1e-4);
+          }
+        } catch (_) { /* try the next RPC node */ }
+      }
+      return false;
     }
     if ((topup.crypto === "ETH" || topup.crypto === "USDT_ERC20") && env.ETHERSCAN_API_KEY) {
       const isToken = topup.crypto === "USDT_ERC20";

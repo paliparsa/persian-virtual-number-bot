@@ -25,7 +25,7 @@ refunded automatically (the provider only charges on a finished activation with 
   wallet address, links the user to the wallet page on the bot's own domain
   (`/pay?t=<topup-id>`), and checks the chain automatically (button + cron every
   2 minutes). On a match it tops up the user automatically.
-  Auto-check supports USDT-TRC20, TRX, BTC, TON, LTC, and ETH / USDT-ERC20
+  Auto-check supports USDT-TRC20, TRX, BTC, TON, LTC, USDT-BEP20 (read keylessly from BSC public RPC nodes via Transfer logs; BSC USDT has 18 decimals), and ETH / USDT-ERC20
   (ERC20 needs a free `ETHERSCAN_API_KEY`). Crypto USD prices are fetched redundantly — CoinGecko → Coinbase → Wallex-derived, with USDT fixed at $1 and a stale-cache last resort — because CoinGecko's free API aggressively rate-limits Cloudflare Workers' shared IPs, which used to abort top-ups with “price unavailable”.
 
 ## 1. Deploy from GitHub to Cloudflare (no code changes needed)
@@ -126,7 +126,7 @@ still running an older deploy; check the latest deployment in Cloudflare and red
 `GET /health` also reports `version`. — a full button panel with three groups:
 
 - **💳 پرداخت کارتی:** card number, card holder, bank name (the Toman rate is automatic via Wallex — nothing to set)
-- **🪙 کیف‌پول‌های کریپتو:** one editable wallet address per crypto (USDT-TRC20, TRX, BTC, TON, LTC, ETH, USDT-ERC20)
+- **🪙 کیف‌پول‌های کریپتو:** one editable wallet address per crypto (USDT-TRC20, USDT-BEP20, TRX, BTC, TON, LTC, ETH, USDT-ERC20)
 - **🧰 عمومی:** markup %, support username, public Worker URL
 
 Tap a field → send the new value as a message → it's validated and saved to KV
