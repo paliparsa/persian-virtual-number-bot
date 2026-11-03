@@ -1,0 +1,7 @@
+# Copy to .dev.vars for LOCAL development only. Never commit real values.
+# In production, set these in Cloudflare: Worker > Settings > Variables and Secrets.
+TELEGRAM_BOT_TOKEN=
+ADMIN_CHAT_ID=
+SMSFULL_API_KEY=
+WEBHOOK_SECRET=
+ETHERSCAN_API_KEY=

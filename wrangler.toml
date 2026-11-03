@@ -1,0 +1,29 @@
+name = "persian-virtual-number-bot"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+# Cron: auto-check pending crypto payments every 2 minutes.
+[triggers]
+crons = ["*/2 * * * *"]
+
+# KV storage is added in the Cloudflare dashboard (recommended for Git deploys):
+#   Worker > Settings > Bindings > Add > KV namespace > Variable name: STORE
+# If you deploy with wrangler instead, uncomment and put your namespace id:
+# [[kv_namespaces]]
+# binding = "STORE"
+# id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+[vars]
+PRICE_MARKUP_PERCENT = "20"
+# TOMAN_PER_BRL = "0"        # set as a dashboard variable/secret: Toman for 1 BRL credit
+# CARD_NUMBER = ""           # set in dashboard (shown to users)
+# CARD_HOLDER = ""
+# CARD_BANK = ""
+# WALLET_USDT_TRC20 = ""     # set in dashboard (shown on the /pay page)
+# WALLET_TRX = ""
+# WALLET_BTC = ""
+# WALLET_TON = ""
+# WALLET_LTC = ""
+# WALLET_ETH = ""
+# WALLET_USDT_ERC20 = ""
+# SUPPORT_USERNAME = ""      # Telegram username without @
