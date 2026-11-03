@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "1.4.1"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "1.4.2"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -63,7 +63,7 @@ const CONFIG_KEYS = [
   "CARD_NUMBER", "CARD_HOLDER", "CARD_BANK", "TOMAN_PER_BRL",
   "WALLET_USDT_TRC20", "WALLET_TRX", "WALLET_BTC", "WALLET_TON",
   "WALLET_LTC", "WALLET_ETH", "WALLET_USDT_ERC20", "WALLET_USDT_BEP20",
-  "SUPPORT_USERNAME", "WORKER_BASE_URL", "PRICE_MARKUP_PERCENT",
+  "SUPPORT_USERNAME", "WORKER_BASE_URL", "PRICE_MARKUP_PERCENT", "TMN_RATE_MANUAL",
 ];
 async function getConfig(env) {
   const stored = (await kvGet(env, "config")) || {};
@@ -198,6 +198,33 @@ async function usdtTomanRate(env) {
     }
     diag.depthError = "USDTTMN depth missing in response";
   } catch (e) { diag.depthError = String(e?.message || e); }
+  try {
+    // Exir order book (USDT/IRT, priced in Toman) — a different Iranian
+    // exchange on different infrastructure; Wallex 403s Cloudflare Workers
+    // egress IPs, Exir may still answer.
+    const r = await fetch("https://api.exir.io/v2/orderbook?symbol=usdt-irt");
+    diag.exirHttp = r.status;
+    const d = await r.json().catch(() => ({}));
+    const book = d?.["usdt-irt"] || {};
+    const bid = Number(book.bids?.[0]?.[0]);
+    const ask = Number(book.asks?.[0]?.[0]);
+    const v = bid > 0 && ask > 0 ? Math.round((bid + ask) / 2) : (bid || ask);
+    if (v > 10000) {
+      diag.src = "exir"; diag.rate = v;
+      await saveTmnDiag(env, diag);
+      await kvPut(env, "rate:usdt_tmn", { v, at: now(), src: diag.src }, 900);
+      return v;
+    }
+    diag.exirError = "usdt-irt book missing in response";
+  } catch (e) { diag.exirError = String(e?.message || e); }
+  // Operator-set manual rate (admin panel) beats a stale cache.
+  const cfg = await getConfig(env).catch(() => null);
+  const manual = Number(cfg?.TMN_RATE_MANUAL);
+  if (manual > 0) {
+    diag.src = "manual"; diag.rate = manual;
+    await saveTmnDiag(env, diag);
+    return manual;
+  }
   diag.src = cached?.v ? "stale-cache" : "none";
   if (cached?.v) diag.rate = cached.v;
   await saveTmnDiag(env, diag);
@@ -215,7 +242,7 @@ async function probeWallex() {
       return { ok: r.ok && !!v, http: r.status, rate: v || null, ms: Date.now() - t0 };
     } catch (e) { return { ok: false, error: String(e?.message || e), ms: Date.now() - t0 }; }
   };
-  const [markets, depth] = await Promise.all([
+  const [markets, depth, exir] = await Promise.all([
     probe("https://api.wallex.ir/v1/markets", (d) => {
       const v = Number(d?.result?.symbols?.USDTTMN?.stats?.lastPrice);
       return v > 0 ? v : null;
@@ -224,8 +251,15 @@ async function probeWallex() {
       const v = Number(d?.result?.ask?.[0]?.price);
       return v > 0 ? v : null;
     }),
+    probe("https://api.exir.io/v2/orderbook?symbol=usdt-irt", (d) => {
+      const book = d?.["usdt-irt"] || {};
+      const bid = Number(book.bids?.[0]?.[0]);
+      const ask = Number(book.asks?.[0]?.[0]);
+      const v = bid > 0 && ask > 0 ? Math.round((bid + ask) / 2) : (bid || ask);
+      return v > 10000 ? v : null;
+    }),
   ]);
-  return { markets, depth };
+  return { markets, depth, exir };
 }
 async function brlToUsdRate(env) {
   const cached = await kvGet(env, "rate:brl_usd");
@@ -869,6 +903,7 @@ const SETTING_FIELDS = {
   TOMAN_PER_BRL: { label: "نرخ تومان (هر ۱ BRL)", hint: "فقط عدد بفرستید، مثال: 40000", numeric: true },
   PRICE_MARKUP_PERCENT: { label: "درصد سود فروشگاه", hint: "فقط عدد بفرستید، مثال: 20 یعنی ۲۰٪ روی قیمت تأمین‌کننده", numeric: true },
   SUPPORT_USERNAME: { label: "یوزرنیم پشتیبانی", hint: "بدون @ بفرستید، مثال: BlueGateSupport" },
+  TMN_RATE_MANUAL: { label: "نرخ دستی تتر (تومان) — پشتیبان", hint: "فقط عدد بفرستید، مثال: 271000 — فقط وقتی استفاده می‌شود که نرخ زنده از والکس و اکسیر نرسد.", numeric: true },
   WORKER_BASE_URL: { label: "آدرس عمومی ورکر", hint: "آدرس کامل با https:// — برای اطمینان از تنظیم خودکار وبهوک" },
 };
 const walletField = (code) => ({
@@ -887,7 +922,7 @@ function settingHint(key) {
 const CONFIG_GROUPS = {
   card: { title: "💳 تنظیمات پرداخت کارتی", keys: ["CARD_NUMBER", "CARD_HOLDER", "CARD_BANK"] },
   wallet: { title: "🪙 کیف‌پول‌های کریپتو", keys: Object.values(CRYPTOS).map((c) => c.envKey) },
-  general: { title: "🧰 تنظیمات عمومی", keys: ["PRICE_MARKUP_PERCENT", "SUPPORT_USERNAME", "WORKER_BASE_URL"] },
+  general: { title: "🧰 تنظیمات عمومی", keys: ["PRICE_MARKUP_PERCENT", "TMN_RATE_MANUAL", "SUPPORT_USERNAME", "WORKER_BASE_URL"] },
 };
 const groupOfKey = (key) =>
   Object.entries(CONFIG_GROUPS).find(([, g]) => g.keys.includes(key))?.[0] || "general";
