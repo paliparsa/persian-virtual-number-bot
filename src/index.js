@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "1.8.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "1.9.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -703,17 +703,22 @@ function activationText(act) {
 }
 function activationKb(act) {
   const open = ["waitingSms", "codeReceived", "resendRequested"].includes(act.status);
+  const hasCode = !!act.latestCode || act.status === "codeReceived";
   const rows = [[btn("🔄 بررسی کد", `act:${act.id}`)]];
-  if (open) rows.push([
-    btn("📩 پیامک مجدد", `resend:${act.id}`),
-    btn("🏁 اتمام کار", `finish:${act.id}`),
-    btn("🚫 لغو", `cancel:${act.id}`),
-  ]);
+  if (open && hasCode) {
+    // Code delivered: Finish is the only action left — cancelling is over.
+    rows.push([btn("🏁 اتمام کار", `finish:${act.id}`)]);
+  } else if (open) {
+    rows.push([
+      btn("📩 پیامک مجدد", `resend:${act.id}`),
+      btn("🚫 لغو", `cancel:${act.id}`),
+    ]);
+  }
   rows.push([btn("📱 سفارش‌های من", "orders"), btn("⬅️ منوی اصلی", "home")]);
   return kb(rows);
 }
-async function showActivation(env, chatId, msgId, act) {
-  const text = activationText(act);
+async function showActivation(env, chatId, msgId, act, note = "") {
+  const text = activationText(act) + note;
   if (msgId) return edit(env, chatId, msgId, text, activationKb(act));
   return send(env, chatId, text, activationKb(act));
 }
@@ -751,7 +756,10 @@ async function postPurchaseToGroup(env, rec) {
   } catch (_) { /* an announcement must never break a purchase */ }
 }
 
-async function refreshActivation(env, chatId, msgId, id) {
+async function refreshActivation(env, chatId, msgId, id, cbId = null) {
+  // Checking must never look frozen: instant toast, and the result message
+  // always changes because it carries a fresh "last check" line.
+  if (cbId) await answerCb(env, cbId, "🔄 در حال بررسی کد…");
   const act = await smsfull(env, `/activations/${id}`);
   const rec = await kvGet(env, `act:${id}`);
   if (rec && rec.status !== act.status) { rec.status = act.status; await kvPut(env, `act:${id}`, rec); }
@@ -766,7 +774,11 @@ async function refreshActivation(env, chatId, msgId, id) {
   }
   // Announce in the purchases group the first time a code is delivered.
   if (rec && act.latestCode) await postPurchaseToGroup(env, rec);
-  return showActivation(env, chatId, msgId, act);
+  const t = new Date(now()).toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const note = act.latestCode
+    ? `\n\n🕐 آخرین بررسی: ${t}`
+    : `\n\n🕐 آخرین بررسی: ${t} — هنوز کدی دریافت نشده است؛ چند لحظه دیگر دوباره «بررسی کد» را بزنید.`;
+  return showActivation(env, chatId, msgId, act, note);
 }
 
 // ---------- top-ups: one dollar payment session, method chosen on the web page ----------
@@ -1237,8 +1249,30 @@ async function handleCallback(env, cq, baseUrl) {
     if (head === "services") return showServices(env, chatId, msgId, a, Number(b || 0));
     if (head === "confirm") return showConfirm(env, chatId, msgId, a, b);
     if (head === "buy") return doBuy(env, chatId, msgId, a, b, cq.id);
-    if (head === "act") return refreshActivation(env, chatId, msgId, a);
+    if (head === "act") return refreshActivation(env, chatId, msgId, a, cq.id);
     if (head === "resend" || head === "cancel" || head === "finish") {
+      if (head === "cancel" || head === "finish") {
+        const fresh = await smsfull(env, `/activations/${a}`).catch(() => null);
+        const hasCode = !!(fresh?.latestCode || fresh?.status === "codeReceived" || fresh?.status === "finished");
+        if (head === "finish" && !hasCode) {
+          await answerCb(env, cq.id, "اتمام کار فقط بعد از دریافت کد ممکن است.", true);
+          return refreshActivation(env, chatId, msgId, a);
+        }
+        if (head === "cancel" && hasCode) {
+          await answerCb(env, cq.id, "کد این سفارش دریافت شده و دیگر امکان لغو وجود ندارد.", true);
+          return refreshActivation(env, chatId, msgId, a);
+        }
+        if (head === "cancel") {
+          // The provider itself forbids cancelling in the first 2 minutes;
+          // say so up front (with the remaining seconds) instead of erroring.
+          const rec = await kvGet(env, `act:${a}`);
+          if (rec?.createdAt && now() - rec.createdAt < 120000) {
+            const remain = Math.ceil((120000 - (now() - rec.createdAt)) / 1000);
+            await answerCb(env, cq.id, `⏳ طبق محدودیت سایت تأمین‌کننده، تا ۲ دقیقه از خرید امکان لغو نیست. ${faDigits(remain)} ثانیه دیگر دوباره تلاش کنید.`, true);
+            return;
+          }
+        }
+      }
       await smsfull(env, `/activations/${a}/${head}`, { method: "POST" });
       await answerCb(env, cq.id, head === "cancel" ? "لغو شد" : head === "finish" ? "پایان یافت" : "درخواست پیامک مجدد ثبت شد");
       return refreshActivation(env, chatId, msgId, a);
