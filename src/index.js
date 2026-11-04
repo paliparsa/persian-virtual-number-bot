@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.19.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.20.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -3968,6 +3968,13 @@ body{background:#000;color:#fff;font-family:'Yekan Bakh',Tahoma,sans-serif;min-h
 .nav{position:fixed;bottom:calc(12px + env(safe-area-inset-bottom));right:50%;transform:translateX(50%);width:calc(100% - 28px);max-width:402px;background:rgba(23,23,27,.55);-webkit-backdrop-filter:blur(22px) saturate(180%);backdrop-filter:blur(22px) saturate(180%);border:1px solid rgba(255,255,255,.14);border-radius:26px;box-shadow:0 18px 50px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.09);padding:7px;display:flex;gap:4px;z-index:5}
 .nav button,.nav a{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:none;color:#b9b9c0;font-size:11px;font-family:inherit;cursor:pointer;text-decoration:none;padding:7px 2px 6px;border-radius:19px;transition:background .2s,color .2s}
 .nav .on{background:rgba(255,255,255,.94);color:#000;font-weight:700}
+.nav{touch-action:none;-webkit-touch-callout:none;user-select:none;-webkit-user-select:none}
+.nav button,.nav a{position:relative;z-index:3}
+.nav button svg{transition:transform .18s ease}
+.navlens{position:absolute;top:7px;bottom:7px;left:0;border-radius:19px;background:rgba(255,255,255,.20);-webkit-backdrop-filter:blur(14px) saturate(190%);backdrop-filter:blur(14px) saturate(190%);border:1px solid rgba(255,255,255,.45);box-shadow:0 10px 28px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.5),inset 0 -8px 16px rgba(255,255,255,.06);opacity:0;pointer-events:none;z-index:2}
+.nav.dragging .on{background:transparent;color:#b9b9c0;font-weight:400}
+.nav button.lift{color:#fff}
+.nav button.lift svg{transform:scale(1.16)}
 .icn{flex:none;vertical-align:-4px}
 h2.title .icn{vertical-align:-5px;margin-left:2px}
 .feats .icn{vertical-align:-5px;margin-left:7px}
@@ -4241,6 +4248,7 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
     </section>
 
     <nav class="nav">
+      <div class="navlens" id="navLens"></div>
       <button data-nav="shop" class="on" onclick="showView('shop')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg><span data-i="navShop">فروشگاه</span></button>
       <button data-nav="orders" onclick="showView('orders')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3.5 6h.01"/><path d="M3.5 12h.01"/><path d="M3.5 18h.01"/></svg><span data-i="navOrders">سفارش‌ها</span></button>
       <button data-nav="pays" onclick="showView('pays')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/><path d="M6 12h.01M18 12h.01"/></svg><span data-i="navPays">پرداخت‌ها</span></button>
@@ -4430,6 +4438,83 @@ function showView(name){
   if (name === 'account') refreshMe();
   window.scrollTo(0,0);
 }
+// Liquid-glass tab bar: press-and-drag across tabs with a glass lens that
+// follows the finger (iOS-style); release settles on the tab and navigates.
+// Plain taps go through the same flow; keyboard/AT clicks fall back to the
+// buttons' own onclick handlers.
+(function(){
+  var nav = document.querySelector('.nav');
+  var lens = $('navLens');
+  if (!nav || !lens) return;
+  var drag = null, suppress = false, suppressTimer = null;
+  function btnAt(x){
+    var bs = nav.querySelectorAll('[data-nav]');
+    for (var i = 0; i < bs.length; i++) { var r = bs[i].getBoundingClientRect(); if (x >= r.left && x <= r.right) return bs[i]; }
+    return null;
+  }
+  function geom(el){
+    var nr = nav.getBoundingClientRect();
+    var br = el.getBoundingClientRect();
+    return { x: br.left - nr.left - nav.clientLeft, w: br.width, cx: br.left - nr.left - nav.clientLeft + br.width / 2 };
+  }
+  function setLens(cx, w, scale){
+    var nr = nav.getBoundingClientRect();
+    var max = nr.width - nav.clientLeft * 2 - 7 - w;
+    var x = Math.max(7 - nav.clientLeft, Math.min(cx - w / 2, max));
+    lens.style.width = w + 'px';
+    lens.style.transform = 'translateX(' + x + 'px) scale(' + scale + ')';
+  }
+  function lift(btn){
+    nav.querySelectorAll('[data-nav]').forEach(function(b){ b.classList.toggle('lift', b === btn); });
+  }
+  function settle(btn, navigate){
+    var g = geom(btn);
+    lens.style.transition = 'transform .34s cubic-bezier(.32,.9,.3,1.15), width .34s cubic-bezier(.32,.9,.3,1.15), opacity .18s ease .12s';
+    setLens(g.cx, g.w, 1);
+    setTimeout(function(){
+      if (navigate) showView(btn.getAttribute('data-nav'));
+      lens.style.opacity = '0';
+      setTimeout(function(){ lens.style.transition = ''; }, 220);
+    }, 190);
+  }
+  nav.addEventListener('click', function(e){
+    if (suppress) { e.preventDefault(); e.stopPropagation(); suppress = false; if (suppressTimer) { clearTimeout(suppressTimer); suppressTimer = null; } }
+  }, true);
+  nav.addEventListener('pointerdown', function(e){
+    if (!e.isPrimary) return;
+    if (e.target.closest && e.target.closest('a')) return; // terms link behaves normally
+    var btn = btnAt(e.clientX);
+    drag = { btn: btn, target: btn, moved: false };
+    try { nav.setPointerCapture(e.pointerId); } catch (err) {}
+    nav.classList.add('dragging');
+    lens.style.transition = 'none';
+    lens.style.opacity = '1';
+    if (btn) { var g = geom(btn); lens.style.width = (g.w + 8) + 'px'; setLens(g.cx, g.w + 8, 1.05); lift(btn); }
+  });
+  nav.addEventListener('pointermove', function(e){
+    if (!drag || !e.isPrimary) return;
+    var nr = nav.getBoundingClientRect();
+    var w = parseFloat(lens.style.width) || 64;
+    setLens(e.clientX - nr.left - nav.clientLeft, w, 1.05);
+    drag.target = btnAt(e.clientX);
+    lift(drag.target);
+    drag.moved = true;
+  });
+  function endDrag(e, cancelled){
+    if (!drag) return;
+    var d = drag; drag = null;
+    nav.classList.remove('dragging');
+    lift(null);
+    suppress = true;
+    if (suppressTimer) clearTimeout(suppressTimer);
+    suppressTimer = setTimeout(function(){ suppress = false; }, 400);
+    var target = cancelled ? null : (d.target || btnAt(e.clientX));
+    if (target) settle(target, target.getAttribute('data-nav') !== S.view);
+    else { lens.style.transition = 'opacity .18s'; lens.style.opacity = '0'; setTimeout(function(){ lens.style.transition = ''; }, 200); }
+  }
+  nav.addEventListener('pointerup', function(e){ endDrag(e, false); });
+  nav.addEventListener('pointercancel', function(e){ endDrag(e, true); });
+})();
 function loadCountries(){
   api('/api/countries').then(function(j){ S.countries = j.countries || []; renderCountries(''); })
     .catch(function(e){ $('cGrid').innerHTML = '<div class="loading">' + escH(e.message) + '</div>'; });
