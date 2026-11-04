@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.20.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.21.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -4126,6 +4126,13 @@ h2.title .icn{vertical-align:-5px;margin-left:2px}
 .amtin{width:100%;background:#101012;border:1px solid #26262b;border-radius:12px;color:#fff;padding:13px 14px;font-family:inherit;font-size:17px;margin-bottom:12px;text-align:center}
 #toast{position:fixed;bottom:108px;right:50%;transform:translateX(50%) translateY(16px);background:#fff;color:#000;border-radius:999px;padding:9px 18px;font-size:13.5px;font-weight:700;opacity:0;pointer-events:none;transition:.25s;z-index:9;max-width:92vw;text-align:center}
 #toast.show{opacity:1;transform:translateX(50%) translateY(0)}
+#splash{position:fixed;inset:0;background:#000;z-index:65;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px}
+#splash.off{display:none}
+.spmark{width:64px;height:64px;border:1.5px solid #fff;border-radius:18px;display:grid;place-items:center;font-size:28px;font-weight:800;color:#fff;animation:spp 1.4s ease-in-out infinite}
+@keyframes spp{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(.94);opacity:.72}}
+.spbar{width:110px;height:3px;background:#1c1c1f;border-radius:99px;overflow:hidden}
+.spbar i{display:block;height:100%;width:42%;background:#fff;border-radius:99px;animation:spb 1.05s ease-in-out infinite}
+@keyframes spb{0%{transform:translateX(118px)}100%{transform:translateX(-118px)}}
 .view{display:none}.view.on{display:block;animation:in .3s ease}
 @keyframes in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
@@ -4133,7 +4140,9 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
 </style></head><body>
 <div class="wrap">
 
-  <div id="viewLogin">
+  <div id="splash"><div class="spmark">B</div><div class="spbar"><i></i></div></div>
+
+  <div id="viewLogin" style="display:none">
     <div class="brandrow"><div class="logo">BlueMajazi<span>دروازه‌ای امن به دنیای پرسرعت</span></div><button class="avatar" title="Language / زبان" onclick="toggleLang()" style="font-size:0"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></button></div>
     <div class="hero">
       <div class="big"><span data-i="loginBig1">شماره مجازی،</span><br><span data-i="loginBig2">بدون مرز</span> <svg class="icn" width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>
@@ -4156,7 +4165,7 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
       <div class="userchip">
         <button class="balpill" id="hdrBal" onclick="showView('topup')">…</button>
         <button class="avatar" id="langBtn" title="Language / زبان" onclick="toggleLang()" style="font-size:0"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></button>
-        <button class="avatar" id="hdrAva" title="خروج" onclick="logout()">؟</button>
+        <button class="avatar" id="hdrAva" title="حساب کاربری" onclick="showView('account')">؟</button>
       </div>
     </div>
 
@@ -4330,8 +4339,9 @@ function onTelegramAuth(user){
     })
     .catch(function(e){ $('loginErr').textContent = e.message; toast(e.message); });
 }
-function showLogin(){ stopActTimers(); $('viewApp').style.display='none'; $('viewLogin').style.display='block'; }
-function showApp(){ $('viewLogin').style.display='none'; $('viewApp').style.display='block'; showView('account'); }
+function hideSplash(){ var sp = $('splash'); if (sp) sp.classList.add('off'); }
+function showLogin(){ hideSplash(); stopActTimers(); $('viewApp').style.display='none'; $('viewLogin').style.display='block'; }
+function showApp(){ hideSplash(); $('viewLogin').style.display='none'; $('viewApp').style.display='block'; showView('account'); }
 var I18N = {
   navShop:['فروشگاه','Shop'], navOrders:['سفارش‌ها','Orders'], navPays:['پرداخت‌ها','Payments'], navTopup:['شارژ','Top up'], navAccount:['حساب','Account'], navTerms:['قوانین','Terms'],
   tOrders:['سفارش‌های من','My orders'], tPays:['پرداخت‌ها','Payments'], tTopup:['افزایش موجودی','Top up balance'], tAccount:['حساب من','My account'],
@@ -4401,6 +4411,7 @@ function renderMe(){
   $('balAmt').textContent = faUsd(S.me.balance);
   $('balTmn').textContent = S.me.rate ? '≈ ' + faTmn(S.me.balance * S.me.rate) : '';
   var ava = $('hdrAva');
+  ava.title = W('حساب کاربری', 'Account');
   if (S.me.photoUrl) ava.innerHTML = '<img src="' + escH(S.me.photoUrl) + '" alt="">';
   else ava.textContent = (S.me.name || '؟').charAt(0);
   var an = $('accName'); if (an) an.textContent = S.me.name || 'کاربر';
@@ -5094,19 +5105,22 @@ async function payPage(env, cfg, topup, lang = "fa", langSrc = "user") {
       <p>${P("موجودی شما با موفقیت شارژ شد. می‌توانید این صفحه را ببندید و به ربات برگردید.", "Your balance was topped up successfully. You can close this page and return to the bot.")}</p>
       <div class="big">+$${esc(total)}</div>
       ${bonus > 0 ? `<p>${P(`شارژ $${esc(credit)} + بونوس پکیج $${esc(bonus)}`, `Top-up $${esc(credit)} + package bonus $${esc(bonus)}`)}</p>` : ""}
-      <p>${P("موجودی فعلی", "Current balance")}: $${esc(user.balance)}</p></div>`);
+      <p>${P("موجودی فعلی", "Current balance")}: $${esc(user.balance)}</p>
+      <p style="margin-top:18px"><a class="footbtn" style="display:inline-flex;flex:none;padding:11px 20px" href="/app">${icoHome} ${P("بازگشت به صفحه اصلی", "Back to home")}</a></p></div>`);
   }
   if (topup.status === "expired" || topupIsExpired(topup)) {
     return shell(`${head(2)}
       <div class="state"><div class="circ red">⏱</div>
       <h1 class="red">${P("مهلت پرداخت تمام شد", "Payment window closed")}</h1>
-      <p>${P("این درخواست پرداخت بسته شد. برای شارژ حساب، داخل ربات یک پرداخت جدید بسازید.", "This payment request is closed. To top up, create a new payment inside the bot.")}</p></div>`);
+      <p>${P("این درخواست پرداخت بسته شد. برای شارژ حساب، داخل ربات یک پرداخت جدید بسازید.", "This payment request is closed. To top up, create a new payment inside the bot.")}</p>
+      <p style="margin-top:18px"><a class="footbtn" style="display:inline-flex;flex:none;padding:11px 20px" href="/app">${icoHome} ${P("بازگشت به صفحه اصلی", "Back to home")}</a></p></div>`);
   }
   if (topup.status === "rejected") {
     return shell(`${head(2)}
       <div class="state"><div class="circ red">✕</div>
       <h1 class="red">${P("پرداخت رد شد", "Payment rejected")}</h1>
-      <p>${P("رسید ارسالی توسط ادمین تأیید نشد. اگر مبلغی واریز کرده‌اید، برای پیگیری با پشتیبانی در تماس باشید یا داخل ربات یک پرداخت تازه بسازید.", "The receipt was not approved by the admin. If you sent money, contact support, or create a fresh payment inside the bot.")}</p></div>`);
+      <p>${P("رسید ارسالی توسط ادمین تأیید نشد. اگر مبلغی واریز کرده‌اید، برای پیگیری با پشتیبانی در تماس باشید یا داخل ربات یک پرداخت تازه بسازید.", "The receipt was not approved by the admin. If you sent money, contact support, or create a fresh payment inside the bot.")}</p>
+      <p style="margin-top:18px"><a class="footbtn" style="display:inline-flex;flex:none;padding:11px 20px" href="/app">${icoHome} ${P("بازگشت به صفحه اصلی", "Back to home")}</a></p></div>`);
   }
   if (topup.status === "cancelled") {
     return shell(`${head(2)}
@@ -5119,7 +5133,8 @@ async function payPage(env, cfg, topup, lang = "fa", langSrc = "user") {
     return shell(`${head(2)}
       <div class="state"><div class="circ">✕</div>
       <h1>${P("این پرداخت بسته شده است", "This payment is closed")}</h1>
-      <p>${P("برای شارژ حساب، داخل ربات یک پرداخت جدید بسازید.", "To top up, create a new payment inside the bot.")}</p></div>`);
+      <p>${P("برای شارژ حساب، داخل ربات یک پرداخت جدید بسازید.", "To top up, create a new payment inside the bot.")}</p>
+      <p style="margin-top:18px"><a class="footbtn" style="display:inline-flex;flex:none;padding:11px 20px" href="/app">${icoHome} ${P("بازگشت به صفحه اصلی", "Back to home")}</a></p></div>`);
   }
 
   // --- method selection view ---
