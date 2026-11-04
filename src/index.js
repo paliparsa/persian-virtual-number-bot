@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.7.3"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.7.4"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -2146,14 +2146,14 @@ function qrSvg(text, px) {
 
 function payShell(body, script = "") {
   return `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <meta name="theme-color" content="#000000">
 <title>پرداخت — فروشگاه شماره مجازی</title>
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
 <link href="https://fonts.cdnfonts.com/css/yekan-bakh" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-html{background:#000}
+html{background:#000;touch-action:manipulation}
 body{background:#000;color:#fff;font-family:'Yekan Bakh',Tahoma,Arial,sans-serif;-webkit-font-smoothing:antialiased;line-height:1.9}
 body:before{content:"";position:fixed;inset:0;background:radial-gradient(640px 300px at 50% -80px,rgba(255,255,255,.07),transparent 65%);pointer-events:none}
 main{max-width:560px;margin:0 auto;padding:44px 22px 60px;animation:up .45s ease both}
@@ -2287,6 +2287,9 @@ ${body}
 <div id="toast"></div>
 <script>
 function toast(msg){var t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show')},2200)}
+document.addEventListener('gesturestart',function(e){e.preventDefault()});
+document.addEventListener('gesturechange',function(e){e.preventDefault()});
+document.addEventListener('wheel',function(e){if(e.ctrlKey)e.preventDefault()},{passive:false});
 function copyText(text,btn){var done=function(){toast('کپی شد');if(btn&&!btn._cp){btn._cp=1;var o=btn.textContent;btn.textContent='✓ کپی شد';btn.classList.add('done');setTimeout(function(){btn.textContent=o;btn.classList.remove('done');btn._cp=0},1500)}};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done).catch(done)}else{var ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();try{document.execCommand('copy')}catch(e){}ta.remove();done()}}
 ${script}
 </script>
@@ -2327,11 +2330,12 @@ function termsPage(cfg) {
   const support = cfg?.SUPPORT_USERNAME;
   return `<!doctype html>
 <html lang="fa" dir="rtl"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>قوانین و مقررات — BlueGate</title>
 <link href="https://fonts.cdnfonts.com/css/yekan-bakh" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
+html{touch-action:manipulation}
 body{background:#000;color:#fff;font-family:'Yekan Bakh',Tahoma,sans-serif;padding:28px 16px 48px;line-height:1.9}
 .wrap{max-width:620px;margin:0 auto}
 .brand{color:#8e8e93;font-size:13px;letter-spacing:.5px}
@@ -2373,7 +2377,11 @@ a{color:#fff}
 <section><h2>۱۲) پشتیبانی و پیگیری</h2><p>برای پیگیری هر مشکل، آیدی عددی، زمان خرید، شرح مشکل و در صورت نیاز رسید پرداخت یا تصویر/ویدیو را برای پشتیبانی ارسال کنید؛ اطلاعات ناقص، بررسی را به تأخیر می‌اندازد.</p>${support ? `<p style="margin-top:8px">پشتیبانی: <a href="https://t.me/${esc(support)}">@${esc(support)}</a></p>` : ""}</section>
 <section><h2>۱۳) تغییر قوانین</h2><p>این قوانین ممکن است به‌روزرسانی شوند. نسخه معتبر همیشه در همین صفحه منتشر می‌شود و ادامه استفاده از ربات به‌معنای پذیرش نسخه جدید است.</p></section>
 <p class="foot">BlueGate — دروازه‌ای امن به دنیای پرسرعت<br><a href="/app">بازگشت به صفحه اصلی فروشگاه</a></p>
-</div></body></html>`;
+</div><script>
+document.addEventListener('gesturestart',function(e){e.preventDefault()});
+document.addEventListener('gesturechange',function(e){e.preventDefault()});
+document.addEventListener('wheel',function(e){if(e.ctrlKey)e.preventDefault()},{passive:false});
+</script></body></html>`;
 }
 
 // ---------- web app: Telegram login, sessions, JSON API ----------
@@ -2607,7 +2615,7 @@ async function appPage(env, cfg) {
     : `<p class="small">دکمه ورود در دسترس نیست؛ از ربات تلگرام استفاده کنید.</p>`;
   return `<!doctype html>
 <html lang="fa" dir="rtl"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <meta name="theme-color" content="#000000">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
@@ -2619,6 +2627,7 @@ async function appPage(env, cfg) {
 <link href="https://fonts.cdnfonts.com/css/yekan-bakh" rel="stylesheet">
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
+html{touch-action:manipulation}
 body{background:#000;color:#fff;font-family:'Yekan Bakh',Tahoma,sans-serif;min-height:100vh}
 .wrap{max-width:430px;margin:0 auto;padding:22px 20px 122px;position:relative}
 .wrap:before{content:"";position:absolute;top:-120px;left:50%;transform:translateX(-50%);width:340px;height:220px;background:radial-gradient(closest-side,rgba(255,255,255,.09),transparent);pointer-events:none}
@@ -2645,7 +2654,7 @@ body{background:#000;color:#fff;font-family:'Yekan Bakh',Tahoma,sans-serif;min-h
 .wbtn{background:#fff;color:#000;border:none;border-radius:11px;padding:11px 16px;font-family:inherit;font-weight:700;font-size:14px;cursor:pointer;display:inline-block;text-decoration:none;text-align:center}
 .gbtn{background:transparent;color:#fff;border:1px solid #333338;border-radius:11px;padding:11px 16px;font-family:inherit;font-size:14px;cursor:pointer}
 .gbtn:disabled{opacity:.45;cursor:default}
-.search{width:100%;background:#101012;border:1px solid #26262b;border-radius:12px;color:#fff;padding:11px 14px;font-family:inherit;font-size:14px;margin-bottom:14px}
+.search{width:100%;background:#101012;border:1px solid #26262b;border-radius:12px;color:#fff;padding:11px 14px;font-family:inherit;font-size:16px;margin-bottom:14px}
 .search::placeholder{color:#6d6d75}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .country{border:1px solid #232328;border-radius:14px;padding:13px 12px;cursor:pointer;background:#0c0c0e;text-align:right;font-family:inherit;color:#fff;width:100%}
@@ -3036,6 +3045,9 @@ function sheetBuy(){ closeSheet(); doBuy(); }
 function sheetTopup(){ closeSheet(); showView("topup"); }
 // ---- PWA install + first-visit intro ----
 var deferredPrompt = null;
+document.addEventListener('gesturestart', function(e){ e.preventDefault(); });
+document.addEventListener('gesturechange', function(e){ e.preventDefault(); });
+document.addEventListener('wheel', function(e){ if (e.ctrlKey) e.preventDefault(); }, { passive: false });
 window.addEventListener('beforeinstallprompt', function(e){ e.preventDefault(); deferredPrompt = e; updateInstallCard(); });
 window.addEventListener('appinstalled', function(){ deferredPrompt = null; updateInstallCard(); });
 function isStandalone(){ return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true; }
