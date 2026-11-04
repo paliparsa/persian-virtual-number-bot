@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.15.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.16.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -204,9 +204,11 @@ async function showReferral(env, chatId, msgId) {
   const uname = await botUsername(env);
   const link = uname ? `https://t.me/${uname}?start=ref_${chatId}` : "";
   const text = pct > 0
-    ? `🎁 <b>دعوت دوستان — سیستم معرف</b>\n\nدوستانتان را با لینک اختصاصی خودتان به فروشگاه دعوت کنید؛ از هر خرید موفق آن‌ها، <b>${faNum(pct)}٪</b> از مبلغ خرید به‌صورت خودکار به موجودی شما اضافه می‌شود.\n\n🔗 <b>لینک دعوت شما:</b>\n<code>${esc(link)}</code>\n\n👥 تعداد زیرمجموعه‌ها: <b>${faDigits(user.refCount || 0)} نفر</b>\n💰 مجموع پورسانت دریافتی: <b>${faNum(user.refEarned || 0)} دلار</b>\n\nپورسانت در لحظه‌ای که کد پیامکِ خرید زیرمجموعه تحویل شود واریز می‌شود و با پیام به شما اطلاع داده می‌شود.`
-    : "🎁 <b>دعوت دوستان</b>\n\nسیستم معرف در حال حاضر غیرفعال است.";
-  const rows = [[btn("⬅️ منوی اصلی", "home")]];
+    ? tr(user,
+      `🎁 <b>دعوت دوستان — سیستم معرف</b>\n\nدوستانتان را با لینک اختصاصی خودتان به فروشگاه دعوت کنید؛ از هر خرید موفق آن‌ها، <b>${faNum(pct)}٪</b> از مبلغ خرید به‌صورت خودکار به موجودی شما اضافه می‌شود.\n\n🔗 <b>لینک دعوت شما:</b>\n<code>${esc(link)}</code>\n\n👥 تعداد زیرمجموعه‌ها: <b>${faDigits(user.refCount || 0)} نفر</b>\n💰 مجموع پورسانت دریافتی: <b>${faNum(user.refEarned || 0)} دلار</b>\n\nپورسانت در لحظه‌ای که کد پیامکِ خرید زیرمجموعه تحویل شود واریز می‌شود و با پیام به شما اطلاع داده می‌شود.`,
+      `🎁 <b>Invite friends — referral program</b>\n\nInvite friends with your personal link; for every successful purchase they make, <b>${pct}%</b> of the purchase amount is automatically added to your balance.\n\n🔗 <b>Your invite link:</b>\n<code>${esc(link)}</code>\n\n👥 Referrals: <b>${user.refCount || 0}</b>\n💰 Total commission earned: <b>$${(Number(user.refEarned) || 0).toFixed(2)}</b>\n\nCommission is paid the moment the SMS code for your referral's purchase is delivered, and you get a message about it.`)
+    : tr(user, "🎁 <b>دعوت دوستان</b>\n\nسیستم معرف در حال حاضر غیرفعال است.", "🎁 <b>Invite friends</b>\n\nThe referral program is currently disabled.");
+  const rows = [[btn(tr(user, "⬅️ منوی اصلی", "⬅️ Main menu"), "home")]];
   if (msgId) return edit(env, chatId, msgId, text, kb(rows));
   return send(env, chatId, text, kb(rows));
 }
@@ -411,6 +413,30 @@ const usdText = (tmnRate, usd) => {
   const t = tomanOfUsd(tmnRate, usd);
   return `$${faNum(usd)}${t ? ` ≈ ${faCompactToman(t)}` : ""}`;
 };
+
+// ---------- language (fa / en) ----------
+// user.lang: "fa" (default) | "en", chosen on the first /start and
+// changeable from the main menu. Admin surfaces stay Persian; the main
+// user journey (menu, shop, activation, top-up, orders, referral) is
+// translated. Amounts for English use Latin digits.
+const isEn = (u) => u?.lang === "en";
+const tr = (u, fa, en) => (isEn(u) ? en : fa);
+const enInt = (n) => Math.round(Number(n) || 0).toLocaleString("en-US");
+const numL = (u, v, dec = 2) => (isEn(u) ? (Number(v) || 0).toFixed(dec) : faNum(v, dec));
+const intL = (u, v) => (isEn(u) ? enInt(v) : faInt(v));
+const usdL = (u, tmnRate, usd) => {
+  if (!isEn(u)) return usdText(tmnRate, usd);
+  const t = tomanOfUsd(tmnRate, usd);
+  return `$${(Number(usd) || 0).toFixed(2)}${t ? ` ≈ ${enInt(t)} Toman` : ""}`;
+};
+function langPickerKb() {
+  return kb([[btn("🇮🇷 فارسی", "lang:fa"), btn("🇬🇧 English", "lang:en")]]);
+}
+async function sendLangPicker(env, chatId, msgId) {
+  const text = "🌐 <b>زبان خود را انتخاب کنید</b>\n<b>Choose your language</b>\n\nمی‌توانید بعداً از منوی اصلی زبان را تغییر دهید.\nYou can change it later from the main menu.";
+  if (msgId) return edit(env, chatId, msgId, text, langPickerKb());
+  return send(env, chatId, text, langPickerKb());
+}
 const topupCredit = (t) => Number(t.creditUsd ?? t.creditBrl ?? 0);
 
 // ---------- crypto prices & on-chain checks ----------
@@ -757,8 +783,10 @@ async function creditTopup(env, topup, note) {
     await saveUser(env, user);
     const tmn = await usdtTomanRate(env);
     await send(env, fresh.userId,
-      `✅ <b>موجودی شما افزایش یافت</b>\n\nمبلغ ${usdText(tmn, credit)} به حساب شما اضافه شد.${bonusAmt > 0 ? `\n🎁 <b>بونوس پکیج:</b> ${usdText(tmn, bonusAmt)} هم به‌عنوان هدیه اضافه شد.` : ""}\nموجودی فعلی: ${usdText(tmn, user.balance)}`,
-      mainMenuKb(env, cfg, fresh.userId));
+      tr(user,
+        `✅ <b>موجودی شما افزایش یافت</b>\n\nمبلغ ${usdText(tmn, credit)} به حساب شما اضافه شد.${bonusAmt > 0 ? `\n🎁 <b>بونوس پکیج:</b> ${usdText(tmn, bonusAmt)} هم به‌عنوان هدیه اضافه شد.` : ""}\nموجودی فعلی: ${usdText(tmn, user.balance)}`,
+        `✅ <b>Your balance was topped up</b>\n\n${usdL(user, tmn, credit)} was added to your account.${bonusAmt > 0 ? `\n🎁 <b>Package bonus:</b> ${usdL(user, tmn, bonusAmt)} was added as a gift too.` : ""}\nCurrent balance: ${usdL(user, tmn, user.balance)}`),
+      mainMenuKb(env, cfg, fresh.userId, undefined, 0, user.lang));
     await postTopupToGroup(env, fresh, tmn);
     return true;
   });
@@ -1227,18 +1255,18 @@ async function runHealthChecks(env, webhookRes) {
 }
 
 // ---------- bot UI (Persian) ----------
-function mainMenuKb(env, cfg, userId, origin, pendingCount = 0) {
+function mainMenuKb(env, cfg, userId, origin, pendingCount = 0, lang = "fa") {
+  const en = lang === "en";
   const rows = [
-    [btn("🛒 خرید شماره", "countries:0"), btn("📱 سفارش‌های من", "orders")],
-    [btn("💰 موجودی من", "balance"), btn("💳 افزایش موجودی", "topup")],
+    [btn(en ? "🛒 Buy number" : "🛒 خرید شماره", "countries:0"), btn(en ? "📱 My orders" : "📱 سفارش‌های من", "orders")],
+    [btn(en ? "💰 My balance" : "💰 موجودی من", "balance"), btn(en ? "💳 Top up" : "💳 افزایش موجودی", "topup")],
+    [btn(en ? "🎁 Invite friends" : "🎁 دعوت دوستان", "ref"), btn("🌐 " + (en ? "Language" : "زبان"), "langmenu")],
   ];
-  const rowRef = [btn("🎁 دعوت دوستان", "ref")];
-  if (pendingCount > 0) rowRef.push(btn("⏳ پرداخت‌های در انتظار (" + faDigits(pendingCount) + ")", "pays"));
-  rows.push(rowRef);
+  if (pendingCount > 0) rows.push([btn(en ? `⏳ Pending payments (${pendingCount})` : "⏳ پرداخت‌های در انتظار (" + faDigits(pendingCount) + ")", "pays")]);
   const rowInfo = [origin
-    ? urlBtn("📜 قوانین", `${String(origin).replace(/\/+$/, "")}/terms`)
-    : btn("📜 قوانین", "terms")];
-  if (cfg?.SUPPORT_USERNAME) rowInfo.push(urlBtn("🎧 پشتیبانی", `https://t.me/${cfg.SUPPORT_USERNAME}`));
+    ? urlBtn(en ? "📜 Terms" : "📜 قوانین", `${String(origin).replace(/\/+$/, "")}/terms`)
+    : btn(en ? "📜 Terms" : "📜 قوانین", "terms")];
+  if (cfg?.SUPPORT_USERNAME) rowInfo.push(urlBtn(en ? "🎧 Support" : "🎧 پشتیبانی", `https://t.me/${cfg.SUPPORT_USERNAME}`));
   rows.push(rowInfo);
   if (isAdmin(env, userId)) rows.push([btn("🛠 پنل مدیریت", "admin"), btn("⚙️ تنظیمات", "cfg")]);
   return kb(rows);
@@ -1249,14 +1277,17 @@ async function showHome(env, chatId, editMsgId) {
   const user = await getUser(env, chatId);
   const cfg = await getConfig(env);
   const tmn = await usdtTomanRate(env);
-  const text = `سلام 👋\nبه فروشگاه <b>شماره مجازی</b> خوش آمدید.\n\n💰 موجودی شما: <b>${usdText(tmn, user.balance)}</b>\n\nبرای خرید، ابتدا کشور و سپس سرویس موردنظر را انتخاب کنید. کد پیامک به‌صورت خودکار همین‌جا نمایش داده می‌شود.`;
+  const text = tr(user,
+    `سلام 👋\nبه فروشگاه <b>شماره مجازی</b> خوش آمدید.\n\n💰 موجودی شما: <b>${usdText(tmn, user.balance)}</b>\n\nبرای خرید، ابتدا کشور و سپس سرویس موردنظر را انتخاب کنید. کد پیامک به‌صورت خودکار همین‌جا نمایش داده می‌شود.`,
+    `Hello 👋\nWelcome to the <b>virtual number</b> shop.\n\n💰 Your balance: <b>${usdL(user, tmn, user.balance)}</b>\n\nTo buy, pick a country, then a service. The SMS code appears right here automatically.`);
   const origin = cfg.WORKER_BASE_URL || (await kvGet(env, "sys:origin"))?.origin;
   const pendN = (await pendingTopupsOf(env, chatId)).length;
-  if (editMsgId) return edit(env, chatId, editMsgId, text, mainMenuKb(env, cfg, chatId, origin, pendN));
-  return send(env, chatId, text, mainMenuKb(env, cfg, chatId, origin, pendN));
+  if (editMsgId) return edit(env, chatId, editMsgId, text, mainMenuKb(env, cfg, chatId, origin, pendN, user.lang));
+  return send(env, chatId, text, mainMenuKb(env, cfg, chatId, origin, pendN, user.lang));
 }
 
-function pageKb(items, page, perPage, makeCb, backTo, cols = 1, topRows = []) {
+function pageKb(items, page, perPage, makeCb, backTo, cols = 1, topRows = [], lang = "fa") {
+  const en = lang === "en";
   const start = page * perPage;
   const slice = items.slice(start, start + perPage);
   const rows = [...topRows];
@@ -1264,10 +1295,10 @@ function pageKb(items, page, perPage, makeCb, backTo, cols = 1, topRows = []) {
     rows.push(slice.slice(i, i + cols).map((it) => btn(it.label, makeCb(it))));
   }
   const nav = [];
-  if (page > 0) nav.push(btn("◀️ قبلی", makeCb(null, page - 1)));
-  if (start + perPage < items.length) nav.push(btn("بعدی ▶️", makeCb(null, page + 1)));
+  if (page > 0) nav.push(btn(en ? "◀️ Prev" : "◀️ قبلی", makeCb(null, page - 1)));
+  if (start + perPage < items.length) nav.push(btn(en ? "Next ▶️" : "بعدی ▶️", makeCb(null, page + 1)));
   if (nav.length) rows.push(nav);
-  rows.push([btn("⬅️ بازگشت", backTo)]);
+  rows.push([btn(en ? "⬅️ Back" : "⬅️ بازگشت", backTo)]);
   return kb(rows);
 }
 
@@ -1303,12 +1334,15 @@ const serviceMatches = (s, q) => {
   return !!query && (normText(s.name).includes(query) || normText(s.code).includes(query));
 };
 async function showCountries(env, chatId, msgId, page) {
+  const user = await getUser(env, chatId);
   const countries = await smsfull(env, "/countries");
   const items = countries.map((c) => ({ label: countryLabel(c), id: c.id }));
-  const text = `🌍 <b>کشور را انتخاب کنید:</b>\n\nتعداد کشورها: ${faInt(items.length)} — برای پیدا کردن سریع، از دکمه جستجو استفاده کنید.`;
+  const text = tr(user,
+    `🌍 <b>کشور را انتخاب کنید:</b>\n\nتعداد کشورها: ${faInt(items.length)} — برای پیدا کردن سریع، از دکمه جستجو استفاده کنید.`,
+    `🌍 <b>Choose a country:</b>\n\n${items.length} countries — use search to find one quickly.`);
   return edit(env, chatId, msgId, text,
     pageKb(items, page, 20, (it, p) => it ? `services:${it.id}:0` : `countries:${p}`, "home", 2,
-      [[btn("🔍 جستجوی کشور", "csearch")]]));
+      [[btn(tr(user, "🔍 جستجوی کشور", "🔍 Search country"), "csearch")]], user.lang));
 }
 
 async function showCountrySearchResults(env, chatId, query) {
@@ -1326,21 +1360,28 @@ async function showCountrySearchResults(env, chatId, query) {
   return send(env, chatId, `🔍 <b>نتایج جستجو برای «${esc(query)}»:</b>`, kb(rows));
 }
 
-const serviceLabel = (cfg, fx, tmn, s) =>
-  `${s.name} — ${usdText(tmn, fx ? sellPrice(cfg, s.price * fx) : s.price)} | موجود: ${faInt(s.available)}`;
+const serviceLabel = (cfg, fx, tmn, s, lang = "fa") => {
+  const price = fx ? sellPrice(cfg, s.price * fx) : s.price;
+  return lang === "en"
+    ? `${s.name} — $${(Number(price) || 0).toFixed(2)} | Stock: ${s.available}`
+    : `${s.name} — ${usdText(tmn, price)} | موجود: ${faInt(s.available)}`;
+};
 
 async function showServices(env, chatId, msgId, countryId, page) {
   const cfg = await getConfig(env);
   const [fx, tmn] = await Promise.all([brlToUsdRate(env), usdtTomanRate(env)]);
   const services = await smsfull(env, `/services?countryId=${countryId}`);
+  const user = await getUser(env, chatId);
   const avail = services.filter((s) => s.available > 0);
-  const items = avail.map((s) => ({ label: serviceLabel(cfg, fx, tmn, s), id: s.id }));
+  const items = avail.map((s) => ({ label: serviceLabel(cfg, fx, tmn, s, user.lang), id: s.id }));
   const text = items.length
-    ? `📲 <b>سرویس را انتخاب کنید:</b>\nقیمت‌ها <b>دلاری</b> و با احتساب سود فروشگاه است${tmn ? ` — نرخ تتر (والکس): ${faInt(tmn)} تومان` : ""}.`
-    : `در حال حاضر برای این کشور شماره‌ای موجود نیست. لطفاً بعداً دوباره تلاش کنید.`;
+    ? tr(user,
+      `📲 <b>سرویس را انتخاب کنید:</b>\nقیمت‌ها <b>دلاری</b> و با احتساب سود فروشگاه است${tmn ? ` — نرخ تتر (والکس): ${faInt(tmn)} تومان` : ""}.`,
+      `📲 <b>Choose a service:</b>\nPrices are in <b>USD</b>, shop markup included${tmn ? ` — USDT rate: ${enInt(tmn)} Toman` : ""}. Stock is live.`)
+    : tr(user, `در حال حاضر برای این کشور شماره‌ای موجود نیست. لطفاً بعداً دوباره تلاش کنید.`, `No numbers are available for this country right now. Please try again later.`);
   return edit(env, chatId, msgId, text,
     pageKb(items, page, 10, (it, p) => it ? `confirm:${countryId}:${it.id}` : `services:${countryId}:${p}`, "countries:0", 1,
-      items.length ? [[btn("🔍 جستجوی سرویس", `ssearch:${countryId}`)]] : []));
+      items.length ? [[btn(tr(user, "🔍 جستجوی سرویس", "🔍 Search service"), `ssearch:${countryId}`)]] : [], user.lang));
 }
 
 async function showServiceSearchResults(env, chatId, countryId, query) {
@@ -1360,31 +1401,40 @@ async function showServiceSearchResults(env, chatId, countryId, query) {
 async function showConfirm(env, chatId, msgId, countryId, serviceId) {
   const services = await smsfull(env, `/services?countryId=${countryId}`);
   const s = services.find((x) => x.id === Number(serviceId));
-  if (!s) return edit(env, chatId, msgId, "این سرویس دیگر موجود نیست.", backKb);
+  const user0 = await getUser(env, chatId);
+  if (!s) return edit(env, chatId, msgId, tr(user0, "این سرویس دیگر موجود نیست.", "This service is no longer available."), isEn(user0) ? kb([[btn("⬅️ Back", "countries:0")]]) : backKb);
   const cfg = await getConfig(env);
   const [fx, tmn] = await Promise.all([brlToUsdRate(env), usdtTomanRate(env)]);
   const price = fx ? sellPrice(cfg, s.price * fx) : s.price;
-  const user = await getUser(env, chatId);
+  const user = user0;
   const tomanLine = tmn
-    ? `\n💵 معادل تومانی: <b>${faInt(Math.round(price * tmn))} تومان</b> (با نرخ لحظه‌ای تتر والکس: ${faInt(tmn)} تومان)`
+    ? tr(user,
+      `\n💵 معادل تومانی: <b>${faInt(Math.round(price * tmn))} تومان</b> (با نرخ لحظه‌ای تتر والکس: ${faInt(tmn)} تومان)`,
+      `\n💵 In Toman: <b>${enInt(Math.round(price * tmn))} Toman</b> (live USDT rate: ${enInt(tmn)} Toman)`)
     : "";
   let cpnLines = "";
   const cpnBtnRow = user.coupon
-    ? [btn("❌ حذف کد تخفیف", `cpnrm:${countryId}:${serviceId}`)]
-    : [btn("🎟 کد تخفیف دارم", `cpnadd:${countryId}:${serviceId}`)];
+    ? [btn(tr(user, "❌ حذف کد تخفیف", "❌ Remove coupon"), `cpnrm:${countryId}:${serviceId}`)]
+    : [btn(tr(user, "🎟 کد تخفیف دارم", "🎟 I have a coupon"), `cpnadd:${countryId}:${serviceId}`)];
   if (user.coupon) {
     const chk = await checkCoupon(env, user.coupon, chatId, price);
     if (chk.ok) {
       const final = Math.round((price - chk.discount) * 100) / 100;
-      cpnLines = `\n🎟 کد تخفیف «<code>${esc(user.coupon)}</code>»: <b>−${usdText(tmn, chk.discount)}</b>\n💰 <b>مبلغ نهایی: ${usdText(tmn, final)}</b>`;
+      cpnLines = tr(user,
+        `\n🎟 کد تخفیف «<code>${esc(user.coupon)}</code>»: <b>−${usdText(tmn, chk.discount)}</b>\n💰 <b>مبلغ نهایی: ${usdText(tmn, final)}</b>`,
+        `\n🎟 Coupon "<code>${esc(user.coupon)}</code>": <b>−${usdL(user, tmn, chk.discount)}</b>\n💰 <b>Final price: ${usdL(user, tmn, final)}</b>`);
     } else {
-      cpnLines = `\n🎟 کد «<code>${esc(user.coupon)}</code>» برای این خرید معتبر نیست؛ بدون تخفیف ادامه می‌دهید یا کد را حذف کنید.`;
+      cpnLines = tr(user,
+        `\n🎟 کد «<code>${esc(user.coupon)}</code>» برای این خرید معتبر نیست؛ بدون تخفیف ادامه می‌دهید یا کد را حذف کنید.`,
+        `\n🎟 Coupon "<code>${esc(user.coupon)}</code>" is not valid for this purchase; you can continue without a discount or remove the code.`);
     }
   }
-  const text = `🧾 <b>تأیید خرید</b>\n\nسرویس: <b>${esc(s.name)}</b>\nقیمت: <b>${usdText(tmn, price)}</b>${tomanLine}${cpnLines}\nموجودی شما: ${usdText(tmn, user.balance)}\nموجودی لحظه‌ای: ${faInt(s.available)} شماره\n\nپس از خرید، شماره نمایش داده می‌شود و تا ${faDigits(20)} دقیقه منتظر کد پیامک می‌ماند. اگر کدی نیاید، مبلغی از موجودی کسر نخواهد شد.`;
+  const text = tr(user,
+    `🧾 <b>تأیید خرید</b>\n\nسرویس: <b>${esc(s.name)}</b>\nقیمت: <b>${usdText(tmn, price)}</b>${tomanLine}${cpnLines}\nموجودی شما: ${usdText(tmn, user.balance)}\nموجودی لحظه‌ای: ${faInt(s.available)} شماره\n\nپس از خرید، شماره نمایش داده می‌شود و تا ${faDigits(20)} دقیقه منتظر کد پیامک می‌ماند. اگر کدی نیاید، مبلغی از موجودی کسر نخواهد شد.`,
+    `🧾 <b>Confirm purchase</b>\n\nService: <b>${esc(s.name)}</b>\nPrice: <b>${usdL(user, tmn, price)}</b>${tomanLine}${cpnLines}\nYour balance: ${usdL(user, tmn, user.balance)}\nLive stock: ${s.available} numbers\n\nAfter purchase, the number is shown and waits up to 20 minutes for the SMS code. If no code arrives, nothing is charged.`);
   const rows = kb([
-    [btn("✅ تأیید و خرید", `buy:${countryId}:${serviceId}`)],
-    [...cpnBtnRow, btn("⬅️ بازگشت", `services:${countryId}:0`)],
+    [btn(tr(user, "✅ تأیید و خرید", "✅ Confirm & buy"), `buy:${countryId}:${serviceId}`)],
+    [...cpnBtnRow, btn(tr(user, "⬅️ بازگشت", "⬅️ Back"), `services:${countryId}:0`)],
   ]);
   if (msgId) return edit(env, chatId, msgId, text, rows);
   return send(env, chatId, text, rows);
@@ -1448,7 +1498,7 @@ async function buyActivationInner(env, userId, countryId, serviceId, onProgress,
   await kvPut(env, `act:${act.id}`, {
     id: act.id, userId: String(userId), price, providerPriceBrl: act.price,
     phoneNumber: act.phoneNumber, serviceName: act.service?.name || s.name,
-    countryId: Number(countryId),
+    countryId: Number(countryId), serviceId: Number(serviceId),
     status: act.status, createdAt: now(), charged: true,
     ...(coupon ? { listPrice, coupon: coupon.code, discount } : {}),
   });
@@ -1501,8 +1551,17 @@ async function doBuy(env, chatId, msgId, countryId, serviceId, cbId) {
   return showActivation(env, chatId, msgId, r.act);
 }
 
-function activationText(act) {
-  const statusFa = {
+function activationText(act, lang = "fa") {
+  const en = lang === "en";
+  const statusTxt = (en ? {
+    waitingSms: "⏳ Waiting for SMS…",
+    codeReceived: "✅ Code received",
+    resendRequested: "🔄 Resend requested",
+    finished: "🏁 Finished",
+    cancelled: "🚫 Cancelled",
+    expired: "⌛️ Expired",
+    refunded: "↩️ Refunded",
+  } : {
     waitingSms: "⏳ در انتظار پیامک…",
     codeReceived: "✅ کد دریافت شد",
     resendRequested: "🔄 درخواست پیامک مجدد ثبت شد",
@@ -1510,30 +1569,37 @@ function activationText(act) {
     cancelled: "🚫 لغو شده",
     expired: "⌛️ منقضی شده",
     refunded: "↩️ بازپرداخت شده",
-  }[act.status] || act.status;
+  })[act.status] || act.status;
   const codes = (act.codes || []).map((c) => `<code>${esc(c)}</code>`).join("  ");
-  return `📱 <b>شماره شما:</b> <code>+${esc(act.phoneNumber)}</code>\n\nوضعیت: ${statusFa}\n${act.latestCode ? `\n🔑 <b>کد:</b> <code>${esc(act.latestCode)}</code>\nهمه کدها: ${codes}` : "\nهنوز کدی دریافت نشده است. چند لحظه صبر کنید و «بررسی کد» را بزنید."}\n\n⏰ انقضا: ${faDigits(new Date(act.expiresAt).toLocaleString("fa-IR", { timeZone: "Asia/Tehran" }))}`;
+  const expiry = en
+    ? new Date(act.expiresAt).toLocaleString("en-GB", { timeZone: "Asia/Tehran" })
+    : faDigits(new Date(act.expiresAt).toLocaleString("fa-IR", { timeZone: "Asia/Tehran" }));
+  if (en) return `📱 <b>Your number:</b> <code>+${esc(act.phoneNumber)}</code>\n\nStatus: ${statusTxt}\n${act.latestCode ? `\n🔑 <b>Code:</b> <code>${esc(act.latestCode)}</code>\nAll codes: ${codes}` : "\nNo code yet — wait a moment, then tap Check code."}\n\n⏰ Expires: ${expiry}`;
+  return `📱 <b>شماره شما:</b> <code>+${esc(act.phoneNumber)}</code>\n\nوضعیت: ${statusTxt}\n${act.latestCode ? `\n🔑 <b>کد:</b> <code>${esc(act.latestCode)}</code>\nهمه کدها: ${codes}` : "\nهنوز کدی دریافت نشده است. چند لحظه صبر کنید و «بررسی کد» را بزنید."}\n\n⏰ انقضا: ${expiry}`;
 }
-function activationKb(act) {
+function activationKb(act, lang = "fa") {
+  const en = lang === "en";
   const open = ["waitingSms", "codeReceived", "resendRequested"].includes(act.status);
   const hasCode = !!act.latestCode || act.status === "codeReceived";
   const rows = [];
   if (open && hasCode) {
     // Code delivered: Finish is the only action left — cancelling is over.
-    rows.push([btn("🔄 بررسی کد", `act:${act.id}`), btn("🏁 اتمام کار", `finish:${act.id}`)]);
+    rows.push([btn(en ? "🔄 Check code" : "🔄 بررسی کد", `act:${act.id}`), btn(en ? "🏁 Finish" : "🏁 اتمام کار", `finish:${act.id}`)]);
   } else if (open) {
-    rows.push([btn("🔄 بررسی کد", `act:${act.id}`), btn("📩 پیامک مجدد", `resend:${act.id}`)]);
-    rows.push([btn("🚫 لغو", `cancel:${act.id}`), btn("📱 سفارش‌های من", "orders")]);
+    rows.push([btn(en ? "🔄 Check code" : "🔄 بررسی کد", `act:${act.id}`), btn(en ? "📩 Resend SMS" : "📩 پیامک مجدد", `resend:${act.id}`)]);
+    rows.push([btn(en ? "🚫 Cancel" : "🚫 لغو", `cancel:${act.id}`), btn(en ? "📱 My orders" : "📱 سفارش‌های من", "orders")]);
   } else {
-    rows.push([btn("🔄 بررسی کد", `act:${act.id}`), btn("📱 سفارش‌های من", "orders")]);
+    // Closed order: one-tap rebuy of the same country + service.
+    rows.push([btn(en ? "🔁 Buy again" : "🔁 خرید مجدد", `rebuy:${act.id}`), btn(en ? "📱 My orders" : "📱 سفارش‌های من", "orders")]);
   }
-  rows.push([btn("⬅️ منوی اصلی", "home")]);
+  rows.push([btn(en ? "⬅️ Main menu" : "⬅️ منوی اصلی", "home")]);
   return kb(rows);
 }
 async function showActivation(env, chatId, msgId, act, note = "") {
-  const text = activationText(act) + note;
-  if (msgId) return edit(env, chatId, msgId, text, activationKb(act));
-  return send(env, chatId, text, activationKb(act));
+  const user = await getUser(env, chatId);
+  const text = activationText(act, user.lang) + note;
+  if (msgId) return edit(env, chatId, msgId, text, activationKb(act, user.lang));
+  return send(env, chatId, text, activationKb(act, user.lang));
 }
 function maskPhone(num) {
   const d = String(num || "").replace(/\D/g, "");
@@ -1687,27 +1753,32 @@ async function pendingTopupsOf(env, userId) {
     .sort((x, y) => y.createdAt - x.createdAt);
 }
 
-function topupMenuText() {
+function topupMenuText(lang = "fa") {
+  if (lang === "en") return `💳 <b>Top up balance</b>\n\nChoose an amount in <b>USD</b> or <b>Toman</b> (Toman converts at the live USDT rate) and get a <b>payment link</b>. On the payment page you pick the method (crypto or card-to-card).\n\n⏰ Each payment has a <b>30-minute</b> deadline.`;
   return `💳 <b>افزایش موجودی</b>\n\nمبلغ شارژ را به <b>دلار</b> یا <b>تومان</b> مشخص می‌کنید (مبلغ تومانی با نرخ لحظه‌ای تتر به دلار تبدیل می‌شود) و یک <b>لینک پرداخت</b> می‌گیرید. داخل صفحه پرداخت، روش را انتخاب می‌کنید (ارز دیجیتال یا کارت‌به‌کارت) و فقط همان روش به شما نشان داده می‌شود.\n\n⏰ هر پرداخت <b>۳۰ دقیقه</b> مهلت دارد.`;
 }
 async function showTopup(env, chatId, msgId, baseUrl) {
+  const user = await getUser(env, chatId);
+  const en = isEn(user);
   const cfg = await getConfig(env);
   if (!cfg.CARD_NUMBER && !configuredCryptos(cfg).length) {
-    return edit(env, chatId, msgId, "روش پرداختی هنوز توسط مدیر تنظیم نشده است. لطفاً با پشتیبانی تماس بگیرید.", backKb);
+    return edit(env, chatId, msgId, tr(user, "روش پرداختی هنوز توسط مدیر تنظیم نشده است. لطفاً با پشتیبانی تماس بگیرید.", "No payment method has been configured yet. Please contact support."), en ? kb([[btn("⬅️ Main menu", "home")]]) : backKb);
   }
   const active = await findActiveSession(env, chatId);
   if (active) {
     const m = await paySessionMessage(env, active, baseUrl);
-    return edit(env, chatId, msgId, m.text + "\n\n(برای ساخت پرداخت تازه، اول این یکی را لغو کنید یا صبر کنید مهلتش تمام شود.)", m.markup);
+    return edit(env, chatId, msgId, m.text + tr(user, "\n\n(برای ساخت پرداخت تازه، اول این یکی را لغو کنید یا صبر کنید مهلتش تمام شود.)", "\n\n(To create a new payment, cancel this one first or wait for it to expire.)"), m.markup);
   }
   const pkgs = await getTopupPkgs(env);
   const rows = [];
   for (let i = 0; i < pkgs.length; i += 2) {
-    rows.push(pkgs.slice(i, i + 2).map((p) => btn(`💵 ${faNum(p.amount)} دلار${p.bonus > 0 ? ` 🎁 +${faNum(p.bonus)}` : ""}`, `pkgbuy:${p.amount}`)));
+    rows.push(pkgs.slice(i, i + 2).map((p) => btn(en ? `💵 $${p.amount}${p.bonus > 0 ? ` 🎁 +$${p.bonus}` : ""}` : `💵 ${faNum(p.amount)} دلار${p.bonus > 0 ? ` 🎁 +${faNum(p.bonus)}` : ""}`, `pkgbuy:${p.amount}`)));
   }
-  rows.push([btn("✍️ مبلغ دلخواه", "link_new"), btn("⬅️ منوی اصلی", "home")]);
-  const pkgText = pkgs.length ? "\n\n🎁 <b>پکیج‌های آماده:</b> با انتخاب هر پکیج، لینک پرداخت همان مبلغ ساخته می‌شود و بونوسش بعد از پرداخت موفق خودکار اضافه می‌شود. یا با «مبلغ دلخواه» هر مبلغ دیگری بفرستید (بدون بونوس)." : "";
-  return edit(env, chatId, msgId, topupMenuText() + pkgText, kb(rows));
+  rows.push([btn(tr(user, "✍️ مبلغ دلخواه", "✍️ Custom amount"), "link_new"), btn(tr(user, "⬅️ منوی اصلی", "⬅️ Main menu"), "home")]);
+  const pkgText = pkgs.length ? tr(user,
+    "\n\n🎁 <b>پکیج‌های آماده:</b> با انتخاب هر پکیج، لینک پرداخت همان مبلغ ساخته می‌شود و بونوسش بعد از پرداخت موفق خودکار اضافه می‌شود. یا با «مبلغ دلخواه» هر مبلغ دیگری بفرستید (بدون بونوس).",
+    "\n\n🎁 <b>Ready packages:</b> picking one creates a payment link for that amount; its bonus is added automatically after a successful payment. Or use Custom amount for any other sum (no bonus).") : "";
+  return edit(env, chatId, msgId, topupMenuText(user.lang) + pkgText, kb(rows));
 }
 
 async function createPaySession(env, chatId, creditUsd, extra = {}) {
@@ -1885,21 +1956,25 @@ async function applyPayMethod(env, topup, method) {
 }
 
 async function paySessionMessage(env, topup, baseUrl) {
+  const user = await getUser(env, topup.userId);
+  const en = isEn(user);
   const tmn = await usdtTomanRate(env);
   const mins = Math.max(0, Math.ceil((topupExpiresAt(topup) - now()) / 60000));
   const timeLine = topup.seenAt
-    ? "👀 تراکنش دیده شده و در انتظار تأیید شبکه است؛ به‌محض تأیید، خودکار شارژ می‌شود."
-    : `⏰ مهلت پرداخت: ${faDigits(mins)} دقیقه`;
-  let methodLine = "روش پرداخت: هنوز انتخاب نشده — داخل صفحه پرداخت انتخابش کنید.";
-  if (topup.method === "crypto") methodLine = `روش پرداخت: ${esc(CRYPTOS[topup.crypto]?.label || "")} — مبلغ دقیق: <code>${esc(topup.expectedCrypto)}</code>`;
-  if (topup.method === "card") methodLine = `روش پرداخت: کارت‌به‌کارت — مبلغ: ${faInt(topup.amountToman)} تومان. رسید را همین‌جا در ربات بفرستید.`;
-  const inputLine = topup.inputToman ? `\nمبلغ واردشده: ${faInt(topup.inputToman)} تومان ≈ $${faNum(topupCredit(topup))} (با نرخ تتر ${faInt(topup.inputRate)} تومان)` : "";
-  const pkgLine = Number(topup.pkgBonus) > 0 ? `\n🎁 بونوس پکیج: <b>${usdText(tmn, Number(topup.pkgBonus))}</b> — بعد از پرداخت موفق، خودکار به موجودی‌تان اضافه می‌شود.` : "";
-  const text = `💵 <b>پرداخت شما ساخته شد</b>\n\nمبلغ شارژ: ${usdText(tmn, topupCredit(topup))}${inputLine}${pkgLine}\n${methodLine}\n${timeLine}\n\nاز دکمه زیر صفحه پرداخت را باز کنید:`;
-  const rows = [[urlBtn("🌐 باز کردن صفحه پرداخت", `${baseUrl}/pay?t=${topup.id}`)]];
-  if (topup.method === "crypto") rows.push([btn("🔄 بررسی پرداخت", `chk:${topup.id}`), btn("❌ لغو پرداخت", `ses_cancel:${topup.id}`)]);
-  else rows.push([btn("❌ لغو این پرداخت", `ses_cancel:${topup.id}`), btn("⬅️ منوی اصلی", "home")]);
-  if (topup.method === "crypto") rows.push([btn("⬅️ منوی اصلی", "home")]);
+    ? tr(user, "👀 تراکنش دیده شده و در انتظار تأیید شبکه است؛ به‌محض تأیید، خودکار شارژ می‌شود.", "👀 Transaction seen, waiting for network confirmation; you will be credited automatically once confirmed.")
+    : tr(user, `⏰ مهلت پرداخت: ${faDigits(mins)} دقیقه`, `⏰ Time left to pay: ${mins} minutes`);
+  let methodLine = tr(user, "روش پرداخت: هنوز انتخاب نشده — داخل صفحه پرداخت انتخابش کنید.", "Payment method: not chosen yet — pick it on the payment page.");
+  if (topup.method === "crypto") methodLine = tr(user, `روش پرداخت: ${esc(CRYPTOS[topup.crypto]?.label || "")} — مبلغ دقیق: <code>${esc(topup.expectedCrypto)}</code>`, `Payment method: ${esc(CRYPTOS[topup.crypto]?.label || "")} — exact amount: <code>${esc(topup.expectedCrypto)}</code>`);
+  if (topup.method === "card") methodLine = tr(user, `روش پرداخت: کارت‌به‌کارت — مبلغ: ${faInt(topup.amountToman)} تومان. رسید را همین‌جا در ربات بفرستید.`, `Payment method: card-to-card — amount: ${enInt(topup.amountToman)} Toman. Send the receipt right here in the bot.`);
+  const inputLine = topup.inputToman ? tr(user, `\nمبلغ واردشده: ${faInt(topup.inputToman)} تومان ≈ $${faNum(topupCredit(topup))} (با نرخ تتر ${faInt(topup.inputRate)} تومان)`, `\nEntered amount: ${enInt(topup.inputToman)} Toman ≈ $${topupCredit(topup)} (at ${enInt(topup.inputRate)} Toman per USDT)`) : "";
+  const pkgLine = Number(topup.pkgBonus) > 0 ? tr(user, `\n🎁 بونوس پکیج: <b>${usdText(tmn, Number(topup.pkgBonus))}</b> — بعد از پرداخت موفق، خودکار به موجودی‌تان اضافه می‌شود.`, `\n🎁 Package bonus: <b>${usdL(user, tmn, Number(topup.pkgBonus))}</b> — added automatically after a successful payment.`) : "";
+  const text = tr(user,
+    `💵 <b>پرداخت شما ساخته شد</b>\n\nمبلغ شارژ: ${usdText(tmn, topupCredit(topup))}${inputLine}${pkgLine}\n${methodLine}\n${timeLine}\n\nاز دکمه زیر صفحه پرداخت را باز کنید:`,
+    `💵 <b>Your payment is ready</b>\n\nTop-up amount: ${usdL(user, tmn, topupCredit(topup))}${inputLine}${pkgLine}\n${methodLine}\n${timeLine}\n\nOpen the payment page with the button below:`);
+  const rows = [[urlBtn(tr(user, "🌐 باز کردن صفحه پرداخت", "🌐 Open payment page"), `${baseUrl}/pay?t=${topup.id}`)]];
+  if (topup.method === "crypto") rows.push([btn(tr(user, "🔄 بررسی پرداخت", "🔄 Check payment"), `chk:${topup.id}`), btn(tr(user, "❌ لغو پرداخت", "❌ Cancel"), `ses_cancel:${topup.id}`)]);
+  else rows.push([btn(tr(user, "❌ لغو این پرداخت", "❌ Cancel payment"), `ses_cancel:${topup.id}`), btn(tr(user, "⬅️ منوی اصلی", "⬅️ Main menu"), "home")]);
+  if (topup.method === "crypto") rows.push([btn(tr(user, "⬅️ منوی اصلی", "⬅️ Main menu"), "home")]);
   return { text, markup: kb(rows) };
 }
 
@@ -2332,7 +2407,9 @@ async function handleMessage(env, msg, baseUrl) {
 
   // Blocked users are stopped at the door (admin is exempt).
   if (user.blocked && !isAdmin(env, chatId)) {
-    return send(env, chatId, "🚫 <b>حساب شما مسدود شده است</b>\n\nدسترسی شما به فروشگاه توسط مدیر لغو شده است. برای پیگیری با پشتیبانی در تماس باشید.");
+    return send(env, chatId, tr(user,
+      "🚫 <b>حساب شما مسدود شده است</b>\n\nدسترسی شما به فروشگاه توسط مدیر لغو شده است. برای پیگیری با پشتیبانی در تماس باشید.",
+      "🚫 <b>Your account is blocked</b>\n\nYour access to the shop has been revoked by the admin. Please contact support."));
   }
 
   // Forced channel membership: private chats only; contact shares pass
@@ -2374,6 +2451,7 @@ async function handleMessage(env, msg, baseUrl) {
     user.state = null; await saveUser(env, user);
     if (param.startsWith("vfy_")) return promptPhoneVerify(env, chatId, user, param.slice(4));
     if (param === "verify") return promptPhoneVerify(env, chatId, user, null);
+    if (!user.lang) return sendLangPicker(env, chatId);
     return showHome(env, chatId);
   }
 
@@ -2652,6 +2730,14 @@ async function handleCallback(env, cq, baseUrl) {
       }
     }
     if (data === "home") return showHome(env, chatId, msgId);
+    if (data === "langmenu") return sendLangPicker(env, chatId, msgId);
+    if (head === "lang") {
+      const u = await getUser(env, chatId);
+      u.lang = a === "en" ? "en" : "fa";
+      await saveUser(env, u);
+      await answerCb(env, cq.id, u.lang === "en" ? "Language set to English 🌐" : "زبان فارسی شد 🌐");
+      return showHome(env, chatId, msgId);
+    }
     if (data === "terms") {
       const cfgT = await getConfig(env);
       const base = cfgT.WORKER_BASE_URL || (await kvGet(env, "sys:origin"))?.origin;
@@ -2688,6 +2774,14 @@ async function handleCallback(env, cq, baseUrl) {
     if (head === "confirm") return showConfirm(env, chatId, msgId, a, b);
     if (head === "buy") return doBuy(env, chatId, msgId, a, b, cq.id);
     if (head === "act") return refreshActivation(env, chatId, msgId, a, cq.id);
+    if (head === "rebuy") {
+      const rec = await kvGet(env, `act:${a}`);
+      const u = await getUser(env, chatId);
+      if (!rec || rec.userId !== String(chatId)) { await answerCb(env, cq.id, tr(u, "یافت نشد", "Not found"), true); return; }
+      if (rec.countryId && rec.serviceId) return showConfirm(env, chatId, msgId, rec.countryId, rec.serviceId);
+      if (rec.countryId) return showServices(env, chatId, msgId, rec.countryId, 0);
+      return showCountries(env, chatId, msgId, 0);
+    }
     if (head === "resend" || head === "cancel" || head === "finish") {
       const r = await actAction(env, chatId, a, head);
       if (!r.ok) {
@@ -2702,15 +2796,19 @@ async function handleCallback(env, cq, baseUrl) {
     if (data === "balance") {
       const user = await getUser(env, chatId);
       const tmn = await usdtTomanRate(env);
-      return edit(env, chatId, msgId, `💰 <b>موجودی شما:</b> ${usdText(tmn, user.balance)}\n\nموجودی به دلار است؛ معادل تومانی با نرخ لحظه‌ای تتر در صرافی والکس محاسبه می‌شود${tmn ? ` (هر تتر: ${faInt(tmn)} تومان)` : ""}.`, kb([[btn("💳 افزایش موجودی", "topup"), btn("⬅️ منوی اصلی", "home")]]));
+      return edit(env, chatId, msgId, tr(user,
+        `💰 <b>موجودی شما:</b> ${usdText(tmn, user.balance)}\n\nموجودی به دلار است؛ معادل تومانی با نرخ لحظه‌ای تتر محاسبه می‌شود${tmn ? ` (هر تتر: ${faInt(tmn)} تومان)` : ""}.`,
+        `💰 <b>Your balance:</b> ${usdL(user, tmn, user.balance)}\n\nBalance is in USD; the Toman figure uses the live USDT rate${tmn ? ` (1 USDT = ${enInt(tmn)} Toman)` : ""}.`),
+        kb([[btn(tr(user, "💳 افزایش موجودی", "💳 Top up"), "topup"), btn(tr(user, "⬅️ منوی اصلی", "⬅️ Main menu"), "home")]]));
     }
     if (data === "orders") {
+      const u = await getUser(env, chatId);
       const mine = (await kvList(env, "act:")).filter((x) => x.userId === String(chatId))
         .sort((x, y) => y.createdAt - x.createdAt).slice(0, 10);
-      if (!mine.length) return edit(env, chatId, msgId, "هنوز سفارشی ندارید.", backKb);
+      if (!mine.length) return edit(env, chatId, msgId, tr(u, "هنوز سفارشی ندارید.", "You have no orders yet."), isEn(u) ? kb([[btn("⬅️ Main menu", "home")]]) : backKb);
       const rows = mine.map((o) => [btn(`📱 +${o.phoneNumber} — ${o.serviceName}`, `act:${o.id}`)]);
-      rows.push([btn("⬅️ منوی اصلی", "home")]);
-      return edit(env, chatId, msgId, "📱 <b>سفارش‌های اخیر شما:</b>", kb(rows));
+      rows.push([btn(tr(u, "⬅️ منوی اصلی", "⬅️ Main menu"), "home")]);
+      return edit(env, chatId, msgId, tr(u, "📱 <b>سفارش‌های اخیر شما:</b>", "📱 <b>Your recent orders:</b>"), kb(rows));
     }
     if (data === "topup") return showTopup(env, chatId, msgId, baseUrl);
     if (data === "pays") {
@@ -2744,9 +2842,12 @@ async function handleCallback(env, cq, baseUrl) {
         const m = await paySessionMessage(env, active, baseUrl);
         return edit(env, chatId, msgId, m.text, m.markup);
       }
+      const u0 = await getUser(env, chatId);
       return edit(env, chatId, msgId,
-        `💵 <b>ساخت لینک پرداخت</b>\n\nمبلغ شارژ را با کدام واحد وارد می‌کنید؟\n\n💵 <b>دلار:</b> مبلغ شارژ را مستقیم به دلار می‌نویسید.\n🇮🇷 <b>تومان:</b> مبلغ را به تومان می‌نویسید و با نرخ لحظه‌ای تتر به دلار تبدیل می‌شود.`,
-        kb([[btn("💵 مبلغ به دلار", "link_cur:USD"), btn("🇮🇷 مبلغ به تومان", "link_cur:TMN")], [btn("⬅️ بازگشت", "topup")]]));
+        tr(u0,
+          `💵 <b>ساخت لینک پرداخت</b>\n\nمبلغ شارژ را با کدام واحد وارد می‌کنید؟\n\n💵 <b>دلار:</b> مبلغ شارژ را مستقیم به دلار می‌نویسید.\n🇮🇷 <b>تومان:</b> مبلغ را به تومان می‌نویسید و با نرخ لحظه‌ای تتر به دلار تبدیل می‌شود.`,
+          `💵 <b>Create a payment link</b>\n\nIn which currency do you want to enter the amount?\n\n💵 <b>USD:</b> enter the top-up amount directly in dollars.\n🇮🇷 <b>Toman:</b> enter it in Toman; it converts at the live USDT rate.`),
+        kb([[btn(tr(u0, "💵 مبلغ به دلار", "💵 Amount in USD"), "link_cur:USD"), btn(tr(u0, "🇮🇷 مبلغ به تومان", "🇮🇷 Amount in Toman"), "link_cur:TMN")], [btn(tr(u0, "⬅️ بازگشت", "⬅️ Back"), "topup")]]));
     }
     if (head === "link_cur") {
       const user = await getUser(env, chatId);
@@ -3696,7 +3797,7 @@ async function handleApi(env, request, url) {
     if (path === "/api/orders") {
       const mine = (await kvList(env, "act:")).filter((x) => x.userId === String(userId))
         .sort((x, y) => y.createdAt - x.createdAt).slice(0, 50);
-      return jsonResp({ orders: mine.map((o) => ({ id: o.id, phone: `+${o.phoneNumber}`, serviceName: o.serviceName, status: o.status, price: o.price, createdAt: o.createdAt })) });
+      return jsonResp({ orders: mine.map((o) => ({ id: o.id, phone: `+${o.phoneNumber}`, serviceName: o.serviceName, status: o.status, price: o.price, createdAt: o.createdAt, countryId: o.countryId || null, serviceId: o.serviceId || null })) });
     }
     if (path === "/api/activation") {
       const id = url.searchParams.get("id");
@@ -3943,6 +4044,9 @@ h2.title .icn{vertical-align:-5px;margin-left:2px}
 .btnrow button{flex:1}
 .small{color:#6d6d75;font-size:12px;text-align:center;margin-top:12px;line-height:1.9}
 .ord{display:flex;justify-content:space-between;align-items:center;width:100%;padding:13px 2px;border-bottom:1px solid #1b1b1f;background:none;border-top:none;border-left:none;border-right:none;color:#fff;font-family:inherit;cursor:pointer;text-align:right}
+.ordrow{display:flex;align-items:center;border-bottom:1px solid #1b1b1f}
+.ordrow .ord{flex:1;border-bottom:none;width:auto}
+.ordrow .rebuy{flex:none;margin-inline-start:8px;display:inline-flex;align-items:center;gap:5px}
 .ord .ph{font-weight:700;direction:ltr;text-align:left}
 .ord .mt{color:#8e8e93;font-size:12px;margin-top:2px}
 .chips{display:flex;gap:8px;margin-bottom:14px}
@@ -3959,20 +4063,20 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
 <div class="wrap">
 
   <div id="viewLogin">
-    <div class="brandrow"><div class="logo">BlueMajazi<span>دروازه‌ای امن به دنیای پرسرعت</span></div></div>
+    <div class="brandrow"><div class="logo">BlueMajazi<span>دروازه‌ای امن به دنیای پرسرعت</span></div><button class="avatar" title="Language / زبان" onclick="toggleLang()" style="font-size:0"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></button></div>
     <div class="hero">
-      <div class="big">شماره مجازی،<br>بدون مرز <svg class="icn" width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>
-      <p class="slogan">خرید شماره از سراسر دنیا و دریافت آنی کد پیامک —<br>همان حساب و موجودی ربات تلگرام شما.</p>
+      <div class="big"><span data-i="loginBig1">شماره مجازی،</span><br><span data-i="loginBig2">بدون مرز</span> <svg class="icn" width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>
+      <p class="slogan" data-ih="loginSlogan">خرید شماره از سراسر دنیا و دریافت آنی کد پیامک —<br>همان حساب و موجودی ربات تلگرام شما.</p>
       <div class="tgwrap">${widget}</div>
       <p class="small" id="loginErr" style="color:#ff9f43;min-height:18px"></p>
-      <p class="small">اگر دکمه ورود نمایش داده نشد، چند ثانیه صبر کنید یا صفحه را تازه کنید.</p>
+      <p class="small" data-i="loginNote">اگر دکمه ورود نمایش داده نشد، چند ثانیه صبر کنید یا صفحه را تازه کنید.</p>
       <div class="feats">
         <div><svg class="icn" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>بدون ثبت‌نام و رمز عبور — ورود رسمی تلگرام</div>
         <div><svg class="icn" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/></svg>موجودی مشترک با ربات؛ شارژ از هرجا، خرج از هرجا</div>
         <div><svg class="icn" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>کد به‌صورت خودکار و زنده روی صفحه می‌آید</div>
       </div>
     </div>
-    <p class="foot">با ورود، <a href="/terms">قوانین و مقررات</a> BlueMajazi را می‌پذیرید.</p>
+    <p class="foot" data-ih="loginFoot">با ورود، <a href="/terms">قوانین و مقررات</a> BlueMajazi را می‌پذیرید.</p>
   </div>
 
   <div id="viewApp" style="display:none">
@@ -3980,123 +4084,128 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
       <div class="logo">BlueMajazi</div>
       <div class="userchip">
         <button class="balpill" id="hdrBal" onclick="showView('topup')">…</button>
+        <button class="avatar" id="langBtn" title="Language / زبان" onclick="toggleLang()" style="font-size:0"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></button>
         <button class="avatar" id="hdrAva" title="خروج" onclick="logout()">؟</button>
       </div>
     </div>
 
     <section class="view on" id="v-shop">
-      <div class="installcard" id="installCard" style="display:none">
-        <div class="ictx"><b>نصب اپلیکیشن BlueMajazi</b><span>بدون نصب از فروشگاه؛ مستقیم روی صفحه اصلی گوشی‌تان، مثل یک اپ واقعی.</span></div>
-        <button class="wbtn" onclick="doInstall()">نصب</button>
-        <button class="ix" onclick="dismissInstall()" aria-label="بستن">✕</button>
-      </div>
-      <input class="search" id="cSearch" placeholder="جستجوی کشور…">
-      <div class="grid" id="cGrid"><div class="loading">در حال بارگذاری کشورها…</div></div>
+      <input class="search" id="cSearch" placeholder="جستجوی کشور…" data-ip="searchCountry">
+      <div class="grid" id="cGrid"><div class="loading" data-i="loadingCountries">در حال بارگذاری کشورها…</div></div>
     </section>
 
     <section class="view" id="v-services">
-      <button class="back" onclick="showView('shop')">‹ بازگشت به کشورها</button>
-      <h2 class="title" id="svcTitle">سرویس‌ها</h2>
+      <button class="back" data-i="backCountries" onclick="showView('shop')">‹ بازگشت به کشورها</button>
+      <h2 class="title" id="svcTitle" data-i="tServices">سرویس‌ها</h2>
       <input class="search" id="sSearch" placeholder="جستجوی سرویس…">
       <div id="svcList"><div class="loading">در حال بارگذاری…</div></div>
     </section>
 
     <section class="view" id="v-act">
-      <button class="back" onclick="showView('shop')">‹ فروشگاه</button>
+      <button class="back" data-i="backShop" onclick="showView('shop')">‹ فروشگاه</button>
       <div id="actBox"><div class="loading">در حال بارگذاری سفارش…</div></div>
     </section>
 
     <section class="view" id="v-orders">
-      <h2 class="title"><svg class="icn" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3.5 6h.01"/><path d="M3.5 12h.01"/><path d="M3.5 18h.01"/></svg> سفارش‌های من</h2>
+      <h2 class="title"><svg class="icn" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3.5 6h.01"/><path d="M3.5 12h.01"/><path d="M3.5 18h.01"/></svg> <span data-i="tOrders">سفارش‌های من</span></h2>
       <div id="ordList"><div class="loading">در حال بارگذاری…</div></div>
     </section>
 
     <section class="view" id="v-pays">
-      <h2 class="title" style="margin-top:4px">پرداخت‌ها</h2>
+      <h2 class="title" style="margin-top:4px" data-i="tPays">پرداخت‌ها</h2>
       <div id="payHist"><div class="loading">در حال بارگذاری…</div></div>
     </section>
 
     <section class="view" id="v-topup">
-      <h2 class="title"><svg class="icn" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg> افزایش موجودی</h2>
+      <h2 class="title"><svg class="icn" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg> <span data-i="tTopup">افزایش موجودی</span></h2>
       <div id="openPays"></div>
       <div id="pkgRow" class="pkgrow"></div>
       <div class="chips">
-        <button id="chipUsd" class="on" onclick="setTopupMode('usd')"><svg class="icn" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/><path d="M6 12h.01"/><path d="M18 12h.01"/></svg> مبلغ به دلار</button>
-        <button id="chipTmn" onclick="setTopupMode('tmn')">مبلغ به تومان</button>
+        <button id="chipUsd" class="on" onclick="setTopupMode('usd')"><svg class="icn" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/><path d="M6 12h.01"/><path d="M18 12h.01"/></svg> <span data-i="chipUsd">مبلغ به دلار</span></button>
+        <button id="chipTmn" data-i="chipTmn" onclick="setTopupMode('tmn')">مبلغ به تومان</button>
       </div>
-      <input class="amtin" id="tpAmt" inputmode="numeric" placeholder="$ مبلغ">
+      <input class="amtin" id="tpAmt" inputmode="numeric" placeholder="$ مبلغ" data-ip="amtPh">
       <p class="small" id="tpHint">بعد از ساخت، به صفحه پرداخت می‌روید و روش پرداخت (رمزارز یا کارت‌به‌کارت) را آنجا انتخاب می‌کنید. هر پرداخت ۳۰ دقیقه مهلت دارد.</p>
-      <button class="wbtn" style="width:100%" onclick="doTopup()">ساخت صفحه پرداخت</button>
+      <button class="wbtn" style="width:100%" data-i="makeLink" onclick="doTopup()">ساخت صفحه پرداخت</button>
       <div id="tpResult"></div>
     </section>
 
     <section class="view" id="v-account">
-      <h2 class="title"><svg class="icn" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg> حساب من</h2>
+      <h2 class="title"><svg class="icn" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg> <span data-i="tAccount">حساب من</span></h2>
       <div class="balcard">
         <div class="prow">
           <div class="pava" id="accAva">؟</div>
           <div class="pinfo">
             <div class="pname" id="accName">کاربر</div>
-            <div class="pid">آیدی عددی: <span id="accId" dir="ltr">—</span></div>
+            <div class="pid"><span data-i="numId">آیدی عددی: </span><span id="accId" dir="ltr">—</span></div>
             <div class="pid" id="accUser" dir="ltr" style="text-align:right"></div>
           </div>
         </div>
-        <div class="lbl" style="margin-top:18px">موجودی شما</div>
+        <div class="lbl" style="margin-top:18px" data-i="balLabel">موجودی شما</div>
         <div class="amt" id="balAmt">…</div>
         <div class="tmn" id="balTmn"></div>
         <div style="margin-top:12px;display:flex;gap:8px">
-          <button class="wbtn" onclick="showView('topup')"><svg class="icn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg> افزایش موجودی</button>
-          <button class="gbtn" onclick="logout()">خروج</button>
+          <button class="wbtn" onclick="showView('topup')"><svg class="icn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg> <span data-i="topupBtn">افزایش موجودی</span></button>
+          <button class="gbtn" data-i="logoutBtn" onclick="logout()">خروج</button>
         </div>
       </div>
       <div class="refcard2" id="refCard" style="display:none">
         <div class="rf-head">
           <div class="rf-ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12v10H4V12"/><path d="M2 7h20v5H2z"/><path d="M12 22V7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg></div>
           <div class="rf-tt">
-            <div class="rf-title">دعوت دوستان</div>
+            <div class="rf-title" data-i="refTitle">دعوت دوستان</div>
             <div class="rf-sub">از هر خرید موفق زیرمجموعه‌ها <b id="refPct">—</b> پورسانت می‌گیرید؛ پورسانت هنگام تحویل کد خرید، خودکار به موجودی‌تان می‌نشیند.</div>
           </div>
         </div>
         <div class="rf-linkrow">
           <div class="rf-link" id="refLinkTxt" dir="ltr"></div>
-          <button class="rf-copy" onclick="copyRef()"><svg class="icn" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> کپی لینک</button>
+          <button class="rf-copy" onclick="copyRef()"><svg class="icn" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> <span data-i="refCopy">کپی لینک</span></button>
         </div>
         <div class="rf-stats">
-          <div class="rf-stat"><span class="rf-sv" id="refCount">۰</span><span class="rf-sl"><svg class="icn" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg> زیرمجموعه</span></div>
+          <div class="rf-stat"><span class="rf-sv" id="refCount">۰</span><span class="rf-sl"><svg class="icn" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg> <span data-i="refCountL">زیرمجموعه</span></span></div>
           <div class="rf-div"></div>
-          <div class="rf-stat"><span class="rf-sv" id="refEarned">$۰</span><span class="rf-sl"><svg class="icn" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/></svg> پورسانت دریافتی</span></div>
+          <div class="rf-stat"><span class="rf-sv" id="refEarned">$۰</span><span class="rf-sl"><svg class="icn" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/></svg> <span data-i="refEarnedL">پورسانت دریافتی</span></span></div>
         </div>
+      </div>
+      <div class="installcard" id="notifCard">
+        <div class="ictx"><b data-i="notifT">اعلان‌های وب</b><span data-i="notifD">وقتی کد پیامک برسد یا شارژتان تأیید شود، همین‌جا باخبر می‌شوید (تا وقتی وب‌اپ باز یا نصب‌شده و فعال است).</span></div>
+        <button class="wbtn" id="notifBtn" onclick="enableNotifs()">فعال‌سازی</button>
+      </div>
+      <div class="installcard" id="installCard" style="display:none">
+        <div class="ictx"><b data-i="installT">نصب اپلیکیشن BlueMajazi</b><span data-i="installD">بدون نصب از فروشگاه؛ مستقیم روی صفحه اصلی گوشی‌تان، مثل یک اپ واقعی.</span></div>
+        <button class="wbtn" data-i="installB" onclick="doInstall()">نصب</button>
+        <button class="ix" onclick="dismissInstall()" aria-label="بستن">✕</button>
       </div>
     </section>
 
     <nav class="nav">
-      <button data-nav="shop" class="on" onclick="showView('shop')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>فروشگاه</button>
-      <button data-nav="orders" onclick="showView('orders')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3.5 6h.01"/><path d="M3.5 12h.01"/><path d="M3.5 18h.01"/></svg>سفارش‌ها</button>
-      <button data-nav="pays" onclick="showView('pays')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/><path d="M6 12h.01M18 12h.01"/></svg>پرداخت‌ها</button>
-      <button data-nav="topup" onclick="showView('topup')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>شارژ</button>
-      <button data-nav="account" onclick="showView('account')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>حساب</button>
-      <a href="/terms"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>قوانین</a>
+      <button data-nav="shop" class="on" onclick="showView('shop')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg><span data-i="navShop">فروشگاه</span></button>
+      <button data-nav="orders" onclick="showView('orders')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3.5 6h.01"/><path d="M3.5 12h.01"/><path d="M3.5 18h.01"/></svg><span data-i="navOrders">سفارش‌ها</span></button>
+      <button data-nav="pays" onclick="showView('pays')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/><path d="M6 12h.01M18 12h.01"/></svg><span data-i="navPays">پرداخت‌ها</span></button>
+      <button data-nav="topup" onclick="showView('topup')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg><span data-i="navTopup">شارژ</span></button>
+      <button data-nav="account" onclick="showView('account')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span data-i="navAccount">حساب</span></button>
+      <a href="/terms"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/></svg><span data-i="navTerms">قوانین</span></a>
     </nav>
   </div>
 </div>
 <div id="toast"></div>
 <div class="intro" id="intro" hidden>
-  <button class="intro-skip" onclick="closeIntro()">رد کردن</button>
+  <button class="intro-skip" data-i="introSkip" onclick="closeIntro()">رد کردن</button>
   <div class="intro-body">
     <div class="intro-slide on">
       <div class="ibadge"><svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>
-      <h3>شماره مجازی از سراسر دنیا</h3>
-      <p>برای تلگرام، واتس‌اپ، اینستاگرام و صدها سرویس دیگر؛ از بین ده‌ها کشور انتخاب کنید و شماره‌تان را فوری تحویل بگیرید.</p>
+      <h3 data-i="i1t">شماره مجازی از سراسر دنیا</h3>
+      <p data-i="i1p">برای تلگرام، واتس‌اپ، اینستاگرام و صدها سرویس دیگر؛ از بین ده‌ها کشور انتخاب کنید و شماره‌تان را فوری تحویل بگیرید.</p>
     </div>
     <div class="intro-slide">
       <div class="ibadge"><svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
-      <h3>سریع و بی‌دردسر</h3>
-      <p>حساب‌تان را با کارت‌به‌کارت یا رمزارز شارژ کنید، کشور و سرویس را انتخاب کنید و کد پیامکی را آنی، همین‌جا ببینید.</p>
+      <h3 data-i="i2t">سریع و بی‌دردسر</h3>
+      <p data-i="i2p">حساب‌تان را با کارت‌به‌کارت یا رمزارز شارژ کنید، کشور و سرویس را انتخاب کنید و کد پیامکی را آنی، همین‌جا ببینید.</p>
     </div>
     <div class="intro-slide">
       <div class="ibadge"><svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></div>
-      <h3>خرید بدون ریسک</h3>
-      <p>اگر کد پیامکی نرسد و به‌موقع لغو کنید، مبلغ کامل و خودکار به موجودی‌تان برمی‌گردد. BlueMajazi را می‌توانید مثل یک اپلیکیشن روی گوشی‌تان هم نصب کنید.</p>
+      <h3 data-i="i3t">خرید بدون ریسک</h3>
+      <p data-i="i3p">اگر کد پیامکی نرسد و به‌موقع لغو کنید، مبلغ کامل و خودکار به موجودی‌تان برمی‌گردد. BlueMajazi را می‌توانید مثل یک اپلیکیشن روی گوشی‌تان هم نصب کنید.</p>
     </div>
   </div>
   <div class="intro-dots" id="introDots"><i class="on"></i><i></i><i></i></div>
@@ -4106,12 +4215,14 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
 <div class="pconfirm" id="pkgConfirm" onclick="if(event.target===this)closePkgConfirm()"><div class="mbox" id="pkgConfirmBox"></div></div>
 <div class="sheet" id="sheet" role="dialog" aria-modal="true"><div class="grab"></div><div id="sheetBody"></div></div>
 <script>
-var S = { me:null, countries:[], country:null, services:[], rate:null, sel:null, act:null, poll:null, cd:null, topupMode:'usd' };
+var S = { me:null, countries:[], country:null, services:[], rate:null, sel:null, act:null, poll:null, cd:null, topupMode:'usd', view:'account', lang:'fa', knownPending:null, knownApproved:null };
+try { S.lang = localStorage.getItem('bm_lang') || 'fa'; } catch (e) {}
+function W(fa, en){ return S.lang === 'en' ? en : fa; }
 function $(id){ return document.getElementById(id); }
-function faDigits(s){ return String(s).replace(/[0-9]/g, function(d){ return '۰۱۲۳۴۵۶۷۸۹'[Number(d)]; }); }
-function faUsd(v){ return '$' + Number(v||0).toLocaleString('fa-IR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
-function faTmn(v){ return Math.round(Number(v||0)).toLocaleString('fa-IR') + ' تومان'; }
-function faN(v){ return Number(v||0).toLocaleString('fa-IR'); }
+function faDigits(s){ if (S.lang === 'en') return String(s); return String(s).replace(/[0-9]/g, function(d){ return '۰۱۲۳۴۵۶۷۸۹'[Number(d)]; }); }
+function faUsd(v){ return '$' + Number(v||0).toLocaleString(S.lang === 'en' ? 'en-US' : 'fa-IR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function faTmn(v){ return Math.round(Number(v||0)).toLocaleString(S.lang === 'en' ? 'en-US' : 'fa-IR') + W(' تومان', ' Toman'); }
+function faN(v){ return Number(v||0).toLocaleString(S.lang === 'en' ? 'en-US' : 'fa-IR'); }
 function escH(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 var ICONS = {
   wallet: '<path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/>',
@@ -4150,10 +4261,52 @@ function onTelegramAuth(user){
     .catch(function(e){ $('loginErr').textContent = e.message; toast(e.message); });
 }
 function showLogin(){ stopActTimers(); $('viewApp').style.display='none'; $('viewLogin').style.display='block'; }
-function showApp(){ $('viewLogin').style.display='none'; $('viewApp').style.display='block'; }
+function showApp(){ $('viewLogin').style.display='none'; $('viewApp').style.display='block'; showView('account'); }
+var I18N = {
+  navShop:['فروشگاه','Shop'], navOrders:['سفارش‌ها','Orders'], navPays:['پرداخت‌ها','Payments'], navTopup:['شارژ','Top up'], navAccount:['حساب','Account'], navTerms:['قوانین','Terms'],
+  tOrders:['سفارش‌های من','My orders'], tPays:['پرداخت‌ها','Payments'], tTopup:['افزایش موجودی','Top up balance'], tAccount:['حساب من','My account'],
+  backCountries:['‹ بازگشت به کشورها','‹ Back to countries'], backShop:['‹ فروشگاه','‹ Shop'],
+  balLabel:['موجودی شما','Your balance'], numId:['آیدی عددی: ','Numeric ID: '], topupBtn:['افزایش موجودی','Top up'], logoutBtn:['خروج','Log out'],
+  refTitle:['دعوت دوستان','Invite friends'], refCopy:['کپی لینک','Copy link'], refCountL:['زیرمجموعه','Referrals'], refEarnedL:['پورسانت دریافتی','Commission earned'],
+  chipUsd:['مبلغ به دلار','Amount in USD'], chipTmn:['مبلغ به تومان','Amount in Toman'], makeLink:['ساخت صفحه پرداخت','Create payment page'], tServices:['سرویس‌ها','Services'],
+  installT:['نصب اپلیکیشن BlueMajazi','Install the BlueMajazi app'], installD:['بدون نصب از فروشگاه؛ مستقیم روی صفحه اصلی گوشی‌تان، مثل یک اپ واقعی.','No store needed — straight onto your home screen, like a real app.'], installB:['نصب','Install'],
+  notifT:['اعلان‌های وب','Web notifications'], notifD:['وقتی کد پیامک برسد یا شارژتان تأیید شود، همین‌جا باخبر می‌شوید (تا وقتی وب‌اپ باز یا نصب‌شده و فعال است).','Get notified when an SMS code arrives or a top-up is approved (while the web app is open or installed and active).'],
+  searchCountry:['جستجوی کشور…','Search country…'], searchService:['جستجوی سرویس…','Search service…'], amtPh:['$ مبلغ','Amount $'],
+  loadingCountries:['در حال بارگذاری کشورها…','Loading countries…'],
+  loginBig1:['شماره مجازی،','Virtual numbers,'], loginBig2:['بدون مرز','without borders'],
+  loginSlogan:['خرید شماره از سراسر دنیا و دریافت آنی کد پیامک —<br>همان حساب و موجودی ربات تلگرام شما.','Buy numbers from around the world and receive SMS codes instantly —<br>the same account and balance as your Telegram bot.'],
+  loginNote:['اگر دکمه ورود نمایش داده نشد، چند ثانیه صبر کنید یا صفحه را تازه کنید.','If the login button does not appear, wait a few seconds or refresh the page.'],
+  loginFoot:['با ورود، <a href="/terms">قوانین و مقررات</a> BlueMajazi را می‌پذیرید.','By logging in, you accept the BlueMajazi <a href="/terms">Terms and Conditions</a>.'],
+  introSkip:['رد کردن','Skip'], introNext:['بعدی','Next'],
+  i1t:['شماره مجازی از سراسر دنیا','Virtual numbers from around the world'], i1p:['برای تلگرام، واتس‌اپ، اینستاگرام و صدها سرویس دیگر؛ از بین ده‌ها کشور انتخاب کنید و شماره‌تان را فوری تحویل بگیرید.','For Telegram, WhatsApp, Instagram and hundreds of other services; pick from dozens of countries and get your number instantly.'],
+  i2t:['سریع و بی‌دردسر','Fast and hassle-free'], i2p:['حساب‌تان را با کارت‌به‌کارت یا رمزارز شارژ کنید، کشور و سرویس را انتخاب کنید و کد پیامکی را آنی، همین‌جا ببینید.','Top up by card-to-card or crypto, pick a country and service, and see the SMS code instantly, right here.'],
+  i3t:['خرید بدون ریسک','Risk-free purchase'], i3p:['اگر کد پیامکی نرسد و به‌موقع لغو کنید، مبلغ کامل و خودکار به موجودی‌تان برمی‌گردد. BlueMajazi را می‌توانید مثل یک اپلیکیشن روی گوشی‌تان هم نصب کنید.','If the SMS code never arrives and you cancel in time, the full amount returns to your balance automatically. You can also install BlueMajazi on your phone like an app.']
+};
+function L(k){ var e = I18N[k]; return e ? e[S.lang === 'en' ? 1 : 0] : k; }
+function applyLang(){
+  document.documentElement.lang = S.lang === 'en' ? 'en' : 'fa';
+  document.documentElement.dir = S.lang === 'en' ? 'ltr' : 'rtl';
+  document.querySelectorAll('[data-i]').forEach(function(el){ el.textContent = L(el.getAttribute('data-i')); });
+  document.querySelectorAll('[data-ih]').forEach(function(el){ el.innerHTML = L(el.getAttribute('data-ih')); });
+  document.querySelectorAll('[data-ip]').forEach(function(el){ el.setAttribute('placeholder', L(el.getAttribute('data-ip'))); });
+  notifState();
+}
+function toggleLang(){
+  S.lang = S.lang === 'en' ? 'fa' : 'en';
+  try { localStorage.setItem('bm_lang', S.lang); } catch (e) {}
+  applyLang();
+  renderMe();
+  renderCountries($('cSearch') ? $('cSearch').value : '');
+  if (S.view === 'services') renderServices($('sSearch') ? $('sSearch').value : '');
+  if (S.view === 'orders') loadOrders();
+  if (S.view === 'pays') loadPayHistory();
+  if (S.view === 'topup') { updTpHint(); loadOpenPays(); }
+  toast(W('زبان فارسی شد', 'Language: English'));
+}
 function boot(tries){
   tries = tries || 0;
   if (!tries) {
+    applyLang();
     try { var rq = new URLSearchParams(location.search).get('ref'); if (rq) sessionStorage.setItem('bm_ref', rq); } catch(e) {}
     try { if (!localStorage.getItem('bm_intro')) showIntro(); } catch(e) {}
     if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/sw.js').catch(function(){}); }
@@ -4195,12 +4348,16 @@ function renderMe(){
     } else rc.style.display = 'none';
   }
   renderPkgs();
+  notifState();
 }
 function copyRef(){ if (S.me && S.me.refLink) copyTxt(S.me.refLink); }
 function refreshMe(){ return api('/api/me').then(function(me){ S.me = me; renderMe(); updTpHint(); }); }
 function logout(){ try { sessionStorage.removeItem('bg_tok'); } catch (e) {} api('/api/auth/logout', { method:'POST' }).then(function(){ location.reload(); }); }
 function showView(name){
+  S.view = name;
   closeSheet();
+  stopStockTimer();
+  if (name === 'services') startStockTimer();
   ['shop','services','act','orders','pays','topup','account'].forEach(function(v){ $('v-'+v).classList.toggle('on', v===name); });
   document.querySelectorAll('[data-nav]').forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-nav')===name); });
   if (name !== 'act') stopActTimers();
@@ -4221,13 +4378,13 @@ function renderCountries(q){
     if (q && c.name.toLowerCase().indexOf(q) === -1) return;
     html += '<button class="country" onclick="pickCountry(' + c.id + ')"><div class="fl">' + escH(c.emoji) + '</div><div class="nm">' + escH(c.name) + '</div></button>';
   });
-  $('cGrid').innerHTML = html || '<div class="loading">کشوری پیدا نشد</div>';
+  $('cGrid').innerHTML = html || '<div class="loading">' + W('کشوری پیدا نشد', 'No country found') + '</div>';
 }
 $('cSearch').addEventListener('input', function(){ renderCountries(this.value); });
 function openSheet(html){ $('sheetBody').innerHTML = html; $('sheetWrap').classList.add('open'); $('sheet').classList.add('open'); }
 function closeSheet(){ var w = $('sheetWrap'), s = $('sheet'); if (w) w.classList.remove('open'); if (s) s.classList.remove('open'); }
 function sheetBtns(okLabel, okFn){
-  return '<div class="sbtns"><button class="wbtn" onclick="' + okFn + '">' + okLabel + '</button><button class="gbtn" onclick="closeSheet()">لغو</button></div>';
+  return '<div class="sbtns"><button class="wbtn" onclick="' + okFn + '">' + okLabel + '</button><button class="gbtn" onclick="closeSheet()">' + W('لغو', 'Cancel') + '</button></div>';
 }
 var pendingCountry = null;
 function pickCountry(id){
@@ -4238,9 +4395,9 @@ function pickCountry(id){
   openSheet(
     '<div class="sflag">' + escH(c.emoji) + '</div>'
     + '<h3>' + escH(c.name) + '</h3>'
-    + '<p class="ssub">تأیید انتخاب کشور</p>'
-    + '<p class="sdesc">شما کشور «' + escH(c.name) + '» را انتخاب کردید. با ادامه، سرویس‌های این کشور را می‌بینید و یک شماره مجازی از ' + escH(c.name) + ' می‌گیرید؛ کد پیامکی همان‌جا روی صفحه شماره نمایش داده می‌شود.</p>'
-    + sheetBtns('ادامه — مشاهده سرویس‌ها', 'goCountry()')
+    + '<p class="ssub">' + W('تأیید انتخاب کشور', 'Confirm country') + '</p>'
+    + '<p class="sdesc">' + W('شما کشور «' + escH(c.name) + '» را انتخاب کردید. با ادامه، سرویس‌های این کشور را می‌بینید و یک شماره مجازی از ' + escH(c.name) + ' می‌گیرید؛ کد پیامکی همان‌جا روی صفحه شماره نمایش داده می‌شود.', 'You picked ' + escH(c.name) + '. Continue to see its services and get a virtual number from ' + escH(c.name) + '; the SMS code appears right on the number page.') + '</p>'
+    + sheetBtns(W('ادامه — مشاهده سرویس‌ها', 'Continue — view services'), 'goCountry()')
   );
 }
 function goCountry(){
@@ -4261,9 +4418,9 @@ function renderServices(q){
   S.services.forEach(function(s){
     if (q && s.name.toLowerCase().indexOf(q) === -1) return;
     var tmn = (S.rate && s.priceUsd != null) ? '<div class="tmn">≈ ' + faTmn(s.priceUsd * S.rate) + '</div>' : '';
-    html += '<button class="svc' + (S.sel && S.sel.id === s.id ? ' sel' : '') + '" onclick="pickService(' + s.id + ')"><span><span class="nm">' + escH(s.name) + '</span><div class="st">موجود: ' + faN(s.available) + ' شماره</div></span><span class="pr"><div class="usd">' + (s.priceUsd != null ? faUsd(s.priceUsd) : '—') + '</div>' + tmn + '</span></button>';
+    html += '<button class="svc' + (S.sel && S.sel.id === s.id ? ' sel' : '') + '" onclick="pickService(' + s.id + ')"><span><span class="nm">' + escH(s.name) + '</span><div class="st">' + W('موجود: ', 'Stock: ') + faN(s.available) + W(' شماره', '') + '</div></span><span class="pr"><div class="usd">' + (s.priceUsd != null ? faUsd(s.priceUsd) : '—') + '</div>' + tmn + '</span></button>';
   });
-  $('svcList').innerHTML = html || '<div class="loading">سرویسی موجود نیست</div>';
+  $('svcList').innerHTML = html || '<div class="loading">' + W('سرویسی موجود نیست', 'No service available') + '</div>';
 }
 $('sSearch').addEventListener('input', function(){ renderServices(this.value); });
 function pickService(id){
@@ -4279,32 +4436,32 @@ function serviceSheetHtml(){
   var price = Number(s.priceUsd || 0);
   var disc = S.couponData ? Number(S.couponData.discount) : 0;
   var fin = Math.round((price - disc) * 100) / 100;
-  var tmnRow = (S.rate && s.priceUsd != null) ? '<div class="srow"><span>معادل تومانی</span><b>' + faTmn(s.priceUsd * S.rate) + '</b></div>' : '';
-  var cpnRows = '<div class="srow"><span>کد تخفیف</span><span class="cpnrow"><input id="cpnIn" placeholder="کد تخفیف" value="' + escH(S.couponInput || '') + '"><button class="mini" onclick="applyCoupon()">اعمال</button></span></div>'
-    + (S.couponData ? '<div class="srow"><span>تخفیف (' + escH(S.couponData.code) + ')</span><b>−' + faUsd(disc) + '</b></div><div class="srow"><span>مبلغ نهایی</span><b>' + faUsd(fin) + '</b></div>' : '');
-  var rows = '<div class="srow"><span>سرویس</span><b>' + escH(s.name) + '</b></div>'
-    + '<div class="srow"><span>کشور</span><b>' + escH(S.country.emoji + ' ' + S.country.name) + '</b></div>'
-    + '<div class="srow"><span>موجودی</span><b>' + faN(s.available) + ' شماره</b></div>'
-    + '<div class="srow"><span>مبلغ خرید</span><b>' + (s.priceUsd != null ? faUsd(s.priceUsd) : '—') + '</b></div>'
+  var tmnRow = (S.rate && s.priceUsd != null) ? '<div class="srow"><span>' + W('معادل تومانی', 'In Toman') + '</span><b>' + faTmn(s.priceUsd * S.rate) + '</b></div>' : '';
+  var cpnRows = '<div class="srow"><span>' + W('کد تخفیف', 'Discount code') + '</span><span class="cpnrow"><input id="cpnIn" placeholder="' + W('کد تخفیف', 'Discount code') + '" value="' + escH(S.couponInput || '') + '"><button class="mini" onclick="applyCoupon()">' + W('اعمال', 'Apply') + '</button></span></div>'
+    + (S.couponData ? '<div class="srow"><span>' + W('تخفیف', 'Discount') + ' (' + escH(S.couponData.code) + ')</span><b>−' + faUsd(disc) + '</b></div><div class="srow"><span>' + W('مبلغ نهایی', 'Final amount') + '</span><b>' + faUsd(fin) + '</b></div>' : '');
+  var rows = '<div class="srow"><span>' + W('سرویس', 'Service') + '</span><b>' + escH(s.name) + '</b></div>'
+    + '<div class="srow"><span>' + W('کشور', 'Country') + '</span><b>' + escH(S.country.emoji + ' ' + S.country.name) + '</b></div>'
+    + '<div class="srow"><span>' + W('موجودی', 'Stock') + '</span><b>' + faN(s.available) + W(' شماره', '') + '</b></div>'
+    + '<div class="srow"><span>' + W('مبلغ خرید', 'Price') + '</span><b>' + (s.priceUsd != null ? faUsd(s.priceUsd) : '—') + '</b></div>'
     + tmnRow + cpnRows
-    + '<div class="srow"><span>موجودی شما</span><b>' + faUsd(bal) + '</b></div>'
-    + '<div class="srow"><span>موجودی بعد از خرید</span><b>' + faUsd(bal - fin) + '</b></div>';
-  var note = '<div class="snote">با تأیید خرید، مبلغ از موجودی‌تان کسر و شماره بلافاصله تحویل داده می‌شود. اگر پیامک کد نرسد و به‌موقع لغو کنید، مبلغ کامل به موجودی‌تان برمی‌گردد.</div>';
+    + '<div class="srow"><span>' + W('موجودی شما', 'Your balance') + '</span><b>' + faUsd(bal) + '</b></div>'
+    + '<div class="srow"><span>' + W('موجودی بعد از خرید', 'Balance after purchase') + '</span><b>' + faUsd(bal - fin) + '</b></div>';
+  var note = '<div class="snote">' + W('با تأیید خرید، مبلغ از موجودی‌تان کسر و شماره بلافاصله تحویل داده می‌شود. اگر پیامک کد نرسد و به‌موقع لغو کنید، مبلغ کامل به موجودی‌تان برمی‌گردد.', 'Confirming deducts the amount from your balance and delivers the number immediately. If the SMS code never arrives and you cancel in time, the full amount returns to your balance.') + '</div>';
   var btns;
   if (s.priceUsd != null && bal < fin) {
-    btns = '<div class="sbtns"><button class="wbtn" onclick="sheetTopup()">موجودی کافی نیست — افزایش موجودی</button><button class="gbtn" onclick="closeSheet()">لغو</button></div>';
+    btns = '<div class="sbtns"><button class="wbtn" onclick="sheetTopup()">' + W('موجودی کافی نیست — افزایش موجودی', 'Insufficient balance — top up') + '</button><button class="gbtn" onclick="closeSheet()">' + W('لغو', 'Cancel') + '</button></div>';
   } else {
-    btns = sheetBtns('تأیید و خرید', 'sheetBuy()');
+    btns = sheetBtns(W('تأیید و خرید', 'Confirm and buy'), 'sheetBuy()');
   }
-  return '<h3 style="margin-top:6px">تأیید خرید</h3><p class="ssub">' + escH(s.name) + ' — ' + escH(S.country.name) + '</p>' + rows + note + btns;
+  return '<h3 style="margin-top:6px">' + W('تأیید خرید', 'Confirm purchase') + '</h3><p class="ssub">' + escH(s.name) + ' — ' + escH(S.country.name) + '</p>' + rows + note + btns;
 }
 function applyCoupon(){
   var inp = $('cpnIn'); if (!inp || !S.sel) return;
   var code = (inp.value || '').trim();
   S.couponInput = code;
-  if (!code) { toast('کد تخفیف را وارد کنید'); return; }
+  if (!code) { toast(W('کد تخفیف را وارد کنید', 'Enter a discount code')); return; }
   api('/api/coupon/check', { method:'POST', body: JSON.stringify({ code: code, price: S.sel.priceUsd }) })
-    .then(function(j){ if (!j.ok) { S.couponData = null; toast(j.error || 'کد معتبر نیست'); return; } S.couponData = j; toast('کد تخفیف اعمال شد'); openSheet(serviceSheetHtml()); })
+    .then(function(j){ if (!j.ok) { S.couponData = null; toast(j.error || W('کد معتبر نیست', 'Invalid code')); return; } S.couponData = j; toast(W('کد تخفیف اعمال شد', 'Discount applied')); openSheet(serviceSheetHtml()); })
     .catch(function(e){ S.couponData = null; toast(e.message); });
 }
 function sheetBuy(){ closeSheet(); doBuy(); }
@@ -4337,7 +4494,7 @@ function showIntro(){ var el = $('intro'); if (!el) return; el.hidden = false; d
 function introPaint(){
   document.querySelectorAll('.intro-slide').forEach(function(s, i){ s.classList.toggle('on', i === introIdx); });
   document.querySelectorAll('#introDots i').forEach(function(d, i){ d.classList.toggle('on', i === introIdx); });
-  $('introNext').textContent = introIdx >= 2 ? 'شروع کنید' : 'بعدی';
+  $('introNext').textContent = introIdx >= 2 ? W('شروع کنید', 'Get started') : L('introNext');
 }
 function introGo(){ if (introIdx >= 2) { closeIntro(); return; } introIdx++; introPaint(); }
 function introBack(){ if (introIdx > 0) { introIdx--; introPaint(); } }
@@ -4359,12 +4516,26 @@ function doBuy(){
     .catch(function(e){ toast(e.message); });
 }
 var STATUS_FA = { waitingSms:'در انتظار پیامک', resendRequested:'درخواست پیامک مجدد ثبت شد', codeReceived:'کد دریافت شد', finished:'پایان‌یافته', cancelled:'لغو شده', expired:'منقضی شده', refunded:'برگشت‌وجه‌شده' };
+var STATUS_EN = { waitingSms: 'Waiting for SMS', codeReceived: 'Code received', resendRequested: 'Resend requested', finished: 'Finished', cancelled: 'Cancelled', expired: 'Expired', refunded: 'Refunded', rejected: 'Rejected' };
+function statusTxt(st){ return (S.lang === 'en' ? STATUS_EN : STATUS_FA)[st] || st; }
 function statusPill(a){
-  if (a.status === 'codeReceived') return '<span class="pill ok">✓ کد دریافت شد</span>';
-  if (a.status === 'finished') return '<span class="pill ok">' + ico('flag', 13) + ' پایان‌یافته</span>';
-  if (['cancelled','expired','refunded'].indexOf(a.status) !== -1) return '<span class="pill bad">' + (STATUS_FA[a.status]||a.status) + '</span>';
-  return '<span class="pill"><span class="dot"></span>' + (STATUS_FA[a.status]||'در انتظار پیامک') + '</span>';
+  if (a.status === 'codeReceived') return '<span class="pill ok">✓ ' + W('کد دریافت شد', 'Code received') + '</span>';
+  if (a.status === 'finished') return '<span class="pill ok">' + ico('flag', 13) + ' ' + W('پایان‌یافته', 'Finished') + '</span>';
+  if (['cancelled','expired','refunded'].indexOf(a.status) !== -1) return '<span class="pill bad">' + statusTxt(a.status) + '</span>';
+  var stx = statusTxt(a.status); return '<span class="pill"><span class="dot"></span>' + (stx === a.status ? W('در انتظار پیامک', 'Waiting for SMS') : stx) + '</span>';
 }
+var stockTimer = null;
+function startStockTimer(){
+  stopStockTimer();
+  stockTimer = setInterval(function(){
+    if (S.view !== 'services' || !S.country) return;
+    api('/api/services?countryId=' + S.country.id).then(function(j){
+      S.rate = j.rate; S.services = j.services || [];
+      renderServices($('sSearch') ? $('sSearch').value : '');
+    }).catch(function(){});
+  }, 30000);
+}
+function stopStockTimer(){ if (stockTimer) { clearInterval(stockTimer); stockTimer = null; } }
 function stopActTimers(){ if (S.poll) { clearInterval(S.poll); S.poll = null; } if (S.cd) { clearInterval(S.cd); S.cd = null; } }
 function openAct(a){ S.act = a; showView('act'); renderAct(); startActTimers(); }
 function openOrder(id){
@@ -4381,37 +4552,37 @@ function tickCountdown(){
   var el = $('cdLeft'); if (!el || !S.act || !S.act.expiresAt) return;
   var left = Math.max(0, Math.floor((new Date(S.act.expiresAt).getTime() - Date.now()) / 1000));
   var mm = String(Math.floor(left/60)), ss = String(left%60); if (ss.length<2) ss='0'+ss;
-  el.innerHTML = ico('clock', 13) + ' ' + faDigits(mm + ':' + ss) + ' تا پایان مهلت';
+  el.innerHTML = ico('clock', 13) + ' ' + faDigits(mm + ':' + ss) + W(' تا پایان مهلت', ' remaining');
 }
 function pollAct(){
   if (!S.act) return;
   api('/api/activation?id=' + encodeURIComponent(S.act.id)).then(function(j){
     var had = S.act.code; S.act = j.activation; renderAct();
-    if (!had && j.activation.code) refreshMe();
+    if (!had && j.activation.code) { refreshMe(); fireNotif(W('کد پیامک رسید', 'Your SMS code arrived'), (j.activation.phone || '') + ' — ' + W('کد: ', 'Code: ') + j.activation.code); }
     if (['finished','cancelled','expired','refunded'].indexOf(j.activation.status) !== -1) { stopActTimers(); refreshMe(); }
   }).catch(function(){});
 }
 function renderAct(){
   var a = S.act; if (!a) return;
-  var html = '<h2 class="title">شماره شما آماده است</h2>';
-  html += '<button class=\"numcard\" id=\"numCard\"><div class=\"lbl\">' + escH(a.serviceName) + '</div><div class=\"num\">' + escH(a.phone) + '</div><div class=\"lbl\">برای کپی، روی شماره بزنید</div></button>';
+  var html = '<h2 class="title">' + W('شماره شما آماده است', 'Your number is ready') + '</h2>';
+  html += '<button class=\"numcard\" id=\"numCard\"><div class=\"lbl\">' + escH(a.serviceName) + '</div><div class=\"num\">' + escH(a.phone) + '</div><div class=\"lbl\">' + W('برای کپی، روی شماره بزنید', 'Tap the number to copy') + '</div></button>';
   html += '<div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center">' + statusPill(a) + '<span style="color:#9a9aa2;font-size:13px" id="cdLeft"></span></div>';
   if (a.code) {
     var boxes = '';
     String(a.code).split('').forEach(function(ch){ boxes += '<span>' + escH(ch) + '</span>'; });
     html += '<div class=\"codeboxes\" id=\"codeBoxes\">' + boxes + '</div>';
-    html += '<p class="small" style="color:#c9c9ce">کد را در سرویس مقصد وارد کنید — برای کپی روی کد بزنید.</p>';
+    html += '<p class="small" style="color:#c9c9ce">' + W('کد را در سرویس مقصد وارد کنید — برای کپی روی کد بزنید.', 'Enter the code in the destination service — tap the code to copy.') + '</p>';
     if (a.status === 'codeReceived') {
-      html += '<div class=\"btnrow\"><button class=\"wbtn\" onclick=\"actDo(&#39;finish&#39;)\">' + ico('flag') + ' اتمام کار</button><button class=\"gbtn\" onclick=\"actDo(&#39;resend&#39;)\">' + ico('send') + ' پیامک مجدد</button></div>';
-      html += '<p class="small">با دریافت کد، امکان لغو این سفارش به پایان رسیده است.</p>';
+      html += '<div class=\"btnrow\"><button class=\"wbtn\" onclick=\"actDo(&#39;finish&#39;)\">' + ico('flag') + ' ' + W('اتمام کار', 'Finish') + '</button><button class=\"gbtn\" onclick=\"actDo(&#39;resend&#39;)\">' + ico('send') + ' ' + W('پیامک مجدد', 'Resend SMS') + '</button></div>';
+      html += '<p class="small">' + W('با دریافت کد، امکان لغو این سفارش به پایان رسیده است.', 'Once the code arrives, this order can no longer be cancelled.') + '</p>';
     }
   } else if (['waitingSms','resendRequested'].indexOf(a.status) !== -1) {
-    html += '<div class="codezone">در حال گوش دادن به پیامک… ' + ico('send', 15) + '<br>به‌محض رسیدن، کد به‌صورت <b style="color:#fff">خودکار</b> اینجا نمایش داده می‌شود؛ نیازی به رفرش نیست.</div>';
-    html += '<div class=\"btnrow\"><button class=\"gbtn\" onclick=\"actDo(&#39;resend&#39;)\">' + ico('send') + ' پیامک مجدد</button><button class=\"gbtn\" onclick=\"actDo(&#39;cancel&#39;)\">' + ico('xc') + ' لغو سفارش</button></div>';
-    html += '<p class="small">طبق محدودیت تأمین‌کننده، لغو در ۲ دقیقه اول ممکن نیست؛ اگر کدی نرسد و سفارش لغو یا منقضی شود، مبلغ خودکار به موجودی برمی‌گردد.</p>';
+    html += '<div class="codezone">' + W('در حال گوش دادن به پیامک… ', 'Listening for the SMS… ') + ico('send', 15) + '<br>' + W('به‌محض رسیدن، کد به‌صورت <b style="color:#fff">خودکار</b> اینجا نمایش داده می‌شود؛ نیازی به رفرش نیست.', 'The code appears here <b style="color:#fff">automatically</b> as soon as it arrives — no refresh needed.') + '</div>';
+    html += '<div class=\"btnrow\"><button class=\"gbtn\" onclick=\"actDo(&#39;resend&#39;)\">' + ico('send') + ' ' + W('پیامک مجدد', 'Resend SMS') + '</button><button class=\"gbtn\" onclick=\"actDo(&#39;cancel&#39;)\">' + ico('xc') + ' ' + W('لغو سفارش', 'Cancel order') + '</button></div>';
+    html += '<p class="small">' + W('طبق محدودیت تأمین‌کننده، لغو در ۲ دقیقه اول ممکن نیست؛ اگر کدی نرسد و سفارش لغو یا منقضی شود، مبلغ خودکار به موجودی برمی‌گردد.', 'The provider blocks cancellation during the first 2 minutes. If no code arrives and the order is cancelled or expires, the amount is refunded to your balance automatically.') + '</p>';
   } else {
-    html += '<p class="small">این سفارش به پایان رسیده است (' + escH(STATUS_FA[a.status]||a.status) + '). اگر کدی دریافت نشده بود، مبلغ به موجودی شما برگشته است.</p>';
-    html += '<div class=\"btnrow\"><button class=\"gbtn\" onclick=\"showView(&#39;orders&#39;)\">' + ico('list') + ' سفارش‌های من</button></div>';
+    html += '<p class="small">' + W('این سفارش به پایان رسیده است (', 'This order has ended (') + escH(statusTxt(a.status)) + W('). اگر کدی دریافت نشده بود، مبلغ به موجودی شما برگشته است.', '). If no code was received, the amount has been refunded to your balance.') + '</p>';
+    html += '<div class=\"btnrow\"><button class=\"gbtn\" onclick=\"showView(&#39;orders&#39;)\">' + ico('list') + ' ' + W('سفارش‌های من', 'My orders') + '</button></div>';
   }
   $('actBox').innerHTML = html;
   var nc = $('numCard'); if (nc) nc.onclick = function(){ copyTxt(S.act.phone); };
@@ -4425,7 +4596,7 @@ function actDo(action){
     .catch(function(e){ toast(e.message); pollAct(); });
 }
 function copyTxt(txt, el){
-  function done(){ toast('کپی شد ✓'); }
+  function done(){ toast(W('کپی شد ✓', 'Copied ✓')); }
   if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(done).catch(done);
   else {
     var ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta); ta.select();
@@ -4434,21 +4605,39 @@ function copyTxt(txt, el){
   }
 }
 function loadOrders(){
-  $('ordList').innerHTML = '<div class="loading">در حال بارگذاری…</div>';
+  $('ordList').innerHTML = '<div class="loading">' + W('در حال بارگذاری…', 'Loading…') + '</div>';
   api('/api/orders').then(function(j){
     var html = '';
+    var rbSvg = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>';
     (j.orders||[]).forEach(function(o){
-      var dt = o.createdAt ? new Date(o.createdAt).toLocaleString('fa-IR', { timeZone:'Asia/Tehran' }) : '';
-      html += '<button class="ord" onclick="openOrder(' + o.id + ')"><span><span class="ph">' + escH(o.phone) + '</span><div class="mt">' + escH(o.serviceName) + ' — ' + escH(STATUS_FA[o.status]||o.status) + '</div></span><span class="mt">' + escH(dt) + '</span></button>';
+      var dt = o.createdAt ? new Date(o.createdAt).toLocaleString(S.lang === 'en' ? 'en-GB' : 'fa-IR', { timeZone:'Asia/Tehran' }) : '';
+      var rb = o.countryId ? '<button class="mini rebuy" onclick="rebuyOrder(' + o.countryId + ',' + (o.serviceId || 0) + ')">' + rbSvg + W('خرید مجدد', 'Buy again') + '</button>' : '';
+      html += '<div class="ordrow"><button class="ord" onclick="openOrder(' + o.id + ')"><span><span class="ph">' + escH(o.phone) + '</span><div class="mt">' + escH(o.serviceName) + ' — ' + escH(statusTxt(o.status)) + '</div></span><span class="mt">' + escH(dt) + '</span></button>' + rb + '</div>';
     });
-    $('ordList').innerHTML = html || '<div class="loading">هنوز سفارشی ندارید</div>';
+    $('ordList').innerHTML = html || '<div class="loading">' + W('هنوز سفارشی ندارید', 'No orders yet') + '</div>';
   }).catch(function(e){ $('ordList').innerHTML = '<div class="loading">' + escH(e.message) + '</div>'; });
+}
+function rebuyOrder(cid, sid){
+  var c = null;
+  (S.countries || []).forEach(function(x){ if (x.id === cid) c = x; });
+  if (!c) { toast(W('کشور این سفارش دیگر در فهرست نیست', 'This order country is no longer listed')); showView('shop'); return; }
+  S.country = c; S.sel = null;
+  showView('services');
+  $('svcTitle').textContent = c.emoji + ' ' + c.name;
+  $('svcList').innerHTML = '<div class="loading">' + W('در حال بارگذاری…', 'Loading…') + '</div>';
+  api('/api/services?countryId=' + c.id).then(function(j){
+    S.rate = j.rate; S.services = j.services || []; renderServices('');
+    if (sid) {
+      var ok = false; S.services.forEach(function(x){ if (x.id === sid) ok = true; });
+      if (ok) pickService(sid); else toast(W('این سرویس فعلاً در فهرست نیست', 'This service is currently unavailable'));
+    }
+  }).catch(function(e){ $('svcList').innerHTML = '<div class="loading">' + escH(e.message) + '</div>'; });
 }
 function setTopupMode(m){
   S.topupMode = m;
   $('chipUsd').classList.toggle('on', m==='usd');
   $('chipTmn').classList.toggle('on', m==='tmn');
-  $('tpAmt').placeholder = m==='usd' ? '$ مبلغ به دلار' : 'مبلغ به تومان';
+  $('tpAmt').placeholder = m==='usd' ? W('$ مبلغ به دلار', 'Amount in USD $') : W('مبلغ به تومان', 'Amount in Toman');
   $('tpResult').innerHTML = '';
   updTpHint();
 }
@@ -4456,63 +4645,101 @@ function updTpHint(){
   var el = $('tpHint'); if (!el) return;
   var min = S.me && S.me.minTopup ? Number(S.me.minTopup) : 1;
   el.textContent = S.topupMode === 'usd'
-    ? 'مبلغ بین ' + faUsd(min) + ' تا $۵٬۰۰۰. بعد از ساخت، به صفحه پرداخت می‌روید و روش پرداخت (رمزارز یا کارت‌به‌کارت) را آنجا انتخاب می‌کنید.'
-    : 'مبلغ را به تومان وارد کنید؛ معادل دلاری آن باید بین ' + faUsd(min) + ' تا $۵٬۰۰۰ باشد و با نرخ لحظه‌ای تتر تبدیل می‌شود.';
+    ? W('مبلغ بین ' + faUsd(min) + ' تا ' + faUsd(5000) + '. بعد از ساخت، به صفحه پرداخت می‌روید و روش پرداخت (رمزارز یا کارت‌به‌کارت) را آنجا انتخاب می‌کنید.', 'Enter an amount between ' + faUsd(min) + ' and ' + faUsd(5000) + '. You will then choose the payment method (crypto or card-to-card) on the payment page.')
+    : W('مبلغ را به تومان وارد کنید؛ معادل دلاری آن باید بین ' + faUsd(min) + ' تا ' + faUsd(5000) + ' باشد و با نرخ لحظه‌ای تتر تبدیل می‌شود.', 'Enter the amount in Toman; its dollar equivalent must be between ' + faUsd(min) + ' and ' + faUsd(5000) + ' and converts at the live USDT rate.');
 }
 function methodLabel(t){
-  if (t.method === 'crypto') return ({ USDT_TRC20: 'تتر (TRC20)', USDT_BEP20: 'تتر (BEP20)', USDT_ERC20: 'تتر (ERC20)', TRX: 'ترون (TRX)', BTC: 'بیت‌کوین', LTC: 'لایت‌کوین', TON: 'تون‌کوین', ETH: 'اتریوم' })[t.crypto] || 'رمزارز';
-  if (t.method === 'card') return 'کارت‌به‌کارت';
-  if (t.method === 'card_verify') return 'کارت‌به‌کارت (در انتظار احراز شماره)';
-  return 'در انتظار انتخاب روش پرداخت';
+  if (t.method === 'crypto') return (S.lang === 'en' ? ({ USDT_TRC20: 'USDT (TRC20)', USDT_BEP20: 'USDT (BEP20)', USDT_ERC20: 'USDT (ERC20)', TRX: 'TRON (TRX)', BTC: 'Bitcoin', LTC: 'Litecoin', TON: 'Toncoin', ETH: 'Ethereum' })[t.crypto] || 'Crypto' : ({ USDT_TRC20: 'تتر (TRC20)', USDT_BEP20: 'تتر (BEP20)', USDT_ERC20: 'تتر (ERC20)', TRX: 'ترون (TRX)', BTC: 'بیت‌کوین', LTC: 'لایت‌کوین', TON: 'تون‌کوین', ETH: 'اتریوم' })[t.crypto] || 'رمزارز');
+  if (t.method === 'card') return W('کارت‌به‌کارت', 'Card-to-card');
+  if (t.method === 'card_verify') return W('کارت‌به‌کارت (در انتظار احراز شماره)', 'Card-to-card (awaiting phone verification)');
+  return W('در انتظار انتخاب روش پرداخت', 'Awaiting payment method');
 }
 function payStatusInfo(t){
-  if (t.status === 'approved') return { txt: 'شارژ شد', cls: 'ok' };
-  if (t.status === 'rejected') return { txt: 'رد شد', cls: 'bad' };
-  if (t.status === 'expired') return { txt: 'منقضی شد', cls: 'bad' };
-  if (t.status === 'cancelled') return { txt: 'لغو شد', cls: '' };
-  return t.seen ? { txt: 'تراکنش دیده شد — در انتظار تأیید شبکه', cls: 'seen' } : { txt: 'در انتظار پرداخت', cls: 'seen' };
+  if (t.status === 'approved') return { txt: W('شارژ شد', 'Credited'), cls: 'ok' };
+  if (t.status === 'rejected') return { txt: W('رد شد', 'Rejected'), cls: 'bad' };
+  if (t.status === 'expired') return { txt: W('منقضی شد', 'Expired'), cls: 'bad' };
+  if (t.status === 'cancelled') return { txt: W('لغو شد', 'Cancelled'), cls: '' };
+  return t.seen ? { txt: W('تراکنش دیده شد — در انتظار تأیید شبکه', 'Transaction seen — awaiting network confirmation'), cls: 'seen' } : { txt: W('در انتظار پرداخت', 'Awaiting payment'), cls: 'seen' };
 }
-function tehranHM(ts){ try { return new Date(ts).toLocaleTimeString('fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' }); } catch(e) { return ''; } }
-function tehranFull(ts){ try { var d = new Date(ts); return d.toLocaleDateString('fa-IR', { timeZone: 'Asia/Tehran' }) + ' — ' + tehranHM(ts); } catch(e) { return ''; } }
+function tehranHM(ts){ try { return new Date(ts).toLocaleTimeString(S.lang === 'en' ? 'en-GB' : 'fa-IR', { timeZone: 'Asia/Tehran', hour: '2-digit', minute: '2-digit' }); } catch(e) { return ''; } }
+function tehranFull(ts){ try { var d = new Date(ts); return d.toLocaleDateString(S.lang === 'en' ? 'en-GB' : 'fa-IR', { timeZone: 'Asia/Tehran' }) + ' — ' + tehranHM(ts); } catch(e) { return ''; } }
 function openPayCard(t){
   var st = payStatusInfo(t);
   return '<div class="payc"><div class="prow1"><b>' + faUsd(t.creditUsd) + '</b><span class="pstatus">' + st.txt + '</span></div>'
-    + '<div class="pmeta">' + methodLabel(t) + (t.pkgBonus > 0 ? '<br>بونوس پکیج: +' + faUsd(t.pkgBonus) + ' (بعد از پرداخت موفق اضافه می‌شود)' : '') + '<br>مهلت پرداخت تا ساعت ' + tehranHM(t.expiresAt) + '</div>'
-    + '<div class="pbtns"><a class="wbtn" href="' + t.payUrl + '">ادامه پرداخت</a><button class="gbtn" data-tid="' + t.id + '" data-amt="' + faUsd(t.creditUsd) + '" onclick="cancelOpenPay(this)">لغو پرداخت</button></div></div>';
+    + '<div class="pmeta">' + methodLabel(t) + (t.pkgBonus > 0 ? '<br>' + W('بونوس پکیج: ', 'Package bonus: ') + '+' + faUsd(t.pkgBonus) + W(' (بعد از پرداخت موفق اضافه می‌شود)', ' (added after successful payment)') : '') + '<br>' + W('مهلت پرداخت تا ساعت ', 'Pay before ') + tehranHM(t.expiresAt) + '</div>'
+    + '<div class="pbtns"><a class="wbtn" href="' + t.payUrl + '">' + W('ادامه پرداخت', 'Continue payment') + '</a><button class="gbtn" data-tid="' + t.id + '" data-amt="' + faUsd(t.creditUsd) + '" onclick="cancelOpenPay(this)">' + W('لغو پرداخت', 'Cancel payment') + '</button></div></div>';
 }
 var pendingCancelId = null;
 function cancelOpenPay(btn){
   pendingCancelId = btn.getAttribute('data-tid');
   var amt = btn.getAttribute('data-amt') || '';
-  openSheet('<h3 style="margin-top:6px">لغو پرداخت</h3><p class="sdesc">پرداخت ' + amt + ' لغو و بسته شود؟ اگر مبلغی واریز کرده‌اید، پیش از لغو با پشتیبانی هماهنگ کنید.</p><div class="sbtns"><button class="wbtn dangerb" onclick="doCancelOpenPay(this)">بله، لغو شود</button><button class="gbtn" onclick="closeSheet()">برگرد</button></div>');
+  openSheet('<h3 style="margin-top:6px">' + W('لغو پرداخت', 'Cancel payment') + '</h3><p class="sdesc">' + W('پرداخت ' + amt + ' لغو و بسته شود؟ اگر مبلغی واریز کرده‌اید، پیش از لغو با پشتیبانی هماهنگ کنید.', 'Cancel and close the ' + amt + ' payment? If you already sent money, contact support before cancelling.') + '</p><div class="sbtns"><button class="wbtn dangerb" onclick="doCancelOpenPay(this)">' + W('بله، لغو شود', 'Yes, cancel it') + '</button><button class="gbtn" onclick="closeSheet()">' + W('برگرد', 'Back') + '</button></div>');
 }
 function doCancelOpenPay(btn){
   if (!pendingCancelId) return;
-  btn.disabled = true; btn.textContent = 'در حال لغو…';
+  btn.disabled = true; btn.textContent = W('در حال لغو…', 'Cancelling…');
   fetch('/pay/cancel', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ t: pendingCancelId }) })
     .then(function(r){ return r.json(); })
     .then(function(d){
-      if (d.ok) { closeSheet(); pendingCancelId = null; toast('پرداخت لغو شد'); loadOpenPays(); loadPayHistory(); }
-      else { toast(d.error || 'خطا در لغو'); btn.disabled = false; btn.textContent = 'بله، لغو شود'; }
+      if (d.ok) { closeSheet(); pendingCancelId = null; toast(W('پرداخت لغو شد', 'Payment cancelled')); loadOpenPays(); loadPayHistory(); }
+      else { toast(d.error || W('خطا در لغو', 'Cancel failed')); btn.disabled = false; btn.textContent = W('بله، لغو شود', 'Yes, cancel it'); }
     })
-    .catch(function(){ toast('خطای شبکه'); btn.disabled = false; btn.textContent = 'بله، لغو شود'; });
+    .catch(function(){ toast(W('خطای شبکه', 'Network error')); btn.disabled = false; btn.textContent = W('بله، لغو شود', 'Yes, cancel it'); });
+}
+function fireNotif(title, body){
+  try {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    var opts = { body: body, icon: '/icons/icon-192.png' };
+    if ('serviceWorker' in navigator && navigator.serviceWorker.ready) {
+      navigator.serviceWorker.ready.then(function(r){ r.showNotification(title, opts); }).catch(function(){ try { new Notification(title, opts); } catch (e) {} });
+    } else { new Notification(title, opts); }
+  } catch (e) {}
+}
+function notifState(){
+  var b = $('notifBtn'); if (!b) return;
+  if (!('Notification' in window)) { b.disabled = true; b.textContent = W('در این مرورگر پشتیبانی نمی‌شود', 'Not supported in this browser'); return; }
+  if (Notification.permission === 'granted') { b.disabled = true; b.textContent = W('فعال است', 'Enabled'); return; }
+  if (Notification.permission === 'denied') { b.disabled = true; b.textContent = W('در تنظیمات مرورگر مسدود است', 'Blocked in browser settings'); return; }
+  b.disabled = false; b.textContent = W('فعال‌سازی', 'Enable');
+}
+function enableNotifs(){
+  if (!('Notification' in window)) { toast(W('مرورگر شما اعلان را پشتیبانی نمی‌کند', 'Your browser does not support notifications')); return; }
+  Notification.requestPermission().then(function(p){
+    notifState();
+    if (p === 'granted') fireNotif('BlueMajazi', W('اعلان‌ها فعال شد', 'Notifications are on'));
+    else toast(W('اجازه اعلان داده نشد', 'Notification permission was not granted'));
+  }).catch(function(){});
+}
+function watchTopups(d){
+  var pend = {}; (d.pending || []).forEach(function(t){ pend[t.id] = 1; });
+  if (S.knownPending) {
+    (d.history || []).forEach(function(t){
+      if (S.knownPending[t.id] && t.status === 'approved' && !(S.knownApproved && S.knownApproved[t.id])) {
+        fireNotif(W('شارژ حساب انجام شد', 'Top-up approved'), faUsd(t.creditUsd) + (t.bonusUsd > 0 ? ' + ' + W('بونوس ', 'bonus ') + faUsd(t.bonusUsd) : '') + W(' به موجودی‌تان اضافه شد.', ' was added to your balance.'));
+      }
+    });
+  }
+  var appr = {}; (d.history || []).forEach(function(t){ if (t.status === 'approved') appr[t.id] = 1; });
+  S.knownPending = pend; S.knownApproved = appr;
 }
 function loadOpenPays(){
   api('/api/topups').then(function(d){
+    watchTopups(d);
     var list = d.pending || [];
-    $('openPays').innerHTML = list.length ? '<div class="ophead">پرداخت‌های باز شما</div>' + list.map(openPayCard).join('') : '';
+    $('openPays').innerHTML = list.length ? '<div class="ophead">' + W('پرداخت‌های باز شما', 'Your open payments') + '</div>' + list.map(openPayCard).join('') : '';
   }).catch(function(){});
 }
 function loadPayHistory(){
   api('/api/topups').then(function(d){
+    watchTopups(d);
     var open = d.pending || [], hist = d.history || [];
     var html = '';
-    if (open.length) html += '<div class="ophead">پرداخت‌های باز</div>' + open.map(openPayCard).join('');
-    html += '<div class="ophead" style="margin-top:' + (open.length ? '18' : '2') + 'px">تاریخچه پرداخت‌ها</div>';
+    if (open.length) html += '<div class="ophead">' + W('پرداخت‌های باز', 'Open payments') + '</div>' + open.map(openPayCard).join('');
+    html += '<div class="ophead" style="margin-top:' + (open.length ? '18' : '2') + 'px">' + W('تاریخچه پرداخت‌ها', 'Payment history') + '</div>';
     html += hist.length ? hist.map(function(t){
       var st = payStatusInfo(t);
-      return '<div class="hrow"><div class="hmain"><b>' + faUsd(t.creditUsd) + '</b><span>' + methodLabel(t) + (t.bonusUsd > 0 ? ' — بونوس +' + faUsd(t.bonusUsd) : '') + '</span></div><div class="hside"><span class="hstatus ' + st.cls + '">' + st.txt + '</span><span class="hdate">' + tehranFull(t.createdAt) + '</span></div></div>';
-    }).join('') : '<div class="loading">هنوز پرداختی ثبت نشده است.</div>';
+      return '<div class="hrow"><div class="hmain"><b>' + faUsd(t.creditUsd) + '</b><span>' + methodLabel(t) + (t.bonusUsd > 0 ? W(' — بونوس +', ' — bonus +') + faUsd(t.bonusUsd) : '') + '</span></div><div class="hside"><span class="hstatus ' + st.cls + '">' + st.txt + '</span><span class="hdate">' + tehranFull(t.createdAt) + '</span></div></div>';
+    }).join('') : '<div class="loading">' + W('هنوز پرداختی ثبت نشده است.', 'No payments yet.') + '</div>';
     $('payHist').innerHTML = html;
   }).catch(function(e){ $('payHist').innerHTML = '<div class="loading">' + escH(e.message) + '</div>'; });
 }
@@ -4522,50 +4749,50 @@ function renderPkgs(){
   if (!pkgs.length) { row.innerHTML = ''; return; }
   var gift = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12v10H4V12"/><path d="M2 7h20v5H2z"/><path d="M12 22V7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg>';
   row.innerHTML = pkgs.map(function(p){
-    return '<button class="pkgcard" onclick="doTopupPkg(' + p.amount + ')"><span class="pk-amt">' + faUsd(p.amount) + '</span><span class="pk-bonus">' + (p.bonus > 0 ? gift + ' +' + faUsd(p.bonus) + ' بونوس' : 'بدون بونوس') + '</span></button>';
+    return '<button class="pkgcard" onclick="doTopupPkg(' + p.amount + ')"><span class="pk-amt">' + faUsd(p.amount) + '</span><span class="pk-bonus">' + (p.bonus > 0 ? gift + ' +' + faUsd(p.bonus) + W(' بونوس', ' bonus') : W('بدون بونوس', 'No bonus')) + '</span></button>';
   }).join('');
 }
 var pendingPkg = null;
 function doTopupPkg(amount){
   var pkg = null;
   ((S.me && S.me.pkgs) || []).forEach(function(p){ if (Number(p.amount) === Number(amount)) pkg = p; });
-  if (!pkg) { toast('این پکیج دیگر موجود نیست'); return; }
+  if (!pkg) { toast(W('این پکیج دیگر موجود نیست', 'This package is no longer available')); return; }
   pendingPkg = pkg;
-  var tmnRow = S.rate ? '<div class="srow"><span>معادل تومانی</span><b>' + faTmn(pkg.amount * S.rate) + '</b></div>' : '';
-  $('pkgConfirmBox').innerHTML = '<h3 style="margin:2px 0 4px">تأیید شارژ پکیج</h3><p class="ssub">قبل از ساخت پرداخت، مشخصات پکیج را تأیید کنید</p>'
-    + '<div class="srow"><span>مبلغ پکیج</span><b>' + faUsd(pkg.amount) + '</b></div>' + tmnRow
-    + '<div class="srow"><span>بونوس پکیج</span><b>' + (pkg.bonus > 0 ? '+' + faUsd(pkg.bonus) : '—') + '</b></div>'
-    + '<div class="srow"><span>اعتبار دریافتی</span><b>' + faUsd(Number(pkg.amount) + Number(pkg.bonus || 0)) + '</b></div>'
-    + '<div class="snote">با تأیید، صفحه پرداخت ساخته می‌شود و ۳۰ دقیقه برای پرداخت فرصت دارید. بونوس بلافاصله بعد از پرداخت موفق به موجودی‌تان اضافه می‌شود.</div>'
-    + '<div class="sbtns"><button class="wbtn" onclick="confirmPkgTopup(this)">تأیید و ساخت پرداخت</button><button class="gbtn" onclick="closePkgConfirm()">انصراف</button></div>';
+  var tmnRow = S.rate ? '<div class="srow"><span>' + W('معادل تومانی', 'In Toman') + '</span><b>' + faTmn(pkg.amount * S.rate) + '</b></div>' : '';
+  $('pkgConfirmBox').innerHTML = '<h3 style="margin:2px 0 4px">' + W('تأیید شارژ پکیج', 'Confirm package top-up') + '</h3><p class="ssub">' + W('قبل از ساخت پرداخت، مشخصات پکیج را تأیید کنید', 'Review the package before creating the payment') + '</p>'
+    + '<div class="srow"><span>' + W('مبلغ پکیج', 'Package amount') + '</span><b>' + faUsd(pkg.amount) + '</b></div>' + tmnRow
+    + '<div class="srow"><span>' + W('بونوس پکیج', 'Package bonus') + '</span><b>' + (pkg.bonus > 0 ? '+' + faUsd(pkg.bonus) : '—') + '</b></div>'
+    + '<div class="srow"><span>' + W('اعتبار دریافتی', 'You receive') + '</span><b>' + faUsd(Number(pkg.amount) + Number(pkg.bonus || 0)) + '</b></div>'
+    + '<div class="snote">' + W('با تأیید، صفحه پرداخت ساخته می‌شود و ۳۰ دقیقه برای پرداخت فرصت دارید. بونوس بلافاصله بعد از پرداخت موفق به موجودی‌تان اضافه می‌شود.', 'Confirming creates the payment page; you have 30 minutes to pay. The bonus is added to your balance right after a successful payment.') + '</div>'
+    + '<div class="sbtns"><button class="wbtn" onclick="confirmPkgTopup(this)">' + W('تأیید و ساخت پرداخت', 'Confirm and create payment') + '</button><button class="gbtn" onclick="closePkgConfirm()">' + W('انصراف', 'Cancel') + '</button></div>';
   $('pkgConfirm').classList.add('on');
 }
 function closePkgConfirm(){ var m = $('pkgConfirm'); if (m) m.classList.remove('on'); pendingPkg = null; }
 function confirmPkgTopup(btn){
   if (!pendingPkg) return;
   var amount = pendingPkg.amount;
-  btn.disabled = true; btn.textContent = 'در حال ساخت…';
+  btn.disabled = true; btn.textContent = W('در حال ساخت…', 'Creating…');
   api('/api/topup', { method:'POST', body: JSON.stringify({ pkgAmount: amount }) }).then(function(j){
     closePkgConfirm();
-    $('tpResult').innerHTML = '<div class="confirm"><div class="row"><span>صفحه پرداخت ساخته شد</span><b>۳۰ دقیقه مهلت</b></div><a class="wbtn" style="width:100%;margin-top:10px" href="' + escH(j.payUrl) + '">رفتن به صفحه پرداخت ←</a></div>';
+    $('tpResult').innerHTML = '<div class="confirm"><div class="row"><span>' + W('صفحه پرداخت ساخته شد', 'Payment page created') + '</span><b>' + W('۳۰ دقیقه مهلت', '30 minutes to pay') + '</b></div><a class="wbtn" style="width:100%;margin-top:10px" href="' + escH(j.payUrl) + '">' + W('رفتن به صفحه پرداخت ←', 'Go to payment page →') + '</a></div>';
   }).catch(function(e){
     closePkgConfirm();
     if (e.data && e.data.payUrl) {
-      $('tpResult').innerHTML = '<div class="confirm"><div class="row"><span>' + escH(e.message) + '</span></div><a class="wbtn" style="width:100%;margin-top:10px" href="' + escH(e.data.payUrl) + '">ادامه پرداخت قبلی ←</a></div>';
+      $('tpResult').innerHTML = '<div class="confirm"><div class="row"><span>' + escH(e.message) + '</span></div><a class="wbtn" style="width:100%;margin-top:10px" href="' + escH(e.data.payUrl) + '">' + W('ادامه پرداخت قبلی ←', 'Continue previous payment →') + '</a></div>';
     } else toast(e.message);
   });
 }
 function doTopup(){
   var raw = String($('tpAmt').value||'').replace(/[^0-9.]/g,'');
   var val = Number(raw);
-  if (!(val > 0)) { toast('مبلغ را وارد کنید'); return; }
-  if (S.topupMode === 'usd' && S.me && S.me.minTopup && val < Number(S.me.minTopup)) { toast('حداقل مبلغ شارژ ' + faUsd(Number(S.me.minTopup)) + ' است'); return; }
+  if (!(val > 0)) { toast(W('مبلغ را وارد کنید', 'Enter an amount')); return; }
+  if (S.topupMode === 'usd' && S.me && S.me.minTopup && val < Number(S.me.minTopup)) { toast(W('حداقل مبلغ شارژ ' + faUsd(Number(S.me.minTopup)) + ' است', 'Minimum top-up is ' + faUsd(Number(S.me.minTopup)))); return; }
   var body = S.topupMode === 'usd' ? { amountUsd: val } : { amountTmn: Math.round(val) };
   api('/api/topup', { method:'POST', body: JSON.stringify(body) }).then(function(j){
-    $('tpResult').innerHTML = '<div class="confirm"><div class="row"><span>صفحه پرداخت ساخته شد</span><b>۳۰ دقیقه مهلت</b></div><a class="wbtn" style="width:100%;margin-top:10px" href="' + escH(j.payUrl) + '">رفتن به صفحه پرداخت ←</a></div>';
+    $('tpResult').innerHTML = '<div class="confirm"><div class="row"><span>' + W('صفحه پرداخت ساخته شد', 'Payment page created') + '</span><b>' + W('۳۰ دقیقه مهلت', '30 minutes to pay') + '</b></div><a class="wbtn" style="width:100%;margin-top:10px" href="' + escH(j.payUrl) + '">' + W('رفتن به صفحه پرداخت ←', 'Go to payment page →') + '</a></div>';
   }).catch(function(e){
     if (e.data && e.data.payUrl) {
-      $('tpResult').innerHTML = '<div class="confirm"><div class="row"><span>' + escH(e.message) + '</span></div><a class="wbtn" style="width:100%;margin-top:10px" href="' + escH(e.data.payUrl) + '">ادامه پرداخت قبلی ←</a></div>';
+      $('tpResult').innerHTML = '<div class="confirm"><div class="row"><span>' + escH(e.message) + '</span></div><a class="wbtn" style="width:100%;margin-top:10px" href="' + escH(e.data.payUrl) + '">' + W('ادامه پرداخت قبلی ←', 'Continue previous payment →') + '</a></div>';
     } else toast(e.message);
   });
 }
