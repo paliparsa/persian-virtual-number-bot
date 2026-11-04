@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.11.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.12.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -74,7 +74,7 @@ const CONFIG_KEYS = [
   "WALLET_USDT_TRC20", "WALLET_TRX", "WALLET_BTC", "WALLET_TON",
   "WALLET_LTC", "WALLET_ETH", "WALLET_USDT_ERC20", "WALLET_USDT_BEP20",
   "SUPPORT_USERNAME", "WORKER_BASE_URL", "PRICE_MARKUP_PERCENT", "TMN_RATE_MANUAL", "GROUP_CHAT_ID", "MIN_TOPUP_USD",
-  "FORCE_JOIN_ENABLED", "FORCE_JOIN_CHANNEL", "PHONE_VERIFY_ENABLED", "ETHERSCAN_API_KEY", "LOW_BALANCE_BRL", "REFERRAL_PERCENT",
+  "FORCE_JOIN_ENABLED", "FORCE_JOIN_CHANNEL", "PHONE_VERIFY_ENABLED", "ETHERSCAN_API_KEY", "LOW_BALANCE_BRL", "REFERRAL_PERCENT", "TOPUP_BONUS_USD", "TOPUP_BONUS_PERCENT",
 ];
 async function getConfig(env) {
   const stored = (await kvGet(env, "config")) || {};
@@ -113,15 +113,22 @@ function auditEntryText(e) {
   if (e.action === "toggle") return `🔘 «${label}» ${e.newV === "1" ? "روشن شد ✅" : "خاموش شد ⚪️"}`;
   if (e.action === "apr") return `✅ رسید شارژ تأیید و حساب کاربر شارژ شد — ${e.extra || ""}`;
   if (e.action === "rej") return `❌ رسید شارژ رد شد — ${e.extra || ""}`;
+  if (e.action === "coupon_new") return `🎟 کد تخفیف «${e.key}» ساخته شد — ${e.extra || ""}`;
+  if (e.action === "coupon_del") return `🗑 کد تخفیف «${e.key}» حذف شد`;
+  if (e.action === "coupon_tgl") return `🎟 کد تخفیف «${e.key}» ${e.newV === "1" ? "فعال شد" : "غیرفعال شد"}`;
   return `${e.action} — ${label}`;
 }
 async function showAuditLog(env, chatId, msgId) {
   const all = (await kvList(env, "audit:")).sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 15);
-  let text = "📜 <b>سوابق تغییرات پنل مدیریت</b>\n<span>(۱۵ مورد آخر؛ سوابق ۹۰ روز نگه داشته می‌شوند)</span>";
+  // NOTE: no HTML tags beyond Telegram's allowed set here — a bare <span>
+  // makes the Bot API reject the whole message (the button "did nothing").
+  let text = "📜 <b>سوابق تغییرات پنل مدیریت</b>\n(۱۵ مورد آخر؛ سوابق ۹۰ روز نگه داشته می‌شوند)";
   if (!all.length) text += "\n\nهنوز تغییری ثبت نشده است.";
   for (const e of all) {
     const when = new Date(e.at).toLocaleString("fa-IR", { timeZone: "Asia/Tehran", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" });
-    text += `\n\n🕐 ${esc(when)}\n${esc(auditEntryText(e))}`;
+    const line = `\n\n🕐 ${esc(when)}\n${esc(auditEntryText(e))}`;
+    if ((text + line).length > 3800) break; // stay under Telegram's 4096-char message limit
+    text += line;
   }
   const rows = [[btn("🛠 پنل مدیریت", "admin"), btn("⬅️ منوی اصلی", "home")]];
   if (msgId) return edit(env, chatId, msgId, text, kb(rows));
@@ -731,16 +738,88 @@ async function creditTopup(env, topup, note) {
     await kvPut(env, `topup:${topup.id}`, fresh);
     const user = await getUser(env, fresh.userId);
     const credit = topupCredit(fresh);
-    user.balance = Math.round((Number(user.balance) + credit) * 100) / 100;
-    await saveUser(env, user);
     const cfg = await getConfig(env);
+    const bonus = topupBonus(cfg, credit);
+    if (bonus.amount > 0) {
+      fresh.bonusUsd = bonus.amount;
+      await kvPut(env, `topup:${topup.id}`, fresh);
+    }
+    user.balance = Math.round((Number(user.balance) + credit + bonus.amount) * 100) / 100;
+    await saveUser(env, user);
     const tmn = await usdtTomanRate(env);
     await send(env, fresh.userId,
-      `✅ <b>موجودی شما افزایش یافت</b>\n\nمبلغ ${usdText(tmn, credit)} به حساب شما اضافه شد.\nموجودی فعلی: ${usdText(tmn, user.balance)}`,
+      `✅ <b>موجودی شما افزایش یافت</b>\n\nمبلغ ${usdText(tmn, credit)} به حساب شما اضافه شد.${bonus.amount > 0 ? `\n🎁 <b>بونوس شارژ ${faNum(bonus.percent)}٪:</b> ${usdText(tmn, bonus.amount)} هم به‌عنوان هدیه اضافه شد.` : ""}\nموجودی فعلی: ${usdText(tmn, user.balance)}`,
       mainMenuKb(env, cfg, fresh.userId));
     return true;
   });
   return !!res;
+}
+
+// Top-up bonus: top-ups at or above a threshold earn a percentage bonus,
+// credited in the same atomic step as the top-up itself (creditTopup is the
+// single crediting choke point for card approvals and crypto alike).
+// Panel settings TOPUP_BONUS_USD (default $50) and TOPUP_BONUS_PERCENT
+// (default 5); either being 0 disables the bonus.
+const topupBonus = (cfg, credit) => {
+  // getConfig yields "" for unset keys, and Number("") === 0 — treat empty
+  // as unset so the defaults apply (same trap referralPercent avoids).
+  const rawT = cfg?.TOPUP_BONUS_USD, rawP = cfg?.TOPUP_BONUS_PERCENT;
+  const th = rawT === undefined || rawT === null || rawT === "" ? 50 : Number(rawT);
+  const pc = rawP === undefined || rawP === null || rawP === "" ? 5 : Number(rawP);
+  const threshold = Number.isFinite(th) && th >= 0 ? th : 50;
+  const percent = Number.isFinite(pc) && pc >= 0 ? Math.min(100, pc) : 5;
+  if (!(threshold > 0) || !(percent > 0) || !(credit >= threshold)) return { amount: 0, percent };
+  return { amount: Math.floor(credit * percent) / 100, percent };
+};
+
+// ---------- discount coupons ----------
+// coupon:<CODE> = { code, type: "percent"|"fixed", value, maxUses (0 = ∞),
+// usedCount, minPurchase, expiresAt (0 = never), active, createdAt }.
+// One use per user (couponuse:<CODE>:<userId>). A coupon is validated
+// before the provider call and CONSUMED only after a successful charge,
+// so a failed buy never burns it. The discount applies to the sell price;
+// referral commission then applies to the discounted price actually paid.
+async function getCoupon(env, code) {
+  return kvGet(env, `coupon:${String(code || "").trim().toUpperCase()}`);
+}
+async function checkCoupon(env, rawCode, userId, price) {
+  const code = String(rawCode || "").trim().toUpperCase();
+  if (!code) return { ok: false, error: "کد تخفیف خالی است." };
+  const c = await getCoupon(env, code);
+  if (!c || c.active === false) return { ok: false, error: "کد تخفیف معتبر نیست." };
+  if (c.expiresAt && now() > c.expiresAt) return { ok: false, error: "مهلت استفاده از این کد تخفیف تمام شده است." };
+  if (c.maxUses > 0 && (c.usedCount || 0) >= c.maxUses) return { ok: false, error: "ظرفیت استفاده از این کد تخفیف تمام شده است." };
+  if (await kvGet(env, `couponuse:${code}:${userId}`)) return { ok: false, error: "این کد تخفیف را قبلاً استفاده کرده‌اید." };
+  if (c.minPurchase > 0 && price < c.minPurchase) return { ok: false, error: `این کد برای خریدهای حداقل ${faNum(c.minPurchase)} دلاری است.` };
+  const discount = c.type === "percent"
+    ? Math.floor(price * Math.min(100, Number(c.value) || 0)) / 100
+    : Math.min(Number(c.value) || 0, price);
+  const d = Math.round(discount * 100) / 100;
+  if (!(d > 0)) return { ok: false, error: "این کد برای این خرید تخفیفی ندارد." };
+  return { ok: true, coupon: c, discount: d };
+}
+async function consumeCoupon(env, code, userId) {
+  await withKvLock(env, `coupon:${code}`, async () => {
+    const c = await getCoupon(env, code);
+    if (c) { c.usedCount = (c.usedCount || 0) + 1; await kvPut(env, `coupon:${code}`, c); }
+    await kvPut(env, `couponuse:${code}:${userId}`, { at: now() }, 365 * 24 * 3600);
+  });
+}
+const couponDesc = (c) => c.type === "percent" ? `${faNum(c.value)}٪ تخفیف` : `${faNum(c.value)} دلار تخفیف`;
+async function showCoupons(env, chatId, msgId) {
+  const all = (await kvList(env, "coupon:")).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  let text = "🎟 <b>کدهای تخفیف</b>\n";
+  if (!all.length) text += "\nهنوز کد تخفیفی ساخته نشده است. با دکمه زیر اولین کد را بسازید.";
+  const rows = [];
+  for (const c of all.slice(0, 10)) {
+    const exp = c.expiresAt ? new Date(c.expiresAt).toLocaleDateString("fa-IR", { timeZone: "Asia/Tehran" }) : "بدون انقضا";
+    text += `\n\n<code>${esc(c.code)}</code> — ${esc(couponDesc(c))}\nاستفاده: ${faDigits(c.usedCount || 0)}${c.maxUses > 0 ? ` از ${faDigits(c.maxUses)}` : " (نامحدود)"} · انقضا: ${esc(exp)} · ${c.active === false ? "⛔️ غیرفعال" : "✅ فعال"}`;
+    rows.push([btn(`${c.active === false ? "▶️ فعال‌سازی" : "⏸ غیرفعال"} ${c.code}`, `cpntgl:${c.code}`), btn(`🗑 ${c.code}`, `cpndel:${c.code}`)]);
+  }
+  rows.push([btn("➕ ساخت کد تخفیف", "cpn_new")]);
+  rows.push([btn("🛠 پنل مدیریت", "admin"), btn("⬅️ منوی اصلی", "home")]);
+  if (msgId) return edit(env, chatId, msgId, text, kb(rows));
+  return send(env, chatId, text, kb(rows));
 }
 
 // ---------- provider low-balance alert ----------
@@ -1000,18 +1079,34 @@ async function showConfirm(env, chatId, msgId, countryId, serviceId) {
   const tomanLine = tmn
     ? `\n💵 معادل تومانی: <b>${faInt(Math.round(price * tmn))} تومان</b> (با نرخ لحظه‌ای تتر والکس: ${faInt(tmn)} تومان)`
     : "";
-  const text = `🧾 <b>تأیید خرید</b>\n\nسرویس: <b>${esc(s.name)}</b>\nقیمت: <b>${usdText(tmn, price)}</b>${tomanLine}\nموجودی شما: ${usdText(tmn, user.balance)}\nموجودی لحظه‌ای: ${faInt(s.available)} شماره\n\nپس از خرید، شماره نمایش داده می‌شود و تا ${faDigits(20)} دقیقه منتظر کد پیامک می‌ماند. اگر کدی نیاید، مبلغی از موجودی کسر نخواهد شد.`;
-  return edit(env, chatId, msgId, text, kb([
+  let cpnLines = "";
+  const cpnBtnRow = user.coupon
+    ? [btn("❌ حذف کد تخفیف", `cpnrm:${countryId}:${serviceId}`)]
+    : [btn("🎟 کد تخفیف دارم", `cpnadd:${countryId}:${serviceId}`)];
+  if (user.coupon) {
+    const chk = await checkCoupon(env, user.coupon, chatId, price);
+    if (chk.ok) {
+      const final = Math.round((price - chk.discount) * 100) / 100;
+      cpnLines = `\n🎟 کد تخفیف «<code>${esc(user.coupon)}</code>»: <b>−${usdText(tmn, chk.discount)}</b>\n💰 <b>مبلغ نهایی: ${usdText(tmn, final)}</b>`;
+    } else {
+      cpnLines = `\n🎟 کد «<code>${esc(user.coupon)}</code>» برای این خرید معتبر نیست؛ بدون تخفیف ادامه می‌دهید یا کد را حذف کنید.`;
+    }
+  }
+  const text = `🧾 <b>تأیید خرید</b>\n\nسرویس: <b>${esc(s.name)}</b>\nقیمت: <b>${usdText(tmn, price)}</b>${tomanLine}${cpnLines}\nموجودی شما: ${usdText(tmn, user.balance)}\nموجودی لحظه‌ای: ${faInt(s.available)} شماره\n\nپس از خرید، شماره نمایش داده می‌شود و تا ${faDigits(20)} دقیقه منتظر کد پیامک می‌ماند. اگر کدی نیاید، مبلغی از موجودی کسر نخواهد شد.`;
+  const rows = kb([
     [btn("✅ تأیید و خرید", `buy:${countryId}:${serviceId}`)],
+    cpnBtnRow,
     [btn("⬅️ بازگشت", `services:${countryId}:0`)],
-  ]));
+  ]);
+  if (msgId) return edit(env, chatId, msgId, text, rows);
+  return send(env, chatId, text, rows);
 }
 
 // Shared purchase core (bot AND web app): validate, reserve the number with
 // the provider, charge the sell price and record the order. Throws errors
 // with .kind: noService | noFx | insufficient | provider (provider errors
 // keep their .code from the provider).
-async function buyActivation(env, userId, countryId, serviceId, onProgress) {
+async function buyActivation(env, userId, countryId, serviceId, onProgress, couponCode = null) {
   const res = await withKvLock(env, `buy:${userId}`, async () => {
     // Debounce: an identical purchase completed seconds ago is a double-tap
     // or a client retry — return that activation instead of buying twice and
@@ -1022,21 +1117,30 @@ async function buyActivation(env, userId, countryId, serviceId, onProgress) {
       const act = rec ? await smsfull(env, `/activations/${last.actId}`).catch(() => null) : null;
       if (rec && act) return { act, price: rec.price, deduped: true };
     }
-    const r = await buyActivationInner(env, userId, countryId, serviceId, onProgress);
+    const r = await buyActivationInner(env, userId, countryId, serviceId, onProgress, couponCode);
     await kvPut(env, `lastbuy:${userId}`, { countryId: Number(countryId), serviceId: Number(serviceId), actId: r.act.id, at: now() }, 120);
     return r;
   }, 60);
   if (res === undefined) throw Object.assign(new Error("درخواست قبلی شما در حال پردازش است؛ چند ثانیه دیگر دوباره تلاش کنید"), { kind: "busy" });
   return res;
 }
-async function buyActivationInner(env, userId, countryId, serviceId, onProgress) {
+async function buyActivationInner(env, userId, countryId, serviceId, onProgress, couponCode = null) {
   const services = await smsfull(env, `/services?countryId=${countryId}`);
   const s = services.find((x) => x.id === Number(serviceId));
   if (!s) throw Object.assign(new Error("سرویس موجود نیست"), { kind: "noService" });
   const cfg = await getConfig(env);
   const fx = await brlToUsdRate(env);
   if (!fx) throw Object.assign(new Error("نرخ تبدیل ارز در دسترس نیست؛ چند دقیقه دیگر تلاش کنید"), { kind: "noFx" });
-  const price = sellPrice(cfg, s.price * fx);
+  const listPrice = sellPrice(cfg, s.price * fx);
+  // Coupon: validated BEFORE the provider call (an invalid code fails the
+  // buy cleanly, nothing is reserved) and consumed only after the charge.
+  let coupon = null, discount = 0;
+  if (couponCode) {
+    const chk = await checkCoupon(env, couponCode, userId, listPrice);
+    if (!chk.ok) throw Object.assign(new Error(chk.error), { kind: "coupon" });
+    coupon = chk.coupon; discount = chk.discount;
+  }
+  const price = Math.round((listPrice - discount) * 100) / 100;
   const user = await getUser(env, userId);
   if (Number(user.balance) < price) {
     throw Object.assign(new Error("موجودی کافی نیست"), { kind: "insufficient", price, balance: Number(user.balance) });
@@ -1057,18 +1161,30 @@ async function buyActivationInner(env, userId, countryId, serviceId, onProgress)
     id: act.id, userId: String(userId), price, providerPriceBrl: act.price,
     phoneNumber: act.phoneNumber, serviceName: act.service?.name || s.name,
     status: act.status, createdAt: now(), charged: true,
+    ...(coupon ? { listPrice, coupon: coupon.code, discount } : {}),
   });
+  if (coupon) await consumeCoupon(env, coupon.code, userId);
   return { act, price };
 }
 
 async function doBuy(env, chatId, msgId, countryId, serviceId, cbId) {
   let r;
+  const buyer0 = await getUser(env, chatId);
+  const cpn = buyer0.coupon || null;
   try {
-    r = await buyActivation(env, chatId, countryId, serviceId, () => answerCb(env, cbId, "در حال خرید شماره…"));
+    r = await buyActivation(env, chatId, countryId, serviceId, () => answerCb(env, cbId, "در حال خرید شماره…"), cpn);
   } catch (e) {
     if (e.kind === "busy") {
       await answerCb(env, cbId, e.message, true);
       return;
+    }
+    if (e.kind === "coupon") {
+      // The stored code turned out unusable (expired / exhausted / already
+      // used): drop it so the confirm screen stops offering it, and say why.
+      const u = await getUser(env, chatId);
+      u.coupon = null; await saveUser(env, u);
+      await answerCb(env, cbId, e.message, true);
+      return showConfirm(env, chatId, msgId, countryId, serviceId);
     }
     if (e.kind === "insufficient") {
       const tmn = await usdtTomanRate(env);
@@ -1088,6 +1204,10 @@ async function doBuy(env, chatId, msgId, countryId, serviceId, cbId) {
     }
     await answerCb(env, cbId, e.message, true);
     return;
+  }
+  if (cpn) {
+    const u = await getUser(env, chatId);
+    if (u.coupon) { u.coupon = null; await saveUser(env, u); }
   }
   return showActivation(env, chatId, msgId, r.act);
 }
@@ -1483,6 +1603,7 @@ async function showAdmin(env, chatId, msgId) {
     [btn("🧾 رسیدهای در انتظار تأیید", "adm_pending")],
     [btn("🪙 پرداخت‌های کریپتوی در انتظار", "adm_crypto_pending")],
     [btn("⚙️ تنظیمات فروشگاه", "cfg")],
+    [btn("🎟 کدهای تخفیف", "adm_coupons")],
     [btn("📜 سوابق تغییرات", "adm_audit")],
     [btn("⬅️ منوی اصلی", "home")],
   ];
@@ -1517,6 +1638,8 @@ const SETTING_FIELDS = {
   MIN_TOPUP_USD: { label: "حداقل مبلغ شارژ (دلار)", hint: "فقط عدد بفرستید، مثال: 5 — شارژ کمتر از این مبلغ (دلاری یا معادل تومانی) ساخته نمی‌شود. برای برگشت به پیش‌فرض ۱ دلار، مقدار را حذف کنید.", numeric: true },
   LOW_BALANCE_BRL: { label: "هشدار موجودی تأمین‌کننده (رئال)", hint: "فقط عدد بفرستید، مثال: 100 — وقتی موجودی قابل‌خرید SmsFull از این مبلغ (رئال برزیل) کمتر شود، به ادمین هشدار داده می‌شود. پیش‌فرض ۱۰۰ است؛ برای خاموش کردن 0 بفرستید.", numeric: true },
   REFERRAL_PERCENT: { label: "درصد پورسانت معرف (%)", hint: "فقط عدد بفرستید، مثال: 10 — از هر خرید موفق زیرمجموعه، این درصد از مبلغ خرید به معرف می‌رسد (در لحظه تحویل کد). پیش‌فرض ۱۰ است؛ برای خاموش کردن سیستم معرف 0 بفرستید.", numeric: true },
+  TOPUP_BONUS_USD: { label: "حداقل شارژ برای بونوس (دلار)", hint: "فقط عدد بفرستید، مثال: 50 — شارژهای برابر یا بالای این مبلغ، بونوس درصدی می‌گیرند. پیش‌فرض ۵۰ دلار است.", numeric: true },
+  TOPUP_BONUS_PERCENT: { label: "درصد بونوس شارژ (%)", hint: "فقط عدد بفرستید، مثال: 5 — شارژ ۵۰ دلاری، ۲٫۵ دلار هدیه می‌گیرد. پیش‌فرض ۵ است؛ برای خاموش کردن بونوس 0 بفرستید.", numeric: true },
   SUPPORT_USERNAME: { label: "یوزرنیم پشتیبانی", hint: "بدون @ بفرستید، مثال: BlueMajaziSupport" },
   TMN_RATE_MANUAL: { label: "نرخ دستی تتر (تومان) — پشتیبان", hint: "فقط عدد بفرستید، مثال: 271000 — فقط وقتی استفاده می‌شود که نرخ زنده از والکس و اکسیر نرسد.", numeric: true },
   GROUP_CHAT_ID: { label: "آیدی گروه اعلام خرید موفق", hint: "آیدی عددی گروه را با علامت منفی بفرستید، مثال: -1001234567890 — یا ساده‌تر: ربات را در گروه اضافه کنید و همان‌جا دستور /setgroup را بفرستید تا خودکار ثبت شود." },
@@ -1542,7 +1665,7 @@ function settingHint(key) {
 const CONFIG_GROUPS = {
   card: { title: "💳 تنظیمات پرداخت کارتی", keys: ["CARD_NUMBER", "CARD_HOLDER", "CARD_BANK"] },
   wallet: { title: "🪙 کیف‌پول‌های کریپتو", keys: Object.values(CRYPTOS).map((c) => c.envKey) },
-  general: { title: "🧰 تنظیمات عمومی", keys: ["PRICE_MARKUP_PERCENT", "MIN_TOPUP_USD", "TMN_RATE_MANUAL", "GROUP_CHAT_ID", "SUPPORT_USERNAME", "WORKER_BASE_URL", "ETHERSCAN_API_KEY", "LOW_BALANCE_BRL", "REFERRAL_PERCENT"] },
+  general: { title: "🧰 تنظیمات عمومی", keys: ["PRICE_MARKUP_PERCENT", "MIN_TOPUP_USD", "TMN_RATE_MANUAL", "GROUP_CHAT_ID", "SUPPORT_USERNAME", "WORKER_BASE_URL", "ETHERSCAN_API_KEY", "LOW_BALANCE_BRL", "REFERRAL_PERCENT", "TOPUP_BONUS_USD", "TOPUP_BONUS_PERCENT"] },
   access: { title: "🔒 عضویت و احراز هویت", keys: ["FORCE_JOIN_ENABLED", "FORCE_JOIN_CHANNEL", "PHONE_VERIFY_ENABLED"] },
 };
 const groupOfKey = (key) =>
@@ -1781,6 +1904,14 @@ async function validateSetting(key, raw) {
     const v = clean.replace(/\s/g, "");
     return /^-?\d{5,20}$/.test(v) ? { value: v } : { error: "آیدی عددی گروه معتبر نیست (مثال: -1001234567890). یا ربات را در گروه اضافه کنید و آنجا /setgroup بفرستید." };
   }
+  if (key === "TOPUP_BONUS_USD") {
+    return /^\d+(\.\d+)?$/.test(clean) && Number(clean) >= 0 && Number(clean) <= 5000
+      ? { value: clean } : { error: "حداقل مبلغ بونوس باید عددی بین ۰ تا ۵۰۰۰ دلار باشد." };
+  }
+  if (key === "TOPUP_BONUS_PERCENT") {
+    return /^\d+(\.\d+)?$/.test(clean) && Number(clean) >= 0 && Number(clean) <= 100
+      ? { value: clean } : { error: "درصد بونوس باید عددی بین ۰ تا ۱۰۰ باشد (۰ یعنی خاموش)." };
+  }
   if (key === "REFERRAL_PERCENT") {
     // 0 is meaningful here too (referral system off); default when unset is 10.
     return /^\d+(\.\d+)?$/.test(clean) && Number(clean) >= 0 && Number(clean) <= 50
@@ -1959,6 +2090,64 @@ async function handleMessage(env, msg, baseUrl) {
   }
   if (text === "/admin" && isAdmin(env, chatId)) return showAdmin(env, chatId);
   if ((text === "/settings" || text === "تنظیمات") && isAdmin(env, chatId)) return showConfigOverview(env, chatId);
+
+  // Admin is creating a discount coupon (multi-step button/text flow).
+  if (isAdmin(env, chatId) && user.state?.startsWith("cpn_")) {
+    const st = user.state;
+    if (text === "/cancel") {
+      user.state = null; user.cpnDraft = null; await saveUser(env, user);
+      return send(env, chatId, "لغو شد.", kb([[btn("🎟 کدهای تخفیف", "adm_coupons")]]));
+    }
+    const d = user.cpnDraft || (user.cpnDraft = {});
+    if (st === "cpn_code") {
+      const code = text.toUpperCase().replace(/\s/g, "");
+      if (!/^[A-Z0-9_-]{3,20}$/.test(code)) return send(env, chatId, "❌ کد معتبر نیست؛ فقط حروف انگلیسی، عدد، خط تیره یا آندرلاین (۳ تا ۲۰ کاراکتر). دوباره بفرستید یا /cancel بزنید.");
+      if (await getCoupon(env, code)) return send(env, chatId, "❌ این کد قبلاً ساخته شده است؛ کد دیگری بفرستید یا /cancel بزنید.");
+      d.code = code; user.state = "cpn_type"; await saveUser(env, user);
+      return send(env, chatId, `🎟 <b>ساخت کد «${esc(code)}» — قدم ۲ از ۴</b>\n\nنوع تخفیف را انتخاب کنید:`, kb([[btn("٪ درصدی", "cpntype:percent"), btn("💵 مبلغ ثابت (دلار)", "cpntype:fixed")]]));
+    }
+    if (st === "cpn_value") {
+      const v = Number(text);
+      const ok = Number.isFinite(v) && (d.type === "percent" ? (v >= 1 && v <= 100) : (v > 0 && v <= 10000));
+      if (!ok) return send(env, chatId, `❌ مقدار معتبر نیست (${d.type === "percent" ? "بین ۱ تا ۱۰۰" : "بزرگ‌تر از صفر"}). دوباره بفرستید یا /cancel بزنید.`);
+      d.value = v; user.state = "cpn_max"; await saveUser(env, user);
+      return send(env, chatId, "🎟 <b>ساخت کد — قدم ۴ از ۴</b>\n\nحداکثر تعداد استفاده را بفرستید (۰ = نامحدود):");
+    }
+    if (st === "cpn_max") {
+      const v = parseInt(text, 10);
+      if (!Number.isFinite(v) || v < 0 || v > 100000) return send(env, chatId, "❌ عدد معتبر نیست (۰ یا بزرگ‌تر). دوباره بفرستید یا /cancel بزنید.");
+      d.maxUses = v; user.state = "cpn_exp"; await saveUser(env, user);
+      return send(env, chatId, "🎟 و در پایان: این کد چند روز اعتبار دارد؟ (۰ = بدون انقضا):");
+    }
+    if (st === "cpn_exp") {
+      const v = parseInt(text, 10);
+      if (!Number.isFinite(v) || v < 0 || v > 3650) return send(env, chatId, "❌ عدد معتبر نیست (۰ یا بزرگ‌تر). دوباره بفرستید یا /cancel بزنید.");
+      const c = { code: d.code, type: d.type || "percent", value: Number(d.value) || 0, maxUses: Number(d.maxUses) || 0, usedCount: 0, minPurchase: 0, expiresAt: v > 0 ? now() + v * 86400000 : 0, active: true, createdAt: now() };
+      await kvPut(env, `coupon:${c.code}`, c);
+      await logAudit(env, { actor: chatId, action: "coupon_new", key: c.code, extra: couponDesc(c) });
+      user.state = null; user.cpnDraft = null; await saveUser(env, user);
+      return send(env, chatId, `✅ <b>کد تخفیف ساخته شد</b>\n\nکد: <code>${esc(c.code)}</code>\nتخفیف: ${esc(couponDesc(c))}\nظرفیت: ${c.maxUses > 0 ? faDigits(c.maxUses) + " بار" : "نامحدود"}\nانقضا: ${v > 0 ? faDigits(v) + " روز دیگر" : "ندارد"}`, kb([[btn("🎟 کدهای تخفیف", "adm_coupons")], [btn("⬅️ منوی اصلی", "home")]]));
+    }
+  }
+
+  // A user is entering a discount code for the purchase they are confirming.
+  if (user.state?.startsWith("await_coupon:")) {
+    const parts = user.state.split(":");
+    if (text === "/cancel") {
+      user.state = null; await saveUser(env, user);
+      return send(env, chatId, "انصراف داده شد.", backKb);
+    }
+    const code = text.toUpperCase().replace(/\s/g, "");
+    const c = await getCoupon(env, code);
+    user.state = null;
+    if (!c || c.active === false) {
+      await saveUser(env, user);
+      return send(env, chatId, "❌ این کد تخفیف معتبر نیست. از صفحه تأیید خرید دوباره تلاش کنید.", backKb);
+    }
+    user.coupon = code; await saveUser(env, user);
+    await send(env, chatId, `✅ کد «<code>${esc(code)}</code>» ثبت شد؛ مبلغ نهایی در صفحه تأیید خرید نمایش داده می‌شود.`);
+    return showConfirm(env, chatId, null, parts[1], parts[2]);
+  }
 
   // Admin is editing a shop setting: this message is the new value.
   if (isAdmin(env, chatId) && user.state?.startsWith("setcfg:")) {
@@ -2251,6 +2440,46 @@ async function handleCallback(env, cq, baseUrl) {
     }
     if (data === "admin" && isAdmin(env, chatId)) return showAdmin(env, chatId, msgId);
     if (data === "adm_audit" && isAdmin(env, chatId)) return showAuditLog(env, chatId, msgId);
+    if (data === "adm_coupons" && isAdmin(env, chatId)) return showCoupons(env, chatId, msgId);
+    if (data === "cpn_new" && isAdmin(env, chatId)) {
+      const u = await getUser(env, chatId);
+      u.state = "cpn_code"; u.cpnDraft = {}; await saveUser(env, u);
+      return edit(env, chatId, msgId, "🎟 <b>ساخت کد تخفیف — قدم ۱ از ۴</b>\n\nخودِ کد را بفرستید (حروف انگلیسی و عدد، ۳ تا ۲۰ کاراکتر؛ مثال: OFF20).\n\nبرای لغو /cancel بفرستید.", backKb);
+    }
+    if (head === "cpntype" && isAdmin(env, chatId)) {
+      const u = await getUser(env, chatId);
+      if (!u.cpnDraft?.code) return showCoupons(env, chatId, msgId);
+      u.cpnDraft.type = a === "fixed" ? "fixed" : "percent";
+      u.state = "cpn_value"; await saveUser(env, u);
+      return edit(env, chatId, msgId, `🎟 <b>ساخت کد «${esc(u.cpnDraft.code)}» — قدم ۳ از ۴</b>\n\n${u.cpnDraft.type === "percent" ? "درصد تخفیف را بفرستید (۱ تا ۱۰۰)." : "مبلغ تخفیف به دلار را بفرستید (مثال: 2 یعنی ۲ دلار)."}\n\nبرای لغو /cancel بفرستید.`, backKb);
+    }
+    if (head === "cpntgl" && isAdmin(env, chatId)) {
+      const c = await getCoupon(env, a);
+      if (c) {
+        c.active = c.active === false ? true : false;
+        await kvPut(env, `coupon:${c.code}`, c);
+        await logAudit(env, { actor: chatId, action: "coupon_tgl", key: c.code, newV: c.active ? "1" : "0" });
+        await answerCb(env, cq.id, c.active ? "فعال شد ✅" : "غیرفعال شد ⏸");
+      }
+      return showCoupons(env, chatId, msgId);
+    }
+    if (head === "cpndel" && isAdmin(env, chatId)) {
+      await kvDel(env, `coupon:${a}`);
+      await logAudit(env, { actor: chatId, action: "coupon_del", key: a });
+      await answerCb(env, cq.id, "کد حذف شد 🗑");
+      return showCoupons(env, chatId, msgId);
+    }
+    if (head === "cpnadd") {
+      const u = await getUser(env, chatId);
+      u.state = `await_coupon:${a}:${b}`; await saveUser(env, u);
+      return edit(env, chatId, msgId, "🎟 <b>کد تخفیف</b>\n\nکد تخفیف خود را بفرستید تا روی همین خرید اعمال شود.\n\nبرای انصراف /cancel بفرستید.", kb([[btn("⬅️ بازگشت", `confirm:${a}:${b}`)]]));
+    }
+    if (head === "cpnrm") {
+      const u = await getUser(env, chatId);
+      u.coupon = null; await saveUser(env, u);
+      await answerCb(env, cq.id, "کد تخفیف حذف شد");
+      return showConfirm(env, chatId, msgId, a, b);
+    }
     if (data === "adm_pending" && isAdmin(env, chatId)) return showPending(env, chatId, msgId, "card");
     if (data === "adm_crypto_pending" && isAdmin(env, chatId)) return showPending(env, chatId, msgId, "crypto");
     if ((head === "apr" || head === "rej") && isAdmin(env, chatId)) {
@@ -2733,11 +2962,11 @@ function pad(n){return (n<10?'0':'')+n}
 function tick(){var ms=EXP-Date.now();var s=Math.max(0,Math.floor(ms/1000));var txt=pad(Math.floor(s/60))+':'+pad(s%60);document.querySelectorAll('.cd').forEach(function(e){e.textContent=txt});var low=ms<5*60*1000;document.querySelectorAll('.timer').forEach(function(e){e.classList.toggle('low',low)});var tb=document.querySelector('.timebar');if(tb)tb.classList.toggle('low',low);var bar=document.getElementById('timebar');if(bar)bar.style.width=Math.max(0,ms/SPAN*100)+'%';var ring=document.getElementById('ringfg');if(ring){var C=163.36;ring.style.strokeDashoffset=C*(1-Math.max(0,ms)/SPAN);ring.style.stroke=low?'#ff9f43':'#fff'}var rc=document.querySelector('.rc');if(rc)rc.style.color=low?'#ff9f43':'';if(ms<=0&&!window._exp){window._exp=1;setTimeout(function(){location.reload()},1500)}}
 setInterval(tick,250);tick();
 async function selectMethod(m){toast('در حال ثبت روش پرداخت…');try{var r=await fetch('/pay/select',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({t:TID,m:m})});var d=await r.json().catch(function(){return{}});if(d.ok){location.reload()}else{toast(d.error||'خطا رخ داد')}}catch(e){toast('خطا در ارتباط')}};
-async function checkNow(btn){btn.disabled=true;btn.textContent='در حال بررسی…';try{var r=await fetch('/pay/status?t='+TID+'&_='+Date.now(),{cache:'no-store'});var d=await r.json();if(d.status!=='pending'){location.reload();return}toast('هنوز پرداختی پیدا نشد؛ اگر تازه واریز کرده‌اید چند دقیقه صبر کنید')}catch(e){toast('خطا در بررسی')}btn.disabled=false;btn.textContent='🔄 بررسی پرداخت'}
+async function checkNow(btn){btn.disabled=true;btn.textContent='در حال بررسی…';try{var r=await fetch('/pay/status?t='+TID+'&_='+Date.now(),{cache:'no-store'});var d=await r.json();if(d.status!=='pending'){location.reload();return}toast('هنوز پرداختی پیدا نشد؛ اگر تازه واریز کرده‌اید چند دقیقه صبر کنید')}catch(e){toast('خطا در بررسی')}btn.disabled=false;btn.innerHTML='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg> بررسی پرداخت'}
 function onReceiptFile(inp){var f=inp.files&&inp.files[0];var prev=document.getElementById('rcPrev');var btn=document.getElementById('rcBtn');var nm=document.getElementById('rcName');if(!f){if(btn)btn.disabled=true;return}if(nm)nm.textContent=f.name;if(prev){prev.src=URL.createObjectURL(f);prev.style.display='block'}if(btn)btn.disabled=false}
 async function submitReceipt(btn){var inp=document.getElementById('rcFile');if(!inp||!inp.files||!inp.files[0]){toast('اول عکس رسید را انتخاب کنید');return}btn.disabled=true;btn.textContent='در حال ارسال…';try{var fd=new FormData();fd.append('receipt',inp.files[0]);var r=await fetch('/pay/receipt?t='+TID,{method:'POST',body:fd});var d=await r.json().catch(function(){return{}});if(d.ok){toast('رسید ثبت شد');setTimeout(function(){location.reload()},700)}else{toast(d.error||'خطا در ثبت رسید');btn.disabled=false;btn.textContent='📤 ثبت رسید'}}catch(e){toast('خطا در ارتباط');btn.disabled=false;btn.textContent='📤 ثبت رسید'}}
 async function pollStatus(){try{var r=await fetch('/pay/status?t='+TID+'&_='+Date.now(),{cache:'no-store'});var d=await r.json();if(d.toman)document.querySelectorAll('.tmnFill').forEach(function(e){e.textContent=d.toman});if(d.status!=='pending'||(!!d.receipt)!==HAS_RECEIPT)location.reload()}catch(e){}}
-async function checkStatusBtn(btn){btn.disabled=true;btn.textContent='در حال بررسی…';await pollStatus();setTimeout(function(){toast('هنوز تأیید نشده؛ به محض تأیید ادمین، صفحه خودکار به‌روز می‌شود');btn.disabled=false;btn.textContent='🔄 بررسی وضعیت'},700)}
+async function checkStatusBtn(btn){btn.disabled=true;btn.textContent='در حال بررسی…';await pollStatus();setTimeout(function(){toast('هنوز تأیید نشده؛ به محض تأیید ادمین، صفحه خودکار به‌روز می‌شود');btn.disabled=false;btn.innerHTML='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg> بررسی وضعیت'},700)}
 ${poll ? "setInterval(pollStatus,5000);document.addEventListener('visibilitychange',function(){if(!document.hidden)pollStatus()});window.addEventListener('focus',pollStatus);pollStatus();" : ""}`;
 }
 
@@ -2949,13 +3178,21 @@ async function handleApi(env, request, url) {
       const services = await smsfull(env, `/services?countryId=${countryId}`);
       return jsonResp({ rate, services: services.filter((x) => x.available > 0).map((x) => ({ id: x.id, name: x.name, available: x.available, priceUsd: fx ? sellPrice(cfg, x.price * fx) : null })) });
     }
+    if (path === "/api/coupon/check" && request.method === "POST") {
+      const body = await request.json().catch(() => ({}));
+      const price = Number(body.price);
+      if (!body.code || !(price > 0)) return jsonResp({ ok: false, error: "کد یا مبلغ معتبر نیست." });
+      const chk = await checkCoupon(env, body.code, userId, price);
+      if (!chk.ok) return jsonResp({ ok: false, error: chk.error }, 400);
+      return jsonResp({ ok: true, code: chk.coupon.code, discount: chk.discount, final: Math.round((price - chk.discount) * 100) / 100 });
+    }
     if (path === "/api/buy" && request.method === "POST") {
       const cfgJ = await getConfig(env);
       if (await forceJoinGate(env, cfgJ, userId)) return jsonResp({ error: "🔒 برای خرید، ابتدا در کانال ما عضو شوید و سپس در ربات دکمه «بررسی عضویت» را بزنید.", joinUrl: joinChannelLink(cfgJ) }, 403);
       if (!(await throttle(env, `buy:${userId}`, 10, 60))) return jsonResp({ error: "تعداد درخواست خرید بیش از حد است؛ کمی صبر کنید" }, 429);
       const body = await request.json().catch(() => ({}));
       try {
-        const r = await buyActivation(env, userId, body.countryId, body.serviceId);
+        const r = await buyActivation(env, userId, body.countryId, body.serviceId, undefined, body.coupon || null);
         const rec = await kvGet(env, `act:${r.act.id}`);
         return jsonResp({ activation: apiAct(r.act, rec) });
       } catch (e) {
@@ -3121,6 +3358,27 @@ h2.title .icn{vertical-align:-5px;margin-left:2px}
 .installcard .ictx{flex:1}
 .installcard .ictx b{display:block;font-size:14.5px;margin-bottom:3px}
 .installcard .ictx span{color:#aeaeb2;font-size:12.5px;line-height:1.8;display:block}
+.prow{display:flex;align-items:center;gap:12px}
+.pava{width:52px;height:52px;border-radius:50%;background:#fff;color:#000;font-weight:800;font-size:20px;display:flex;align-items:center;justify-content:center;overflow:hidden;flex-shrink:0}
+.pava img{width:100%;height:100%;object-fit:cover}
+.pinfo{flex:1;min-width:0}
+.pname{font-size:16.5px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pid{color:#aeaeb2;font-size:12.5px;margin-top:3px}
+.refcard2{border:1px solid rgba(255,255,255,.14);border-radius:18px;padding:16px;margin-bottom:16px;background:linear-gradient(180deg,rgba(255,255,255,.055),rgba(255,255,255,.02))}
+.rf-head{display:flex;gap:12px;align-items:flex-start}
+.rf-ico{width:44px;height:44px;border-radius:13px;background:#fff;color:#000;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.rf-tt{flex:1;min-width:0}
+.rf-title{font-size:15.5px;font-weight:800}
+.rf-sub{color:#aeaeb2;font-size:12.5px;line-height:1.9;margin-top:2px}
+.rf-sub b{color:#fff}
+.rf-linkrow{display:flex;gap:8px;margin-top:14px}
+.rf-link{flex:1;min-width:0;background:#000;border:1px solid #26262b;border-radius:12px;padding:10px 12px;font-size:12px;color:#d6d6da;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:ltr;text-align:left;display:flex;align-items:center}
+.rf-copy{background:#fff;color:#000;border:none;border-radius:12px;padding:0 14px;font:inherit;font-size:13px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:6px;white-space:nowrap}
+.rf-stats{display:flex;align-items:stretch;margin-top:14px;border-top:1px solid rgba(255,255,255,.09);padding-top:13px}
+.rf-stat{flex:1;text-align:center}
+.rf-sv{display:block;font-size:16.5px;font-weight:800}
+.rf-sl{display:flex;align-items:center;justify-content:center;gap:5px;color:#aeaeb2;font-size:12px;margin-top:3px}
+.rf-div{width:1px;background:rgba(255,255,255,.09)}
 .installcard .wbtn{flex:none;padding:10px 22px}
 .installcard .ix{position:absolute;top:6px;inset-inline-start:8px;background:none;border:none;color:#8e8e93;font-size:12px;cursor:pointer;padding:4px}
 .intro{position:fixed;inset:0;z-index:70;background:#000;display:flex;flex-direction:column;padding:24px 24px calc(26px + env(safe-area-inset-bottom));max-width:560px;margin:0 auto;overflow:hidden}
@@ -3150,6 +3408,10 @@ h2.title .icn{vertical-align:-5px;margin-left:2px}
 .sheet .srow span{color:#aeaeb2}
 .sheet .srow b{font-weight:700;text-align:left}
 .sheet .snote{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:11px 13px;font-size:12.8px;line-height:1.95;color:#c7c7cc;margin-top:12px}
+.cpnrow{display:flex;gap:7px;align-items:center}
+.cpnrow input{background:#000;border:1px solid #2c2c31;border-radius:10px;color:#fff;font:inherit;font-size:16px;padding:7px 10px;width:118px;direction:ltr;text-align:left}
+.cpnrow input:focus{outline:none;border-color:#48484e}
+.mini{background:#fff;color:#000;border:none;border-radius:10px;padding:8px 13px;font:inherit;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap}
 .sheet .sbtns{display:flex;gap:10px;margin-top:16px}
 .sheet .wbtn.dangerb{background:#ff453a;color:#fff}
 .sheet .sbtns .wbtn{flex:1}
@@ -3214,23 +3476,10 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
     </div>
 
     <section class="view on" id="v-shop">
-      <div class="balcard">
-        <div class="lbl" id="greetName">موجودی شما</div>
-        <div class="amt" id="balAmt">…</div>
-        <div class="tmn" id="balTmn"></div>
-        <div style="margin-top:12px;display:flex;gap:8px">
-          <button class="wbtn" onclick="showView('topup')"><svg class="icn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg> افزایش موجودی</button>
-          <button class="gbtn" onclick="logout()">خروج</button>
-        </div>
-      </div>
       <div class="installcard" id="installCard" style="display:none">
         <div class="ictx"><b>نصب اپلیکیشن BlueMajazi</b><span>بدون نصب از فروشگاه؛ مستقیم روی صفحه اصلی گوشی‌تان، مثل یک اپ واقعی.</span></div>
         <button class="wbtn" onclick="doInstall()">نصب</button>
         <button class="ix" onclick="dismissInstall()" aria-label="بستن">✕</button>
-      </div>
-      <div class="installcard" id="refCard" style="display:none">
-        <div class="ictx"><b>🎁 دعوت دوستان</b><span id="refTxt"></span></div>
-        <button class="wbtn" onclick="copyRef()">کپی لینک</button>
       </div>
       <input class="search" id="cSearch" placeholder="جستجوی کشور…">
       <div class="grid" id="cGrid"><div class="loading">در حال بارگذاری کشورها…</div></div>
@@ -3271,11 +3520,51 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
       <div id="tpResult"></div>
     </section>
 
+    <section class="view" id="v-account">
+      <h2 class="title"><svg class="icn" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg> حساب من</h2>
+      <div class="balcard">
+        <div class="prow">
+          <div class="pava" id="accAva">؟</div>
+          <div class="pinfo">
+            <div class="pname" id="accName">کاربر</div>
+            <div class="pid">آیدی عددی: <span id="accId" dir="ltr">—</span></div>
+            <div class="pid" id="accUser" dir="ltr" style="text-align:right"></div>
+          </div>
+        </div>
+        <div class="lbl" style="margin-top:18px">موجودی شما</div>
+        <div class="amt" id="balAmt">…</div>
+        <div class="tmn" id="balTmn"></div>
+        <div style="margin-top:12px;display:flex;gap:8px">
+          <button class="wbtn" onclick="showView('topup')"><svg class="icn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg> افزایش موجودی</button>
+          <button class="gbtn" onclick="logout()">خروج</button>
+        </div>
+      </div>
+      <div class="refcard2" id="refCard" style="display:none">
+        <div class="rf-head">
+          <div class="rf-ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12v10H4V12"/><path d="M2 7h20v5H2z"/><path d="M12 22V7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg></div>
+          <div class="rf-tt">
+            <div class="rf-title">دعوت دوستان</div>
+            <div class="rf-sub">از هر خرید موفق زیرمجموعه‌ها <b id="refPct">—</b> پورسانت می‌گیرید؛ پورسانت هنگام تحویل کد خرید، خودکار به موجودی‌تان می‌نشیند.</div>
+          </div>
+        </div>
+        <div class="rf-linkrow">
+          <div class="rf-link" id="refLinkTxt" dir="ltr"></div>
+          <button class="rf-copy" onclick="copyRef()"><svg class="icn" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> کپی لینک</button>
+        </div>
+        <div class="rf-stats">
+          <div class="rf-stat"><span class="rf-sv" id="refCount">۰</span><span class="rf-sl"><svg class="icn" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg> زیرمجموعه</span></div>
+          <div class="rf-div"></div>
+          <div class="rf-stat"><span class="rf-sv" id="refEarned">$۰</span><span class="rf-sl"><svg class="icn" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/></svg> پورسانت دریافتی</span></div>
+        </div>
+      </div>
+    </section>
+
     <nav class="nav">
       <button data-nav="shop" class="on" onclick="showView('shop')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>فروشگاه</button>
       <button data-nav="orders" onclick="showView('orders')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3.5 6h.01"/><path d="M3.5 12h.01"/><path d="M3.5 18h.01"/></svg>سفارش‌ها</button>
       <button data-nav="pays" onclick="showView('pays')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/><path d="M6 12h.01M18 12h.01"/></svg>پرداخت‌ها</button>
       <button data-nav="topup" onclick="showView('topup')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>شارژ</button>
+      <button data-nav="account" onclick="showView('account')"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>حساب</button>
       <a href="/terms"><svg class="icn" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>قوانین</a>
     </nav>
   </div>
@@ -3376,15 +3665,22 @@ function renderMe(){
   $('hdrBal').innerHTML = ico('wallet', 14) + ' ' + faUsd(S.me.balance);
   $('balAmt').textContent = faUsd(S.me.balance);
   $('balTmn').textContent = S.me.rate ? '≈ ' + faTmn(S.me.balance * S.me.rate) : '';
-  $('greetName').textContent = S.me.name ? ('سلام، ' + S.me.name + ' — موجودی شما') : 'موجودی شما';
   var ava = $('hdrAva');
   if (S.me.photoUrl) ava.innerHTML = '<img src="' + escH(S.me.photoUrl) + '" alt="">';
   else ava.textContent = (S.me.name || '؟').charAt(0);
+  var an = $('accName'); if (an) an.textContent = S.me.name || 'کاربر';
+  var ai = $('accId'); if (ai) ai.textContent = S.me.id || '—';
+  var au = $('accUser'); if (au) au.textContent = S.me.username ? ('@' + S.me.username) : '';
+  var aa = $('accAva');
+  if (aa) { if (S.me.photoUrl) aa.innerHTML = '<img src="' + escH(S.me.photoUrl) + '" alt="">'; else aa.textContent = (S.me.name || '؟').charAt(0); }
   var rc = $('refCard');
   if (rc) {
     if (S.me.refLink && S.me.refPercent > 0) {
       rc.style.display = '';
-      $('refTxt').innerHTML = 'از هر خرید موفق زیرمجموعه‌ها <b>' + faN(S.me.refPercent) + '٪</b> پورسانت می‌گیرید.<br><span dir="ltr">' + escH(S.me.refLink) + '</span><br>👥 ' + faN(S.me.refCount) + ' زیرمجموعه · 💰 ' + faUsd(S.me.refEarned) + ' پورسانت تا امروز';
+      $('refPct').textContent = faN(S.me.refPercent) + '٪';
+      $('refLinkTxt').textContent = S.me.refLink;
+      $('refCount').textContent = faN(S.me.refCount);
+      $('refEarned').textContent = faUsd(S.me.refEarned);
     } else rc.style.display = 'none';
   }
 }
@@ -3393,12 +3689,13 @@ function refreshMe(){ return api('/api/me').then(function(me){ S.me = me; render
 function logout(){ try { sessionStorage.removeItem('bg_tok'); } catch (e) {} api('/api/auth/logout', { method:'POST' }).then(function(){ location.reload(); }); }
 function showView(name){
   closeSheet();
-  ['shop','services','act','orders','pays','topup'].forEach(function(v){ $('v-'+v).classList.toggle('on', v===name); });
+  ['shop','services','act','orders','pays','topup','account'].forEach(function(v){ $('v-'+v).classList.toggle('on', v===name); });
   document.querySelectorAll('[data-nav]').forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-nav')===name); });
   if (name !== 'act') stopActTimers();
   if (name === 'orders') loadOrders();
   if (name === 'pays') loadPayHistory();
   if (name === 'topup') { updTpHint(); refreshMe(); loadOpenPays(); }
+  if (name === 'account') refreshMe();
   window.scrollTo(0,0);
 }
 function loadCountries(){
@@ -3462,24 +3759,41 @@ function pickService(id){
   S.services.forEach(function(s){ if (s.id === id) S.sel = s; });
   renderServices($('sSearch').value);
   if (!S.sel || !S.country) return;
+  S.couponData = null; S.couponInput = '';
+  openSheet(serviceSheetHtml());
+}
+function serviceSheetHtml(){
   var s = S.sel, bal = S.me ? Number(S.me.balance) : 0;
   var price = Number(s.priceUsd || 0);
+  var disc = S.couponData ? Number(S.couponData.discount) : 0;
+  var fin = Math.round((price - disc) * 100) / 100;
   var tmnRow = (S.rate && s.priceUsd != null) ? '<div class="srow"><span>معادل تومانی</span><b>' + faTmn(s.priceUsd * S.rate) + '</b></div>' : '';
+  var cpnRows = '<div class="srow"><span>کد تخفیف</span><span class="cpnrow"><input id="cpnIn" placeholder="کد تخفیف" value="' + escH(S.couponInput || '') + '"><button class="mini" onclick="applyCoupon()">اعمال</button></span></div>'
+    + (S.couponData ? '<div class="srow"><span>تخفیف (' + escH(S.couponData.code) + ')</span><b>−' + faUsd(disc) + '</b></div><div class="srow"><span>مبلغ نهایی</span><b>' + faUsd(fin) + '</b></div>' : '');
   var rows = '<div class="srow"><span>سرویس</span><b>' + escH(s.name) + '</b></div>'
     + '<div class="srow"><span>کشور</span><b>' + escH(S.country.emoji + ' ' + S.country.name) + '</b></div>'
     + '<div class="srow"><span>موجودی</span><b>' + faN(s.available) + ' شماره</b></div>'
     + '<div class="srow"><span>مبلغ خرید</span><b>' + (s.priceUsd != null ? faUsd(s.priceUsd) : '—') + '</b></div>'
-    + tmnRow
+    + tmnRow + cpnRows
     + '<div class="srow"><span>موجودی شما</span><b>' + faUsd(bal) + '</b></div>'
-    + '<div class="srow"><span>موجودی بعد از خرید</span><b>' + faUsd(bal - price) + '</b></div>';
+    + '<div class="srow"><span>موجودی بعد از خرید</span><b>' + faUsd(bal - fin) + '</b></div>';
   var note = '<div class="snote">با تأیید خرید، مبلغ از موجودی‌تان کسر و شماره بلافاصله تحویل داده می‌شود. اگر پیامک کد نرسد و به‌موقع لغو کنید، مبلغ کامل به موجودی‌تان برمی‌گردد.</div>';
   var btns;
-  if (s.priceUsd != null && bal < price) {
+  if (s.priceUsd != null && bal < fin) {
     btns = '<div class="sbtns"><button class="wbtn" onclick="sheetTopup()">موجودی کافی نیست — افزایش موجودی</button><button class="gbtn" onclick="closeSheet()">لغو</button></div>';
   } else {
     btns = sheetBtns('تأیید و خرید', 'sheetBuy()');
   }
-  openSheet('<h3 style="margin-top:6px">تأیید خرید</h3><p class="ssub">' + escH(s.name) + ' — ' + escH(S.country.name) + '</p>' + rows + note + btns);
+  return '<h3 style="margin-top:6px">تأیید خرید</h3><p class="ssub">' + escH(s.name) + ' — ' + escH(S.country.name) + '</p>' + rows + note + btns;
+}
+function applyCoupon(){
+  var inp = $('cpnIn'); if (!inp || !S.sel) return;
+  var code = (inp.value || '').trim();
+  S.couponInput = code;
+  if (!code) { toast('کد تخفیف را وارد کنید'); return; }
+  api('/api/coupon/check', { method:'POST', body: JSON.stringify({ code: code, price: S.sel.priceUsd }) })
+    .then(function(j){ if (!j.ok) { S.couponData = null; toast(j.error || 'کد معتبر نیست'); return; } S.couponData = j; toast('کد تخفیف اعمال شد'); openSheet(serviceSheetHtml()); })
+    .catch(function(e){ S.couponData = null; toast(e.message); });
 }
 function sheetBuy(){ closeSheet(); doBuy(); }
 function sheetTopup(){ closeSheet(); showView("topup"); }
@@ -3528,8 +3842,8 @@ function closeIntro(){ try { localStorage.setItem('bm_intro', '1'); } catch(e) {
 })();
 function doBuy(){
   if (!S.country || !S.sel) return;
-  api('/api/buy', { method:'POST', body: JSON.stringify({ countryId: S.country.id, serviceId: S.sel.id }) })
-    .then(function(j){ refreshMe(); openAct(j.activation); })
+  api('/api/buy', { method:'POST', body: JSON.stringify({ countryId: S.country.id, serviceId: S.sel.id, coupon: S.couponData ? S.couponData.code : undefined }) })
+    .then(function(j){ S.couponData = null; S.couponInput = ''; refreshMe(); openAct(j.activation); })
     .catch(function(e){ toast(e.message); });
 }
 var STATUS_FA = { waitingSms:'در انتظار پیامک', resendRequested:'درخواست پیامک مجدد ثبت شد', codeReceived:'کد دریافت شد', finished:'پایان‌یافته', cancelled:'لغو شده', expired:'منقضی شده', refunded:'برگشت‌وجه‌شده' };
@@ -3808,14 +4122,14 @@ async function payPage(env, cfg, topup) {
     const deep = botUser ? `https://t.me/${botUser}?start=vfy_${topup.id}` : "";
     return payShell(`${head(2)}
       ${summary}
-      <h1>📱 احراز هویت با شماره موبایل</h1>
+      <h1>احراز هویت با شماره موبایل</h1>
       <p class="sub">برای پرداخت کارت‌به‌کارت، ابتدا باید شماره موبایلتان را <b>یک‌بار</b> احراز کنید. این کار داخل ربات تلگرام و با دکمه «ارسال شماره» انجام می‌شود؛ شماره باید متعلق به خودتان باشد و تلگرام اصالت آن را تضمین می‌کند.</p>
       <ul class="notes">
         <li><b>۱</b> دکمه زیر را بزنید تا ربات باز شود.</li>
-        <li><b>۲</b> در ربات، دکمه «📱 ارسال شماره موبایل» را بزنید و شماره را به اشتراک بگذارید.</li>
+        <li><b>۲</b> در ربات، دکمه «ارسال شماره موبایل» را بزنید و شماره را به اشتراک بگذارید.</li>
         <li><b>۳</b> به همین صفحه برگردید — صفحه به‌صورت خودکار وارد مرحله پرداخت کارت می‌شود.</li>
       </ul>
-      ${deep ? `<a href="${deep}" style="display:block;text-align:center;background:#fff;color:#000;border-radius:14px;padding:14px 18px;font-weight:800;text-decoration:none;margin:16px 0">📱 رفتن به ربات و احراز شماره</a>` : `<p class="sub">از داخل ربات روی لینک پرداخت همین سفارش بزنید و مراحل احراز را انجام دهید.</p>`}
+      ${deep ? `<a href="${deep}" style="display:block;text-align:center;background:#fff;color:#000;border-radius:14px;padding:14px 18px;font-weight:800;text-decoration:none;margin:16px 0"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg> رفتن به ربات و احراز شماره</a>` : `<p class="sub">از داخل ربات روی لینک پرداخت همین سفارش بزنید و مراحل احراز را انجام دهید.</p>`}
       <p class="sub">همین صفحه را باز نگه دارید؛ بعد از احراز موفق، خودش به‌روز می‌شود.</p>
       <script>setInterval(async()=>{try{const r=await fetch('/pay/status?t=${topup.id}&_='+Date.now(),{cache:'no-store'});const d=await r.json();if(d.status!=='pending'||(d.method&&d.method!=='card_verify'))location.reload()}catch(e){}},4000)</script>
       ${actions}`, script);
@@ -3834,12 +4148,12 @@ async function payPage(env, cfg, topup) {
       <button class="copy bc-copy" onclick="copyText('${esc(cardDigits || cfg.CARD_NUMBER || "")}',this)">کپی شماره کارت</button></div>
     </div>`;
     const uploadBlock = `<div class="upload">
-      <div class="uic">🧾</div>
+      <div class="uic"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1z"/><path d="M8 7h8"/><path d="M8 11h8"/></svg></div>
       <p><b>آپلود رسید پرداخت</b><br>بعد از واریز، عکس رسید را همین‌جا بارگذاری و ثبت کنید؛ رسید مستقیم برای ادمین ارسال می‌شود.</p>
       <img id="rcPrev" alt="پیش‌نمایش رسید">
       <div class="fname" id="rcName"></div>
       <input type="file" id="rcFile" accept="image/*" hidden onchange="onReceiptFile(this)">
-      <div class="btnrow" style="margin-top:12px"><button class="btn ghost" onclick="document.getElementById('rcFile').click()">📎 انتخاب عکس رسید</button><button class="btn" id="rcBtn" disabled onclick="submitReceipt(this)">📤 ثبت رسید</button></div>
+      <div class="btnrow" style="margin-top:12px"><button class="btn ghost" onclick="document.getElementById('rcFile').click()"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg> انتخاب عکس رسید</button><button class="btn" id="rcBtn" disabled onclick="submitReceipt(this)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg> ثبت رسید</button></div>
     </div>`;
     if (topup.receiptFileId) {
       return payShell(`${head(2)}
@@ -3847,7 +4161,7 @@ async function payPage(env, cfg, topup) {
         <p style="margin:10px 0 2px"><span class="pill"><span class="dot"></span>منتظر تأیید ادمین</span></p>
         <p class="sub">رسید برای ادمین ارسال شده است؛ پس از تأیید، موجودی شما شارژ می‌شود و همین صفحه به‌صورت خودکار به‌روز می‌شود.</p>
         ${summary}
-        <div class="btnrow"><button class="btn" onclick="checkStatusBtn(this)">🔄 بررسی وضعیت</button><button class="btn ghost" onclick="document.getElementById('reUp').style.display='block';this.style.display='none'">ارسال رسید جایگزین</button></div>
+        <div class="btnrow"><button class="btn" onclick="checkStatusBtn(this)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg> بررسی وضعیت</button><button class="btn ghost" onclick="document.getElementById('reUp').style.display='block';this.style.display='none'">ارسال رسید جایگزین</button></div>
         <div id="reUp" style="display:none">${uploadBlock}</div>
         ${actions}`, script);
     }
@@ -3889,7 +4203,7 @@ async function payPage(env, cfg, topup) {
       <li><b>شبکه</b> واریز از شبکه دیگری به این آدرس، قابل شناسایی نیست.</li>
       <li><b>مبلغ دقیق</b> کمتر یا بیشتر از مبلغ بالا واریز نکنید؛ سیستم با همین مبلغ پرداخت شما را پیدا می‌کند.</li>
     </ul>
-    <div class="btnrow"><button class="btn" onclick="checkNow(this)">🔄 بررسی پرداخت</button><button class="btn ghost" onclick="selectMethod('')">تغییر روش پرداخت</button></div>
+    <div class="btnrow"><button class="btn" onclick="checkNow(this)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg> بررسی پرداخت</button><button class="btn ghost" onclick="selectMethod('')">تغییر روش پرداخت</button></div>
       ${actions}`, script);
 }
 
