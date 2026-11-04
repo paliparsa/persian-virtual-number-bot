@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.14.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.15.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -111,6 +111,9 @@ function auditEntryText(e) {
   if (e.action === "set") return `✏️ تنظیم «${label}» تغییر کرد\nاز: ${shortVal(e.oldV || "")} ← به: ${shortVal(e.newV || "")}`;
   if (e.action === "del") return `🗑 تنظیم «${label}» حذف شد (بود: ${shortVal(e.oldV || "")})`;
   if (e.action === "toggle") return `🔘 «${label}» ${e.newV === "1" ? "روشن شد ✅" : "خاموش شد ⚪️"}`;
+  if (e.action === "uadj") return `💰 تغییر موجودی دستی کاربر ${e.key} — ${e.extra || ""}`;
+  if (e.action === "ublock") return `🚫 کاربر ${e.key} مسدود شد`;
+  if (e.action === "uunblock") return `✅ مسدودیت کاربر ${e.key} رفع شد`;
   if (e.action === "undo_apr") return `↩️ شارژ تأییدشده بازگردانده شد — ${e.extra || ""}`;
   if (e.action === "apr") return `✅ رسید شارژ تأیید و حساب کاربر شارژ شد — ${e.extra || ""}`;
   if (e.action === "rej") return `❌ رسید شارژ رد شد — ${e.extra || ""}`;
@@ -947,6 +950,169 @@ async function showStats(env, chatId, msgId) {
   return send(env, chatId, text, kb(rows));
 }
 
+// ---------- admin: user management ----------
+// Search by numeric id, a per-user card (balance, join date, purchases,
+// top-ups, referral stats, verified phone), manual balance adjustment
+// WITH a mandatory reason (audited, and the user is told the reason),
+// and block/unblock (enforced in the bot dispatchers and in /api/buy +
+// /api/topup).
+async function showUsersHome(env, chatId, msgId) {
+  const users = (await kvList(env, "user:")).sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0));
+  const text = `👥 <b>مدیریت کاربران</b>\n\nتعداد کل کاربران: <b>${faDigits(users.length)} نفر</b>\n\nاز لیست کاربران اخیر انتخاب کنید، یا با دکمه جستجو <b>آیدی عددی</b> کاربر را بفرستید.`;
+  const rows = [[btn("🔍 جستجو با آیدی", "usr_search")]];
+  for (let i = 0; i < Math.min(users.length, 8); i += 2) {
+    rows.push(users.slice(i, i + 2).map((u) => btn(`👤 ${faDigits(u.id)}`, `uview:${u.id}`)));
+  }
+  rows.push([btn("🛠 پنل مدیریت", "admin"), btn("⬅️ منوی اصلی", "home")]);
+  if (msgId) return edit(env, chatId, msgId, text, kb(rows));
+  return send(env, chatId, text, kb(rows));
+}
+async function showUserCard(env, chatId, msgId, targetId) {
+  const u = await kvGet(env, `user:${targetId}`);
+  const rowsBack = [[btn("👥 مدیریت کاربران", "adm_users"), btn("⬅️ منوی اصلی", "home")]];
+  if (!u) {
+    const text = `❌ کاربری با آیدی <code>${esc(String(targetId))}</code> پیدا نشد.`;
+    if (msgId) return edit(env, chatId, msgId, text, kb(rowsBack));
+    return send(env, chatId, text, kb(rowsBack));
+  }
+  const [acts, topups] = await Promise.all([kvList(env, "act:"), kvList(env, "topup:")]);
+  const myActs = acts.filter((x) => x.userId === String(targetId));
+  const myTops = topups.filter((x) => x.userId === String(targetId) && x.status === "approved");
+  const spent = myActs.filter((x) => x.charged).reduce((sum, x) => sum + (Number(x.price) || 0), 0);
+  const topped = myTops.reduce((sum, x) => sum + (Number(x.creditUsd) || 0), 0);
+  const joinDate = u.createdAt ? new Date(u.createdAt).toLocaleDateString("fa-IR", { timeZone: "Asia/Tehran" }) : "—";
+  const text = `👤 <b>کاربر ${faDigits(u.id)}</b>${u.blocked ? "\n🚫 <b>این کاربر مسدود است</b>" : ""}\n\n💰 موجودی: <b>${faNum(u.balance)} دلار</b>\n📅 تاریخ عضویت: ${joinDate}\n🛒 خریدها: ${faDigits(myActs.length)} سفارش — مجموع ${faNum(round2(spent))} دلار\n💳 شارژهای موفق: ${faDigits(myTops.length)} — مجموع ${faNum(round2(topped))} دلار\n👥 زیرمجموعه: ${faDigits(u.refCount || 0)} نفر — پورسانت گرفته: ${faNum(u.refEarned || 0)} دلار${u.referredBy ? `\n🎁 معرف: ${faDigits(u.referredBy)}` : ""}${u.phone ? `\n📱 موبایل احرازشده: ${faDigits(u.phone)}` : ""}`;
+  const rows = [
+    [btn("➕ افزایش موجودی", `uadj:${u.id}:add`), btn("➖ کاهش موجودی", `uadj:${u.id}:sub`)],
+    [u.blocked ? btn("✅ رفع مسدودیت", `ublock:${u.id}`) : btn("🚫 مسدود کردن", `ublock:${u.id}`), btn("🔍 کاربر دیگر", "usr_search")],
+    [btn("👥 مدیریت کاربران", "adm_users"), btn("⬅️ منوی اصلی", "home")],
+  ];
+  if (msgId) return edit(env, chatId, msgId, text, kb(rows));
+  return send(env, chatId, text, kb(rows));
+}
+
+// ---------- financial export (real .xlsx, built in-worker) ----------
+// A minimal XLSX writer: a stored (uncompressed) ZIP of the standard
+// Office Open XML parts, with inline strings so no shared-strings table
+// is needed. Opens in Excel, Google Sheets and LibreOffice.
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(bytes) {
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+function zipStored(files) {
+  const enc = new TextEncoder();
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+  const u16 = (v) => { const b = new Uint8Array(2); new DataView(b.buffer).setUint16(0, v, true); return b; };
+  const u32 = (v) => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, v >>> 0, true); return b; };
+  const push = (b) => { chunks.push(b); offset += b.length; };
+  for (const f of files) {
+    const name = enc.encode(f.name);
+    const crc = crc32(f.data);
+    const localStart = offset;
+    push(u32(0x04034b50)); push(u16(20)); push(u16(0x0800)); push(u16(0));
+    push(u16(0)); push(u16(0)); push(u32(crc)); push(u32(f.data.length)); push(u32(f.data.length));
+    push(u16(name.length)); push(u16(0)); push(name); push(f.data);
+    central.push({ name, crc, size: f.data.length, localStart });
+  }
+  const cdStart = offset;
+  for (const c of central) {
+    push(u32(0x02014b50)); push(u16(20)); push(u16(20)); push(u16(0x0800)); push(u16(0));
+    push(u16(0)); push(u16(0)); push(u32(c.crc)); push(u32(c.size)); push(u32(c.size));
+    push(u16(c.name.length)); push(u16(0)); push(u16(0)); push(u16(0)); push(u16(0));
+    push(u32(0)); push(u32(c.localStart)); push(c.name);
+  }
+  const cdSize = offset - cdStart; // capture BEFORE pushing: push() mutates offset
+  push(u32(0x06054b50)); push(u16(0)); push(u16(0)); push(u16(central.length)); push(u16(central.length));
+  push(u32(cdSize)); push(u32(cdStart)); push(u16(0));
+  const out = new Uint8Array(offset);
+  let at = 0;
+  for (const b of chunks) { out.set(b, at); at += b.length; }
+  return out;
+}
+const xesc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const colName = (i) => { let s = ""; let n = i + 1; while (n > 0) { const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; };
+function sheetXml(rows) {
+  const body = rows.map((row, r) => `<row r="${r + 1}">` + row.map((cell, c) => {
+    const ref = `${colName(c)}${r + 1}`;
+    if (typeof cell === "number" && Number.isFinite(cell)) return `<c r="${ref}"><v>${cell}</v></c>`;
+    return `<c r="${ref}" t="inlineStr"><is><t>${xesc(cell)}</t></is></c>`;
+  }).join("") + "</row>").join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${body}</sheetData></worksheet>`;
+}
+function buildXlsx(sheets) {
+  const enc = new TextEncoder();
+  const overrides = sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("");
+  const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${overrides}</Types>`;
+  const rels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
+  const wbSheets = sheets.map((s, i) => `<sheet name="${xesc(s.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join("");
+  const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${wbSheets}</sheets></workbook>`;
+  const wbRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join("")}</Relationships>`;
+  const files = [
+    { name: "[Content_Types].xml", data: enc.encode(contentTypes) },
+    { name: "_rels/.rels", data: enc.encode(rels) },
+    { name: "xl/workbook.xml", data: enc.encode(workbook) },
+    { name: "xl/_rels/workbook.xml.rels", data: enc.encode(wbRels) },
+    ...sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: enc.encode(sheetXml(s.rows)) })),
+  ];
+  return zipStored(files);
+}
+async function tgUploadDocument(env, chatId, bytes, filename, caption) {
+  const fd = new FormData();
+  fd.append("chat_id", String(chatId));
+  fd.append("document", new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), filename);
+  if (caption) fd.append("caption", caption);
+  const r = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: fd });
+  const d = await r.json().catch(() => ({}));
+  if (!d.ok) throw new Error(d.description || "sendDocument failed");
+  return true;
+}
+const EXPORT_CAP = 5000;
+async function sendFinanceExport(env, adminChatId) {
+  try {
+    const [acts, topups] = await Promise.all([kvList(env, "act:"), kvList(env, "topup:")]);
+    let cname = new Map();
+    try {
+      const countries = await smsfull(env, "/countries");
+      cname = new Map(countries.map((c) => [Number(c.id), countryEnName(c)]));
+    } catch (_) { /* country names are decorative in the export */ }
+    const dt = (ts) => ts ? new Date(ts).toLocaleString("fa-IR", { timeZone: "Asia/Tehran" }) : "";
+    const topStatus = { pending: "در انتظار", awaiting_receipt: "در انتظار بررسی رسید", approved: "موفق", rejected: "رد شده", expired: "منقضی", cancelled: "لغو شده" };
+    const actStatus = { waitingSms: "در انتظار پیامک", resendRequested: "درخواست پیامک مجدد", codeReceived: "کد تحویل شد", finished: "پایان‌یافته", cancelled: "لغو شده", expired: "منقضی", refunded: "برگشت وجه" };
+    const tops = [...topups].sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0)).slice(0, EXPORT_CAP);
+    const topRows = [["تاریخ", "آیدی کاربر", "روش پرداخت", "مبلغ شارژ (دلار)", "بونوس (دلار)", "وضعیت", "شناسه پرداخت", "شناسه تراکنش"]];
+    for (const t of tops) {
+      const method = t.method === "card" ? "کارت‌به‌کارت" : t.method === "crypto" ? (CRYPTOS[t.crypto]?.label || "رمزارز") : "در انتظار انتخاب روش";
+      topRows.push([dt(t.createdAt), String(t.userId), method, round2(topupCredit(t)), round2(t.bonusUsd || 0), topStatus[t.status] || t.status, t.id, t.paidTxid || ""]);
+    }
+    const sales = [...acts].sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0)).slice(0, EXPORT_CAP);
+    const saleRows = [["تاریخ", "آیدی کاربر", "سرویس", "کشور", "شماره", "مبلغ فروش (دلار)", "هزینه تأمین‌کننده (BRL)", "وضعیت", "کد تحویل شد", "کد تخفیف", "تخفیف (دلار)"]];
+    for (const a of sales) {
+      saleRows.push([dt(a.createdAt), String(a.userId), a.serviceName || "", a.countryId ? (cname.get(Number(a.countryId)) || String(a.countryId)) : "", "+" + (a.phoneNumber || ""), round2(a.price), Number(a.providerPriceBrl) || 0, actStatus[a.status] || a.status, a.latestCode ? "بله" : "خیر", a.coupon || "", round2(a.discount || 0)]);
+    }
+    const bytes = buildXlsx([
+      { name: "شارژها", rows: topRows },
+      { name: "فروش‌ها", rows: saleRows },
+    ]);
+    const dstr = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Tehran" }).replace(/-/g, "");
+    await tgUploadDocument(env, adminChatId, bytes, `bluemajazi-finance-${dstr}.xlsx`,
+      `📥 خروجی مالی فروشگاه\n\n💳 شارژها: ${faDigits(topRows.length - 1)} ردیف\n🛒 فروش‌ها: ${faDigits(saleRows.length - 1)} ردیف${topups.length > EXPORT_CAP || acts.length > EXPORT_CAP ? `\n(به دلیل حجم بالا، فقط ${faDigits(EXPORT_CAP)} ردیف آخر هر بخش آمده است)` : ""}`);
+  } catch (e) {
+    await send(env, adminChatId, "❌ ساخت خروجی مالی ناموفق بود؛ دوباره تلاش کنید.");
+  }
+}
+
 // ---------- provider low-balance alert ----------
 // The shop dies quietly when the SmsFull balance runs out (users pay, buys
 // fail). The admin is alerted once when the spendable balance crosses below
@@ -1749,6 +1915,7 @@ async function showAdmin(env, chatId, msgId) {
   const text = `🛠 <b>پنل مدیریت</b>${balText}\n\n📌 نسخه ربات: ${faDigits(BOT_VERSION)} — اگر دکمه «تنظیمات فروشگاه» را نمی‌بینید، ورکر هنوز روی نسخه قبلی است و باید در کلودفلر دوباره دیپلوی شود.`;
   const rows = [
     [btn("🧾 رسیدهای در انتظار", "adm_pending"), btn("🪙 کریپتوی در انتظار", "adm_crypto_pending")],
+    [btn("👥 مدیریت کاربران", "adm_users"), btn("📥 خروجی مالی", "adm_export")],
     [btn("⚙️ تنظیمات فروشگاه", "cfg"), btn("🎟 کدهای تخفیف", "adm_coupons")],
     [btn("🎁 پکیج‌های شارژ", "adm_pkgs"), btn("📊 آمار فروشگاه", "adm_stats")],
     [btn("📜 سوابق تغییرات", "adm_audit"), btn("⬅️ منوی اصلی", "home")],
@@ -2163,6 +2330,11 @@ async function handleMessage(env, msg, baseUrl) {
   // purchases, receipts, phone verification — is private-chat only.
   if (msg.chat?.type !== "private" && !/^\/(setgroup|unsetgroup)(\s|$)/.test(text)) return;
 
+  // Blocked users are stopped at the door (admin is exempt).
+  if (user.blocked && !isAdmin(env, chatId)) {
+    return send(env, chatId, "🚫 <b>حساب شما مسدود شده است</b>\n\nدسترسی شما به فروشگاه توسط مدیر لغو شده است. برای پیگیری با پشتیبانی در تماس باشید.");
+  }
+
   // Forced channel membership: private chats only; contact shares pass
   // through (they are part of phone verification, an independent flow).
   if (msg.chat?.type === "private" && !msg.contact) {
@@ -2222,6 +2394,51 @@ async function handleMessage(env, msg, baseUrl) {
   }
   if (text === "/admin" && isAdmin(env, chatId)) return showAdmin(env, chatId);
   if ((text === "/settings" || text === "تنظیمات") && isAdmin(env, chatId)) return showConfigOverview(env, chatId);
+
+  // Admin user management: search by id, then adjust balance (amount,
+  // then a mandatory reason — the user is told the reason and it is
+  // written to the audit log).
+  if (isAdmin(env, chatId) && (user.state === "usr_search" || user.state?.startsWith("uadj"))) {
+    if (text === "/cancel") {
+      user.state = null; await saveUser(env, user);
+      return send(env, chatId, "لغو شد.", kb([[btn("👥 مدیریت کاربران", "adm_users")]]));
+    }
+    if (user.state === "usr_search") {
+      const target = text.replace(/\D/g, "");
+      user.state = null; await saveUser(env, user);
+      if (!target) return send(env, chatId, "❌ آیدی معتبر نیست؛ فقط عدد بفرستید.", kb([[btn("👥 مدیریت کاربران", "adm_users")]]));
+      return showUserCard(env, chatId, null, target);
+    }
+    if (user.state.startsWith("uadj:") && !user.state.startsWith("uadjr:")) {
+      const [, uid, mode] = user.state.split(":");
+      const v = Number(text);
+      if (!Number.isFinite(v) || !(v > 0) || v > 100000) return send(env, chatId, "❌ مبلغ معتبر نیست (عدد بزرگ‌تر از صفر). دوباره بفرستید یا /cancel بزنید.");
+      if (mode === "sub") {
+        const t = await getUser(env, uid);
+        if (v > Number(t.balance)) return send(env, chatId, `❌ موجودی این کاربر فقط ${faNum(t.balance)} دلار است؛ مبلغ کمتری بفرستید یا /cancel بزنید.`);
+      }
+      user.state = `uadjr:${uid}:${mode}:${v}`; await saveUser(env, user);
+      return send(env, chatId, `✍️ <b>دلیل این ${mode === "add" ? "افزایش" : "کاهش"} موجودی را بنویسید</b>\n\nاین دلیل برای کاربر ارسال و در سوابق تغییرات ثبت می‌شود:`);
+    }
+    if (user.state.startsWith("uadjr:")) {
+      const [, uid, mode, amtRaw] = user.state.split(":");
+      const amount = Number(amtRaw);
+      const reason = text.slice(0, 200);
+      const t = await getUser(env, uid);
+      t.balance = Math.round((Number(t.balance) + (mode === "add" ? amount : -amount)) * 100) / 100;
+      await saveUser(env, t);
+      await logAudit(env, { actor: chatId, action: "uadj", key: uid, extra: `${mode === "add" ? "+" : "−"}${faNum(amount)} دلار — دلیل: ${reason}` });
+      const tmn = await usdtTomanRate(env);
+      await send(env, uid,
+        mode === "add"
+          ? `💰 <b>موجودی شما افزایش یافت</b>\n\nمدیر فروشگاه مبلغ ${usdText(tmn, amount)} به موجودی شما اضافه کرد.\nدلیل: ${esc(reason)}\nموجودی فعلی: ${usdText(tmn, t.balance)}`
+          : `💰 <b>موجودی شما کاهش یافت</b>\n\nمدیر فروشگاه مبلغ ${usdText(tmn, amount)} از موجودی شما کسر کرد.\nدلیل: ${esc(reason)}\nموجودی فعلی: ${usdText(tmn, t.balance)}`,
+        mainMenuKb(env, await getConfig(env), uid));
+      user.state = null; await saveUser(env, user);
+      await send(env, chatId, `✅ موجودی کاربر ${faDigits(uid)} ${mode === "add" ? "افزایش" : "کاهش"} یافت و به او اطلاع داده شد.`);
+      return showUserCard(env, chatId, null, uid);
+    }
+  }
 
   // Admin is adding a top-up package (amount, then bonus).
   if (isAdmin(env, chatId) && user.state?.startsWith("pkg_")) {
@@ -2415,6 +2632,10 @@ async function handleCallback(env, cq, baseUrl) {
   const [head, a, b] = data.split(":");
   try {
     if (cq.message?.chat?.type !== "private") { await answerCb(env, cq.id); return; }
+    if (!isAdmin(env, chatId)) {
+      const u0 = await getUser(env, chatId);
+      if (u0.blocked) { await answerCb(env, cq.id, "🚫 حساب شما توسط مدیر مسدود شده است", true); return; }
+    }
     if (data === "joinchk") {
       const cfgJ = await getConfig(env);
       if (!(await forceJoinGate(env, cfgJ, chatId))) {
@@ -2615,6 +2836,35 @@ async function handleCallback(env, cq, baseUrl) {
     if (data === "adm_coupons" && isAdmin(env, chatId)) return showCoupons(env, chatId, msgId);
     if (data === "adm_pkgs" && isAdmin(env, chatId)) return showPackages(env, chatId, msgId);
     if (data === "adm_stats" && isAdmin(env, chatId)) return showStats(env, chatId, msgId);
+    if (data === "adm_users" && isAdmin(env, chatId)) return showUsersHome(env, chatId, msgId);
+    if (data === "adm_export" && isAdmin(env, chatId)) {
+      await answerCb(env, cq.id, "در حال ساخت فایل اکسل…");
+      await sendFinanceExport(env, chatId);
+      return;
+    }
+    if (data === "usr_search" && isAdmin(env, chatId)) {
+      const u = await getUser(env, chatId);
+      u.state = "usr_search"; await saveUser(env, u);
+      return edit(env, chatId, msgId, "🔍 <b>جستجوی کاربر</b>\n\nآیدی عددی کاربر را بفرستید.\n\nبرای لغو /cancel بفرستید.", backKb);
+    }
+    if (head === "uview" && isAdmin(env, chatId)) return showUserCard(env, chatId, msgId, a);
+    if (head === "uadj" && isAdmin(env, chatId)) {
+      const u = await getUser(env, chatId);
+      u.state = `uadj:${a}:${b}`; await saveUser(env, u);
+      return edit(env, chatId, msgId, `${b === "add" ? "➕" : "➖"} <b>${b === "add" ? "افزایش" : "کاهش"} موجودی کاربر ${faDigits(a)}</b>\n\nمبلغ را به دلار بفرستید (فقط عدد، مثال: 5).\n\nبرای لغو /cancel بفرستید.`, backKb);
+    }
+    if (head === "ublock" && isAdmin(env, chatId)) {
+      const t = await getUser(env, a);
+      if (String(a) === String(chatId)) { await answerCb(env, cq.id, "نمی‌توانید خودتان را مسدود کنید", true); return; }
+      t.blocked = !t.blocked;
+      await saveUser(env, t);
+      await logAudit(env, { actor: chatId, action: t.blocked ? "ublock" : "uunblock", key: String(a) });
+      await send(env, a, t.blocked
+        ? "🚫 <b>حساب شما مسدود شد</b>\n\nدسترسی شما به فروشگاه توسط مدیر لغو شده است. برای پیگیری با پشتیبانی در تماس باشید."
+        : "✅ <b>مسدودیت حساب شما رفع شد</b>\n\nدسترسی شما به فروشگاه دوباره فعال شد.", mainMenuKb(env, await getConfig(env), a));
+      await answerCb(env, cq.id, t.blocked ? "کاربر مسدود شد 🚫" : "مسدودیت رفع شد ✅");
+      return showUserCard(env, chatId, msgId, a);
+    }
     if (data === "pkg_new" && isAdmin(env, chatId)) {
       const u = await getUser(env, chatId);
       u.state = "pkg_amount"; u.pkgDraft = {}; await saveUser(env, u);
@@ -3400,7 +3650,7 @@ async function handleApi(env, request, url) {
     if (path === "/api/me") {
       const [user, rate, cfg] = await Promise.all([getUser(env, userId), usdtTomanRate(env), getConfig(env)]);
       const uname = await botUsername(env);
-      return jsonResp({ id: userId, name: sess.name, username: sess.username, photoUrl: sess.photoUrl, balance: Number(user.balance), rate, support: cfg.SUPPORT_USERNAME || null, minTopup: minTopupUsd(cfg), refPercent: referralPercent(cfg), refCount: Number(user.refCount) || 0, refEarned: Number(user.refEarned) || 0, refLink: uname ? `https://t.me/${uname}?start=ref_${userId}` : null, pkgs: await getTopupPkgs(env) });
+      return jsonResp({ id: userId, name: sess.name, username: sess.username, photoUrl: sess.photoUrl, balance: Number(user.balance), blocked: !!user.blocked, rate, support: cfg.SUPPORT_USERNAME || null, minTopup: minTopupUsd(cfg), refPercent: referralPercent(cfg), refCount: Number(user.refCount) || 0, refEarned: Number(user.refEarned) || 0, refLink: uname ? `https://t.me/${uname}?start=ref_${userId}` : null, pkgs: await getTopupPkgs(env) });
     }
     if (path === "/api/countries") {
       const countries = await smsfull(env, "/countries");
@@ -3424,6 +3674,7 @@ async function handleApi(env, request, url) {
     if (path === "/api/buy" && request.method === "POST") {
       const cfgJ = await getConfig(env);
       if (await forceJoinGate(env, cfgJ, userId)) return jsonResp({ error: "🔒 برای خرید، ابتدا در کانال ما عضو شوید و سپس در ربات دکمه «بررسی عضویت» را بزنید.", joinUrl: joinChannelLink(cfgJ) }, 403);
+      if ((await getUser(env, userId)).blocked) return jsonResp({ error: "🚫 حساب شما توسط مدیر مسدود شده است." }, 403);
       if (!(await throttle(env, `buy:${userId}`, 10, 60))) return jsonResp({ error: "تعداد درخواست خرید بیش از حد است؛ کمی صبر کنید" }, 429);
       const body = await request.json().catch(() => ({}));
       try {
@@ -3473,6 +3724,7 @@ async function handleApi(env, request, url) {
   if (path === "/api/topup" && request.method === "POST") {
       const cfgJ = await getConfig(env);
       if (await forceJoinGate(env, cfgJ, userId)) return jsonResp({ error: "🔒 برای شارژ حساب، ابتدا در کانال ما عضو شوید و سپس در ربات دکمه «بررسی عضویت» را بزنید.", joinUrl: joinChannelLink(cfgJ) }, 403);
+      if ((await getUser(env, userId)).blocked) return jsonResp({ error: "🚫 حساب شما توسط مدیر مسدود شده است." }, 403);
       const body = await request.json().catch(() => ({}));
       let creditUsd = null;
       const extra = {};
@@ -3651,6 +3903,14 @@ h2.title .icn{vertical-align:-5px;margin-left:2px}
 .sheet .srow span{color:#aeaeb2}
 .sheet .srow b{font-weight:700;text-align:left}
 .sheet .snote{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:11px 13px;font-size:12.8px;line-height:1.95;color:#c7c7cc;margin-top:12px}
+.pconfirm{position:fixed;inset:0;background:rgba(0,0,0,.62);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);display:none;align-items:center;justify-content:center;z-index:70;padding:22px}
+.pconfirm.on{display:flex}
+.pconfirm .mbox{background:#141417;border:1px solid rgba(255,255,255,.13);border-radius:22px;padding:22px 20px;width:100%;max-width:350px;animation:pcpop .18s ease}
+@keyframes pcpop{from{transform:scale(.93);opacity:0}to{transform:scale(1);opacity:1}}
+.pconfirm .ssub{color:#aeaeb2;font-size:13px;margin:0 0 6px}
+.pconfirm .srow{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10.5px 2px;border-top:1px solid rgba(255,255,255,.08);font-size:14px}
+.pconfirm .snote{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:11px 13px;font-size:12.8px;line-height:1.95;color:#c7c7cc;margin-top:12px}
+.pconfirm .sbtns{display:flex;flex-direction:column;gap:9px;margin-top:16px}
 .pkgrow{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:14px}
 .pkgrow:empty{display:none}
 .pkgcard{background:linear-gradient(180deg,rgba(255,255,255,.055),rgba(255,255,255,.02));border:1px solid rgba(255,255,255,.13);border-radius:15px;padding:12px 10px;color:#fff;font:inherit;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:4px}
@@ -3843,6 +4103,7 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
   <button class="wbtn intro-next" id="introNext" onclick="introGo()">بعدی</button>
 </div>
 <div class="sheetwrap" id="sheetWrap" onclick="closeSheet()"></div>
+<div class="pconfirm" id="pkgConfirm" onclick="if(event.target===this)closePkgConfirm()"><div class="mbox" id="pkgConfirmBox"></div></div>
 <div class="sheet" id="sheet" role="dialog" aria-modal="true"><div class="grab"></div><div id="sheetBody"></div></div>
 <script>
 var S = { me:null, countries:[], country:null, services:[], rate:null, sel:null, act:null, poll:null, cd:null, topupMode:'usd' };
@@ -4264,10 +4525,31 @@ function renderPkgs(){
     return '<button class="pkgcard" onclick="doTopupPkg(' + p.amount + ')"><span class="pk-amt">' + faUsd(p.amount) + '</span><span class="pk-bonus">' + (p.bonus > 0 ? gift + ' +' + faUsd(p.bonus) + ' بونوس' : 'بدون بونوس') + '</span></button>';
   }).join('');
 }
+var pendingPkg = null;
 function doTopupPkg(amount){
+  var pkg = null;
+  ((S.me && S.me.pkgs) || []).forEach(function(p){ if (Number(p.amount) === Number(amount)) pkg = p; });
+  if (!pkg) { toast('این پکیج دیگر موجود نیست'); return; }
+  pendingPkg = pkg;
+  var tmnRow = S.rate ? '<div class="srow"><span>معادل تومانی</span><b>' + faTmn(pkg.amount * S.rate) + '</b></div>' : '';
+  $('pkgConfirmBox').innerHTML = '<h3 style="margin:2px 0 4px">تأیید شارژ پکیج</h3><p class="ssub">قبل از ساخت پرداخت، مشخصات پکیج را تأیید کنید</p>'
+    + '<div class="srow"><span>مبلغ پکیج</span><b>' + faUsd(pkg.amount) + '</b></div>' + tmnRow
+    + '<div class="srow"><span>بونوس پکیج</span><b>' + (pkg.bonus > 0 ? '+' + faUsd(pkg.bonus) : '—') + '</b></div>'
+    + '<div class="srow"><span>اعتبار دریافتی</span><b>' + faUsd(Number(pkg.amount) + Number(pkg.bonus || 0)) + '</b></div>'
+    + '<div class="snote">با تأیید، صفحه پرداخت ساخته می‌شود و ۳۰ دقیقه برای پرداخت فرصت دارید. بونوس بلافاصله بعد از پرداخت موفق به موجودی‌تان اضافه می‌شود.</div>'
+    + '<div class="sbtns"><button class="wbtn" onclick="confirmPkgTopup(this)">تأیید و ساخت پرداخت</button><button class="gbtn" onclick="closePkgConfirm()">انصراف</button></div>';
+  $('pkgConfirm').classList.add('on');
+}
+function closePkgConfirm(){ var m = $('pkgConfirm'); if (m) m.classList.remove('on'); pendingPkg = null; }
+function confirmPkgTopup(btn){
+  if (!pendingPkg) return;
+  var amount = pendingPkg.amount;
+  btn.disabled = true; btn.textContent = 'در حال ساخت…';
   api('/api/topup', { method:'POST', body: JSON.stringify({ pkgAmount: amount }) }).then(function(j){
+    closePkgConfirm();
     $('tpResult').innerHTML = '<div class="confirm"><div class="row"><span>صفحه پرداخت ساخته شد</span><b>۳۰ دقیقه مهلت</b></div><a class="wbtn" style="width:100%;margin-top:10px" href="' + escH(j.payUrl) + '">رفتن به صفحه پرداخت ←</a></div>';
   }).catch(function(e){
+    closePkgConfirm();
     if (e.data && e.data.payUrl) {
       $('tpResult').innerHTML = '<div class="confirm"><div class="row"><span>' + escH(e.message) + '</span></div><a class="wbtn" style="width:100%;margin-top:10px" href="' + escH(e.data.payUrl) + '">ادامه پرداخت قبلی ←</a></div>';
     } else toast(e.message);
