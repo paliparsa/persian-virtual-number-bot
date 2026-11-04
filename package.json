@@ -1,1 +1,15 @@
-{"description":"Persian Telegram bot selling virtual numbers via the SmsFull API, running on Cloudflare Workers","devDependencies":{"wrangler":"^4.45.0"},"name":"persian-virtual-number-bot","private":true,"scripts":{"deploy":"wrangler deploy","dev":"wrangler dev"},"type":"module","version":"1.0.0"}
+{
+  "description": "Persian Telegram bot selling virtual numbers via the SmsFull API, running on Cloudflare Workers",
+  "devDependencies": {
+    "wrangler": "^4.45.0"
+  },
+  "name": "persian-virtual-number-bot",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "test": "bash tests/run-all.sh"
+  },
+  "type": "module",
+  "version": "3.0.0"
+}

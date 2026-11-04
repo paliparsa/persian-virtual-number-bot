@@ -24,6 +24,7 @@ refunded automatically (the provider only charges on a finished activation with 
   The Toman → USD credit conversion is automatic using the Wallex USDT rate
   (the rate used is stored on each top-up and shown to the admin).
 - **Pay page design v2 (v1.8.0):** still minimal black/white — matte-black premium bank card, hero summary amount, filled-white success check, inline copied-feedback on copy buttons; orange is reserved for pending states and the under-5-minutes countdown, red only for rejected/expired states (including a dedicated rejected view).
+- **Modular code structure (v3.0.0):** structure-only release, no behavior change. The former single 5,563-line `src/index.js` is now 13 ES modules (see *Project structure* below) that wrangler bundles back into the same single Worker script at deploy time. The full regression battery (~150 checks) moved into the repo under `tests/` (`npm test`), and `package-lock.json` now pins the toolchain.
 - **Bug-fix batch II: re-review state, cron isolation, web gate UX, pay branding (v2.24.0):** from a second full review — (1) The post-undo `awaiting_receipt` state is no longer a black hole: it appears in the bot's pending payments (with a re-review line), the web open-payments list (labeled «در حال بررسی مجدد رسید», filtered as in-progress, review note instead of a deadline), and the admin pending list; its /pay link shows a proper re-review page (never «closed»/«expired») with a replacement-receipt upload; both receipt paths and both cancel paths accept the state; undo now re-arms the user's bot receipt state and tells them a new receipt can be sent. (2) The cron settle loop isolates each top-up in try/catch (and the balance/health segments too), so one bad record can't starve the whole tick. (3) Web gate UX: the join-channel 403 now opens a sheet with the actual join button (the API's joinUrl was previously ignored), a blocked banner shows in the Account view, and the buy/topup gate errors follow the user's language. (4) The /pay header is branded BlueMajazi (B monogram) like the rest of the product instead of the generic shop name. (5) The last three FA-only bot receipt messages (document-instead-of-photo, closed payment, receipt cap) are translated. (6) The bot session message labels card_verify payments correctly (verification step) instead of «method not chosen».
 - **Bug-fix batch: receipts, history caps, EN gaps, web emoji (v2.23.0):** from a full functional/visual review — (1) a card receipt under admin review now extends the payment deadline by 24h from the first receipt (like a seen crypto transfer), so a paid receipt can never expire mid-review and become un-approvable; bot receipts for already-closed payments are refused instead of resurrecting them; the /pay waiting view drops its countdown. (2) Web orders and payment history caps raised from 50 to 500 records. (3) The admin pending lists are sorted newest-first and show a total count with a note when more than 10 are waiting. (4) The web splash gains a watchdog: if the session check hangs, a Retry button appears after 7s. (5) KV list reads fetch values in parallel batches (stats/export/lists stay fast as records grow). (6) Crypto expected amounts are regenerated when they would tie with another pending top-up on the same wallet. (7) English gaps closed: bot amount prompts and their errors, the coupon prompt, and all payment-lifecycle notifications (expiry, rejection, reversal, block/unblock, receipt received, referral commission, cancel, transaction seen) now follow the user's language, menus included; the login logo slogan is translated too. (8) The last two web emojis (seen-state hourglass, expired-state clock) are now SVG icons. (9) The admin's receipt message is closed automatically (caption marked, buttons stripped) when its payment is cancelled or finally expires — the receipt's admin message id is now stored for this. (10) Stale admin wording updated (USDT rate, not Wallex).
 - **Security fixes + rebuy redesign (v2.22.0):** from the full-project security review — the coupon-check endpoint (web API and the bot's coupon entry) is now throttled per user/IP so codes cannot be enumerated; every countryId is coerced to a number before it reaches the provider API (the services endpoint rejects non-numeric ids with 400); secret comparisons (webhook secret, diagnostics key) are constant-time (hash + XOR compare) and the diagnostics key is also accepted via an `x-diag-key` header so it need not travel in URLs. The web orders «خرید مجدد / Buy again» button moved out of the row's text column into the status column as a subtle outlined pill, so order rows keep a consistent height.
@@ -73,6 +74,31 @@ refunded automatically (the provider only charges on a finished activation with 
    Confirmation hardening (v1.3.1): BTC requires a confirmed transaction (mempool.space `status.confirmed`) and LTC requires >= 1 BlockCypher confirmation before crediting; a seen-but-unconfirmed BTC/LTC payment is marked seen, the user is notified, and its deadline extends to 24h after first sighting instead of expiring at 30 minutes. The TRX check verifies the recipient exactly (TronGrid hex to_address vs the Base58 wallet decoded to hex), same as USDT-TRC20.
   Auto-check supports USDT-TRC20, TRX, BTC, TON, LTC, USDT-BEP20 (read keylessly from BSC public RPC nodes via Transfer logs; BSC USDT has 18 decimals), and ETH / USDT-ERC20
   (ERC20 needs a free `ETHERSCAN_API_KEY`). Crypto USD prices are fetched redundantly — CoinGecko → Coinbase → Wallex-derived, with USDT fixed at $1 and a stale-cache last resort — because CoinGecko's free API aggressively rate-limits Cloudflare Workers' shared IPs, which used to abort top-ups with “price unavailable”.
+
+## Project structure
+
+The Worker source is split into ES modules; wrangler bundles them into one
+script on deploy, so runtime behavior is identical to a single file.
+
+```
+src/
+  index.js        entry only: fetch routing (bot webhook, /app, /pay, /terms, /api) + cron
+  bot.js          Telegram bot: menus, shop flow, admin panel, settings, user management, stats, Excel export
+  payments.js     top-up sessions, packages, coupons, receipts, /pay handlers, crediting
+  shop.js         purchase core shared by bot + web (buy, sync, provider actions)
+  web.js          web JSON API, Telegram-login auth, sessions, PWA manifest/service worker
+  lib/
+    core.js       foundation — KV, config, audit log, Telegram primitives, i18n, locks, security helpers (imports nothing)
+    clients.js    outside world — Telegram webhook setup, SmsFull API, exchange rates, bot identity
+    chains.js     on-chain payment detection (BTC/LTC/TRX/TON/EVM) and settlement
+    referral.js   referral capture + commission
+    ops.js        provider low-balance alerts + automated health monitoring
+  pages/
+    app.js        the /app web application page
+    pay.js        the /pay payment page (+ in-Worker QR generator)
+    terms.js      the /terms page
+tests/            regression battery — run with `npm test` (plain Node, fully mocked)
+```
 
 ## 1. Deploy from GitHub to Cloudflare (no code changes needed)
 
