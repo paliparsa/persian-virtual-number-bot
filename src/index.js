@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.10.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.11.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -74,7 +74,7 @@ const CONFIG_KEYS = [
   "WALLET_USDT_TRC20", "WALLET_TRX", "WALLET_BTC", "WALLET_TON",
   "WALLET_LTC", "WALLET_ETH", "WALLET_USDT_ERC20", "WALLET_USDT_BEP20",
   "SUPPORT_USERNAME", "WORKER_BASE_URL", "PRICE_MARKUP_PERCENT", "TMN_RATE_MANUAL", "GROUP_CHAT_ID", "MIN_TOPUP_USD",
-  "FORCE_JOIN_ENABLED", "FORCE_JOIN_CHANNEL", "PHONE_VERIFY_ENABLED", "ETHERSCAN_API_KEY", "LOW_BALANCE_BRL",
+  "FORCE_JOIN_ENABLED", "FORCE_JOIN_CHANNEL", "PHONE_VERIFY_ENABLED", "ETHERSCAN_API_KEY", "LOW_BALANCE_BRL", "REFERRAL_PERCENT",
 ];
 async function getConfig(env) {
   const stored = (await kvGet(env, "config")) || {};
@@ -131,6 +131,72 @@ async function showAuditLog(env, chatId, msgId) {
 const getUser = async (env, id) =>
   (await kvGet(env, `user:${id}`)) || { id: String(id), balance: 0, state: null, createdAt: now() };
 const saveUser = (env, u) => kvPut(env, `user:${u.id}`, u);
+
+// ---------- referral system ----------
+// A user joins via https://t.me/<bot>?start=ref_<userId> (or the web app's
+// ?ref=<userId> on first login). The referrer is recorded ONCE, at the
+// account's first-ever contact, and never changes afterwards — that kills
+// referrer-switching and most self-referral farming. Commission is a
+// configurable % of each referee purchase, paid only when the purchase's
+// SMS code is actually delivered (see awardReferral in syncActivation), so
+// a cancelled/refunded order can never mint free commission.
+const referralPercent = (cfg) => {
+  const raw = cfg?.REFERRAL_PERCENT;
+  if (raw === undefined || raw === null || raw === "") return 10; // default 10%
+  const p = Number(raw);
+  return Number.isFinite(p) ? Math.min(50, Math.max(0, p)) : 10;
+};
+// Mutates `user` (the caller saves it). Saves the referrer's record itself.
+async function applyReferral(env, user, refRaw) {
+  try {
+    const refId = String(refRaw || "").replace(/\D/g, "");
+    if (!refId || refId === String(user.id) || user.referredBy) return;
+    const referrer = await kvGet(env, `user:${refId}`);
+    if (!referrer) return;
+    user.referredBy = refId;
+    referrer.refCount = (Number(referrer.refCount) || 0) + 1;
+    await saveUser(env, referrer);
+    await send(env, refId, "🎉 <b>زیرمجموعه جدید!</b>\n\nیک کاربر با لینک دعوت شما وارد فروشگاه شد. به‌محض اولین خرید موفق او، پورسانت به موجودی‌تان اضافه می‌شود.");
+  } catch (_) { /* referral capture must never break a join */ }
+}
+async function awardReferral(env, rec) {
+  try {
+    if (!rec || rec.refPaid) return;
+    const buyer = await getUser(env, rec.userId);
+    const refId = buyer.referredBy;
+    if (!refId || String(refId) === String(rec.userId)) return;
+    const pct = referralPercent(await getConfig(env));
+    if (!(pct > 0)) return;
+    const amount = Math.floor(Number(rec.price) * pct) / 100; // pct% of the USD price, floored to cents
+    if (!(amount > 0)) return;
+    await withKvLock(env, `act:${rec.id}`, async () => {
+      const fresh = await kvGet(env, `act:${rec.id}`);
+      if (!fresh || fresh.refPaid || !fresh.charged) return; // refunded orders (charged=false) never earn commission
+      fresh.refPaid = amount; // flag first: concurrent syncs (bot + web polling) can never pay twice
+      await kvPut(env, `act:${rec.id}`, fresh);
+      const referrer = await getUser(env, refId);
+      referrer.balance = Math.round((Number(referrer.balance) + amount) * 100) / 100;
+      referrer.refEarned = Math.round(((Number(referrer.refEarned) || 0) + amount) * 100) / 100;
+      await saveUser(env, referrer);
+      await send(env, refId,
+        `🎉 <b>پورسانت زیرمجموعه</b>\n\nیکی از زیرمجموعه‌های شما خرید موفقی انجام داد و <b>${faNum(amount)} دلار</b> پورسانت به موجودی‌تان اضافه شد.\n\n💰 موجودی فعلی شما: <b>${faNum(referrer.balance)} دلار</b>`,
+        mainMenuKb(env, await getConfig(env), refId));
+    });
+  } catch (_) { /* commission must never break a purchase flow */ }
+}
+async function showReferral(env, chatId, msgId) {
+  const user = await getUser(env, chatId);
+  const cfg = await getConfig(env);
+  const pct = referralPercent(cfg);
+  const uname = await botUsername(env);
+  const link = uname ? `https://t.me/${uname}?start=ref_${chatId}` : "";
+  const text = pct > 0
+    ? `🎁 <b>دعوت دوستان — سیستم معرف</b>\n\nدوستانتان را با لینک اختصاصی خودتان به فروشگاه دعوت کنید؛ از هر خرید موفق آن‌ها، <b>${faNum(pct)}٪</b> از مبلغ خرید به‌صورت خودکار به موجودی شما اضافه می‌شود.\n\n🔗 <b>لینک دعوت شما:</b>\n<code>${esc(link)}</code>\n\n👥 تعداد زیرمجموعه‌ها: <b>${faDigits(user.refCount || 0)} نفر</b>\n💰 مجموع پورسانت دریافتی: <b>${faNum(user.refEarned || 0)} دلار</b>\n\nپورسانت در لحظه‌ای که کد پیامکِ خرید زیرمجموعه تحویل شود واریز می‌شود و با پیام به شما اطلاع داده می‌شود.`
+    : "🎁 <b>دعوت دوستان</b>\n\nسیستم معرف در حال حاضر غیرفعال است.";
+  const rows = [[btn("⬅️ منوی اصلی", "home")]];
+  if (msgId) return edit(env, chatId, msgId, text, kb(rows));
+  return send(env, chatId, text, kb(rows));
+}
 
 // ---------- Telegram API ----------
 function tg(env, method, body) {
@@ -796,6 +862,7 @@ function mainMenuKb(env, cfg, userId, origin, pendingCount = 0) {
     [btn("🛒 خرید شماره مجازی", "countries:0")],
     [btn("💰 موجودی من", "balance"), btn("💳 افزایش موجودی", "topup")],
     [btn("📱 سفارش‌های من", "orders")],
+    [btn("🎁 دعوت دوستان", "ref")],
   ];
   if (pendingCount > 0) rows.push([btn("⏳ پرداخت‌های در انتظار (" + faDigits(pendingCount) + ")", "pays")]);
   rows.push(origin
@@ -1119,6 +1186,9 @@ async function syncActivation(env, id) {
   }
   // Announce in the purchases group the first time a code is delivered.
   if (rec && act.latestCode) await postPurchaseToGroup(env, rec);
+  // Pay the referrer's commission the first time a code is delivered —
+  // cancelled/expired orders never get here, so they can never earn one.
+  if (rec && act.latestCode) await awardReferral(env, rec);
   return { act, rec };
 }
 
@@ -1446,6 +1516,7 @@ const SETTING_FIELDS = {
   PRICE_MARKUP_PERCENT: { label: "درصد سود فروشگاه", hint: "فقط عدد بفرستید، مثال: 20 یعنی ۲۰٪ روی قیمت تأمین‌کننده", numeric: true },
   MIN_TOPUP_USD: { label: "حداقل مبلغ شارژ (دلار)", hint: "فقط عدد بفرستید، مثال: 5 — شارژ کمتر از این مبلغ (دلاری یا معادل تومانی) ساخته نمی‌شود. برای برگشت به پیش‌فرض ۱ دلار، مقدار را حذف کنید.", numeric: true },
   LOW_BALANCE_BRL: { label: "هشدار موجودی تأمین‌کننده (رئال)", hint: "فقط عدد بفرستید، مثال: 100 — وقتی موجودی قابل‌خرید SmsFull از این مبلغ (رئال برزیل) کمتر شود، به ادمین هشدار داده می‌شود. پیش‌فرض ۱۰۰ است؛ برای خاموش کردن 0 بفرستید.", numeric: true },
+  REFERRAL_PERCENT: { label: "درصد پورسانت معرف (%)", hint: "فقط عدد بفرستید، مثال: 10 — از هر خرید موفق زیرمجموعه، این درصد از مبلغ خرید به معرف می‌رسد (در لحظه تحویل کد). پیش‌فرض ۱۰ است؛ برای خاموش کردن سیستم معرف 0 بفرستید.", numeric: true },
   SUPPORT_USERNAME: { label: "یوزرنیم پشتیبانی", hint: "بدون @ بفرستید، مثال: BlueMajaziSupport" },
   TMN_RATE_MANUAL: { label: "نرخ دستی تتر (تومان) — پشتیبان", hint: "فقط عدد بفرستید، مثال: 271000 — فقط وقتی استفاده می‌شود که نرخ زنده از والکس و اکسیر نرسد.", numeric: true },
   GROUP_CHAT_ID: { label: "آیدی گروه اعلام خرید موفق", hint: "آیدی عددی گروه را با علامت منفی بفرستید، مثال: -1001234567890 — یا ساده‌تر: ربات را در گروه اضافه کنید و همان‌جا دستور /setgroup را بفرستید تا خودکار ثبت شود." },
@@ -1471,7 +1542,7 @@ function settingHint(key) {
 const CONFIG_GROUPS = {
   card: { title: "💳 تنظیمات پرداخت کارتی", keys: ["CARD_NUMBER", "CARD_HOLDER", "CARD_BANK"] },
   wallet: { title: "🪙 کیف‌پول‌های کریپتو", keys: Object.values(CRYPTOS).map((c) => c.envKey) },
-  general: { title: "🧰 تنظیمات عمومی", keys: ["PRICE_MARKUP_PERCENT", "MIN_TOPUP_USD", "TMN_RATE_MANUAL", "GROUP_CHAT_ID", "SUPPORT_USERNAME", "WORKER_BASE_URL", "ETHERSCAN_API_KEY", "LOW_BALANCE_BRL"] },
+  general: { title: "🧰 تنظیمات عمومی", keys: ["PRICE_MARKUP_PERCENT", "MIN_TOPUP_USD", "TMN_RATE_MANUAL", "GROUP_CHAT_ID", "SUPPORT_USERNAME", "WORKER_BASE_URL", "ETHERSCAN_API_KEY", "LOW_BALANCE_BRL", "REFERRAL_PERCENT"] },
   access: { title: "🔒 عضویت و احراز هویت", keys: ["FORCE_JOIN_ENABLED", "FORCE_JOIN_CHANNEL", "PHONE_VERIFY_ENABLED"] },
 };
 const groupOfKey = (key) =>
@@ -1710,6 +1781,11 @@ async function validateSetting(key, raw) {
     const v = clean.replace(/\s/g, "");
     return /^-?\d{5,20}$/.test(v) ? { value: v } : { error: "آیدی عددی گروه معتبر نیست (مثال: -1001234567890). یا ربات را در گروه اضافه کنید و آنجا /setgroup بفرستید." };
   }
+  if (key === "REFERRAL_PERCENT") {
+    // 0 is meaningful here too (referral system off); default when unset is 10.
+    return /^\d+(\.\d+)?$/.test(clean) && Number(clean) >= 0 && Number(clean) <= 50
+      ? { value: clean } : { error: "درصد پورسانت باید عددی بین ۰ تا ۵۰ باشد (۰ یعنی سیستم معرف خاموش)." };
+  }
   if (key === "LOW_BALANCE_BRL") {
     // 0 is meaningful here (alerts off), unlike the other numeric settings.
     return /^\d+(\.\d+)?$/.test(clean) && Number(clean) >= 0 && Number(clean) <= 1000000
@@ -1853,8 +1929,14 @@ async function handleMessage(env, msg, baseUrl) {
   }
 
   if (text === "/start" || text.startsWith("/start ")) {
-    user.state = null; await saveUser(env, user);
     const param = text.split(" ")[1] || "";
+    if (param.startsWith("ref_")) {
+      // Referral capture: only at the account's first-ever contact (no
+      // stored record yet), checked before this handler saves the user.
+      const ex = await env.STORE.get(`user:${chatId}`).catch(() => null);
+      if (!ex) await applyReferral(env, user, param.slice(4));
+    }
+    user.state = null; await saveUser(env, user);
     if (param.startsWith("vfy_")) return promptPhoneVerify(env, chatId, user, param.slice(4));
     if (param === "verify") return promptPhoneVerify(env, chatId, user, null);
     return showHome(env, chatId);
@@ -2048,6 +2130,7 @@ async function handleCallback(env, cq, baseUrl) {
       await answerCb(env, cq.id, head === "cancel" ? "لغو شد" : head === "finish" ? "پایان یافت" : "درخواست پیامک مجدد ثبت شد");
       return refreshActivation(env, chatId, msgId, a);
     }
+    if (data === "ref") return showReferral(env, chatId, msgId);
     if (data === "balance") {
       const user = await getUser(env, chatId);
       const tmn = await usdtTomanRate(env);
@@ -2735,7 +2818,9 @@ async function verifyTelegramAuth(env, data) {
   if (!env.TELEGRAM_BOT_TOKEN || !data || !data.hash || !data.id) return false;
   if (Math.abs(Math.floor(Date.now() / 1000) - Number(data.auth_date || 0)) > 3600) return false; // 1h replay window
   const secret = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(env.TELEGRAM_BOT_TOKEN));
-  const check = Object.keys(data).filter((k) => k !== "hash").sort().map((k) => `${k}=${data[k]}`).join("\n");
+  // "ref" is our own referral field riding along in the login payload — it
+  // is not part of Telegram's signed data and must not enter the check string.
+  const check = Object.keys(data).filter((k) => k !== "hash" && k !== "ref").sort().map((k) => `${k}=${data[k]}`).join("\n");
   const sig = await hmacSha256Hex(secret, check);
   const a = new TextEncoder().encode(sig);
   const b = new TextEncoder().encode(String(data.hash));
@@ -2832,7 +2917,10 @@ async function handleApi(env, request, url) {
       if (!(await throttle(env, `auth:${clientIp(request)}`, 10, 60))) return jsonResp({ error: "تلاش بیش از حد؛ یک دقیقه دیگر دوباره تلاش کنید" }, 429);
       const data = await request.json().catch(() => null);
       if (!(await verifyTelegramAuth(env, data))) return jsonResp({ error: "ورود ناموفق بود؛ دوباره تلاش کنید" }, 401);
-      await getUser(env, data.id); // ensure the shared bot/web account exists
+      const existedW = !!(await env.STORE.get(`user:${data.id}`));
+      const wUser = await getUser(env, data.id); // ensure the shared bot/web account exists
+      if (!existedW && data.ref) await applyReferral(env, wUser, data.ref); // first-ever contact via a referral link
+      await saveUser(env, wUser);
       const token = await createSession(env, data);
       return jsonResp({ ok: true, token }, 200, { "set-cookie": sessionCookie(token) });
     }
@@ -2847,7 +2935,8 @@ async function handleApi(env, request, url) {
 
     if (path === "/api/me") {
       const [user, rate, cfg] = await Promise.all([getUser(env, userId), usdtTomanRate(env), getConfig(env)]);
-      return jsonResp({ id: userId, name: sess.name, username: sess.username, photoUrl: sess.photoUrl, balance: Number(user.balance), rate, support: cfg.SUPPORT_USERNAME || null, minTopup: minTopupUsd(cfg) });
+      const uname = await botUsername(env);
+      return jsonResp({ id: userId, name: sess.name, username: sess.username, photoUrl: sess.photoUrl, balance: Number(user.balance), rate, support: cfg.SUPPORT_USERNAME || null, minTopup: minTopupUsd(cfg), refPercent: referralPercent(cfg), refCount: Number(user.refCount) || 0, refEarned: Number(user.refEarned) || 0, refLink: uname ? `https://t.me/${uname}?start=ref_${userId}` : null });
     }
     if (path === "/api/countries") {
       const countries = await smsfull(env, "/countries");
@@ -3139,6 +3228,10 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
         <button class="wbtn" onclick="doInstall()">نصب</button>
         <button class="ix" onclick="dismissInstall()" aria-label="بستن">✕</button>
       </div>
+      <div class="installcard" id="refCard" style="display:none">
+        <div class="ictx"><b>🎁 دعوت دوستان</b><span id="refTxt"></span></div>
+        <button class="wbtn" onclick="copyRef()">کپی لینک</button>
+      </div>
       <input class="search" id="cSearch" placeholder="جستجوی کشور…">
       <div class="grid" id="cGrid"><div class="loading">در حال بارگذاری کشورها…</div></div>
     </section>
@@ -3246,7 +3339,9 @@ function api(path, opts){
   });
 }
 function onTelegramAuth(user){
-  api('/api/auth/telegram', { method:'POST', body: JSON.stringify(user) })
+  var payload = {}; for (var k in user) payload[k] = user[k];
+  try { var rf = sessionStorage.getItem('bm_ref'); if (rf) payload.ref = rf; } catch (e) {}
+  api('/api/auth/telegram', { method:'POST', body: JSON.stringify(payload) })
     .then(function(j){
       try { if (j.token) sessionStorage.setItem('bg_tok', j.token); } catch (e) {}
       $('loginErr').textContent = '';
@@ -3259,6 +3354,7 @@ function showApp(){ $('viewLogin').style.display='none'; $('viewApp').style.disp
 function boot(tries){
   tries = tries || 0;
   if (!tries) {
+    try { var rq = new URLSearchParams(location.search).get('ref'); if (rq) sessionStorage.setItem('bm_ref', rq); } catch(e) {}
     try { if (!localStorage.getItem('bm_intro')) showIntro(); } catch(e) {}
     if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/sw.js').catch(function(){}); }
     updateInstallCard();
@@ -3284,7 +3380,15 @@ function renderMe(){
   var ava = $('hdrAva');
   if (S.me.photoUrl) ava.innerHTML = '<img src="' + escH(S.me.photoUrl) + '" alt="">';
   else ava.textContent = (S.me.name || '؟').charAt(0);
+  var rc = $('refCard');
+  if (rc) {
+    if (S.me.refLink && S.me.refPercent > 0) {
+      rc.style.display = '';
+      $('refTxt').innerHTML = 'از هر خرید موفق زیرمجموعه‌ها <b>' + faN(S.me.refPercent) + '٪</b> پورسانت می‌گیرید.<br><span dir="ltr">' + escH(S.me.refLink) + '</span><br>👥 ' + faN(S.me.refCount) + ' زیرمجموعه · 💰 ' + faUsd(S.me.refEarned) + ' پورسانت تا امروز';
+    } else rc.style.display = 'none';
+  }
 }
+function copyRef(){ if (S.me && S.me.refLink) copyTxt(S.me.refLink); }
 function refreshMe(){ return api('/api/me').then(function(me){ S.me = me; renderMe(); updTpHint(); }); }
 function logout(){ try { sessionStorage.removeItem('bg_tok'); } catch (e) {} api('/api/auth/logout', { method:'POST' }).then(function(){ location.reload(); }); }
 function showView(name){
