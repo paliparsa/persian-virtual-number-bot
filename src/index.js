@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.18.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.19.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -3506,7 +3506,7 @@ footer{margin-top:38px;padding-top:18px;border-top:1px solid #1c1c1c;color:#7373
 footer a{color:#a3a3a3}
 #toast{position:fixed;bottom:26px;left:50%;transform:translate(-50%,16px);background:#fff;color:#000;font-size:13px;font-weight:700;padding:8px 20px;border-radius:999px;opacity:0;pointer-events:none;transition:all .25s;z-index:9;max-width:88vw;text-align:center}
 #toast.show{opacity:1;transform:translate(-50%,0)}
-@media (max-width:480px){.amtbox .amt span{font-size:23px}h1{font-size:21px}.method .ap{display:none}}
+@media (max-width:480px){.amtbox .amt span{font-size:23px}h1{font-size:21px}.method{flex-wrap:wrap}.method .ap{display:block;order:3;flex:1 1 100%;margin-top:3px;font-size:12.5px}}
 .payfoot{display:flex;gap:10px;margin-top:26px;padding-top:18px;border-top:1px solid #1c1c1e}
 .cmodal{position:fixed;inset:0;z-index:80;display:flex;align-items:flex-end;justify-content:center;background:rgba(0,0,0,.66);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);opacity:0;pointer-events:none;transition:opacity .22s}
 .cmodal.on{opacity:1;pointer-events:auto}
@@ -3980,6 +3980,16 @@ h2.title .icn{vertical-align:-5px;margin-left:2px}
 .svc .pr .usd{font-weight:800}
 .svc .pr .tmn{color:#8e8e93;font-size:12px}
 .ophead{font-size:13.5px;font-weight:700;color:#e5e5e7;margin:2px 0 10px}
+.lbar{display:flex;align-items:center;margin:2px 0 12px}
+.fbtn{display:inline-flex;align-items:center;gap:7px;background:transparent;color:#fff;border:1px solid #2c2c31;border-radius:999px;padding:7px 14px;font-family:inherit;font-size:13px;cursor:pointer}
+.flist{display:flex;flex-direction:column;gap:6px;margin-top:4px}
+.frow{display:flex;align-items:center;justify-content:space-between;gap:10px;background:#17171a;border:1px solid #26262b;border-radius:13px;padding:12px 14px;color:#fff;font-family:inherit;font-size:14px;cursor:pointer;text-align:start;width:100%}
+.frow.on{border-color:#fff}
+.pager{display:flex;align-items:center;justify-content:center;gap:6px;margin:18px 0 6px;flex-wrap:wrap}
+.pgbtn{min-width:36px;height:36px;padding:0 10px;border-radius:11px;border:1px solid #2c2c31;background:transparent;color:#fff;font-family:inherit;font-size:13.5px;cursor:pointer}
+.pgbtn.on{background:#fff;color:#000;border-color:#fff;font-weight:800}
+.pgbtn:disabled{opacity:.35;cursor:default}
+.pgdots{color:#8e8e93;padding:0 2px}
 .payc{border:1px solid rgba(255,159,67,.45);border-radius:18px;padding:14px 16px;margin:0 0 12px;background:rgba(255,159,67,.05)}
 .payc .prow1{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .payc .prow1 b{font-size:17px}
@@ -4267,7 +4277,7 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
 <div class="pconfirm" id="pkgConfirm" onclick="if(event.target===this)closePkgConfirm()"><div class="mbox" id="pkgConfirmBox"></div></div>
 <div class="sheet" id="sheet" role="dialog" aria-modal="true"><div class="grab"></div><div id="sheetBody"></div></div>
 <script>
-var S = { me:null, countries:[], country:null, services:[], rate:null, sel:null, act:null, poll:null, cd:null, view:'account', lang:'fa', knownPending:null, knownApproved:null };
+var S = { me:null, countries:[], country:null, services:[], rate:null, sel:null, act:null, poll:null, cd:null, view:'account', lang:'fa', knownPending:null, knownApproved:null, ordPage:1, ordFilter:'all', ordersAll:null, payPage:1, payFilter:'all', payData:null };
 try { S.lang = localStorage.getItem('bm_lang') || 'fa'; } catch (e) {}
 function W(fa, en){ return S.lang === 'en' ? en : fa; }
 function $(id){ return document.getElementById(id); }
@@ -4659,21 +4669,97 @@ function copyTxt(txt, el){
     document.body.removeChild(ta); done();
   }
 }
+var ORD_FILTERS = [
+  { k: 'all', fa: 'همه', en: 'All' },
+  { k: 'done', fa: 'پایان‌یافته', en: 'Completed' },
+  { k: 'progress', fa: 'در حال تکمیل', en: 'In progress' },
+  { k: 'cancelled', fa: 'لغو شده', en: 'Cancelled' }
+];
+var PAY_FILTERS = [
+  { k: 'all', fa: 'همه', en: 'All' },
+  { k: 'done', fa: 'شارژ شده', en: 'Credited' },
+  { k: 'progress', fa: 'در انتظار', en: 'Pending' },
+  { k: 'cancelled', fa: 'لغو شده', en: 'Cancelled' }
+];
+function ordCat(st){
+  if (st === 'codeReceived' || st === 'finished') return 'done';
+  if (st === 'cancelled' || st === 'expired' || st === 'refunded') return 'cancelled';
+  return 'progress';
+}
+function payCat(t){
+  if (t.status === 'approved') return 'done';
+  if (t.status === 'pending') return 'progress';
+  return 'cancelled';
+}
+function listToolbar(kind){
+  var defs = kind === 'orders' ? ORD_FILTERS : PAY_FILTERS;
+  var cur = kind === 'orders' ? S.ordFilter : S.payFilter;
+  var lab = defs[0]; defs.forEach(function(d){ if (d.k === cur) lab = d; });
+  var funnel = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 3H2l8 9.46V19l4 2v-8.54z"/></svg>';
+  return '<div class="lbar"><button class="fbtn" data-kind="' + kind + '" onclick="openFilterEl(this)">' + funnel + '<span>' + W('فیلتر', 'Filter') + ': ' + W(lab.fa, lab.en) + '</span></button></div>';
+}
+function openFilterEl(el){ openFilterSheet(el.getAttribute('data-kind')); }
+function setFilterEl(el){ setFilter(el.getAttribute('data-kind'), el.getAttribute('data-k')); }
+function setPageEl(el){ setPage(el.getAttribute('data-kind'), Number(el.getAttribute('data-p'))); }
+function openFilterSheet(kind){
+  var defs = kind === 'orders' ? ORD_FILTERS : PAY_FILTERS;
+  var cur = kind === 'orders' ? S.ordFilter : S.payFilter;
+  var chk = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+  var rows = defs.map(function(d){
+    return '<button class="frow' + (d.k === cur ? ' on' : '') + '" data-kind="' + kind + '" data-k="' + d.k + '" onclick="setFilterEl(this)"><span>' + W(d.fa, d.en) + '</span>' + (d.k === cur ? chk : '') + '</button>';
+  }).join('');
+  openSheet('<h3 style="margin-top:6px">' + (kind === 'orders' ? W('فیلتر سفارش‌ها', 'Filter orders') : W('فیلتر پرداخت‌ها', 'Filter payments')) + '</h3><div class="flist">' + rows + '</div>');
+}
+function setFilter(kind, k){
+  if (kind === 'orders') { S.ordFilter = k; S.ordPage = 1; renderOrders(); }
+  else { S.payFilter = k; S.payPage = 1; renderPays(); }
+  closeSheet();
+}
+function setPage(kind, n){
+  if (kind === 'orders') { S.ordPage = n; renderOrders(); }
+  else { S.payPage = n; renderPays(); }
+}
+function pagerHtml(kind, cur, total){
+  if (total <= 1) return '';
+  var nums = [1];
+  if (cur > 3) nums.push('…');
+  for (var n = Math.max(2, cur - 1); n <= Math.min(total - 1, cur + 1); n++) nums.push(n);
+  if (cur < total - 2) nums.push('…');
+  nums.push(total);
+  var h = '<div class="pager"><button class="pgbtn" data-kind="' + kind + '" data-p="' + (cur - 1) + '"' + (cur <= 1 ? ' disabled' : '') + ' onclick="setPageEl(this)">‹</button>';
+  nums.forEach(function(n){
+    h += n === '…' ? '<span class="pgdots">…</span>' : '<button class="pgbtn' + (n === cur ? ' on' : '') + '" data-kind="' + kind + '" data-p="' + n + '" onclick="setPageEl(this)">' + faN(n) + '</button>';
+  });
+  h += '<button class="pgbtn" data-kind="' + kind + '" data-p="' + (cur + 1) + '"' + (cur >= total ? ' disabled' : '') + ' onclick="setPageEl(this)">›</button></div>';
+  return h;
+}
+function ordRow(o){
+  var rbSvg = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>';
+  var dt = o.createdAt ? new Date(o.createdAt).toLocaleString(S.lang === 'en' ? 'en-GB' : 'fa-IR', { timeZone:'Asia/Tehran' }) : '';
+  var dead = ['cancelled','expired','refunded'].indexOf(o.status) !== -1;
+  var ph = dead ? maskPhoneW(o.phone) : o.phone;
+  var cn = o.countryId ? countryNameOf(o.countryId) : '';
+  var rb = o.countryId ? '<button class="mini rebuy" onclick="event.stopPropagation();rebuyOrder(' + o.countryId + ',' + (o.serviceId || 0) + ')">' + rbSvg + W('خرید مجدد', 'Buy again') + '</button>' : '';
+  return '<div class="hrow ordclick" onclick="openOrder(' + o.id + ')"><div class="hmain"><b>' + escH(ph) + '</b><span>' + escH(o.serviceName) + (cn ? ' — ' + escH(cn) : '') + '</span>' + rb + '</div><div class="hside"><span class="hstatus ' + ordStatusCls(o.status) + '">' + escH(statusTxt(o.status)) + '</span><span class="hdate">' + escH(dt) + '</span></div></div>';
+}
 function loadOrders(){
   $('ordList').innerHTML = '<div class="loading">' + W('در حال بارگذاری…', 'Loading…') + '</div>';
   api('/api/orders').then(function(j){
-    var html = '';
-    var rbSvg = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>';
-    (j.orders||[]).forEach(function(o){
-      var dt = o.createdAt ? new Date(o.createdAt).toLocaleString(S.lang === 'en' ? 'en-GB' : 'fa-IR', { timeZone:'Asia/Tehran' }) : '';
-      var dead = ['cancelled','expired','refunded'].indexOf(o.status) !== -1;
-      var ph = dead ? maskPhoneW(o.phone) : o.phone;
-      var cn = o.countryId ? countryNameOf(o.countryId) : '';
-      var rb = o.countryId ? '<button class="mini rebuy" onclick="event.stopPropagation();rebuyOrder(' + o.countryId + ',' + (o.serviceId || 0) + ')">' + rbSvg + W('خرید مجدد', 'Buy again') + '</button>' : '';
-      html += '<div class="hrow ordclick" onclick="openOrder(' + o.id + ')"><div class="hmain"><b>' + escH(ph) + '</b><span>' + escH(o.serviceName) + (cn ? ' — ' + escH(cn) : '') + '</span>' + rb + '</div><div class="hside"><span class="hstatus ' + ordStatusCls(o.status) + '">' + escH(statusTxt(o.status)) + '</span><span class="hdate">' + escH(dt) + '</span></div></div>';
-    });
-    $('ordList').innerHTML = html || '<div class="loading">' + W('هنوز سفارشی ندارید', 'No orders yet') + '</div>';
+    S.ordersAll = j.orders || [];
+    renderOrders();
   }).catch(function(e){ $('ordList').innerHTML = '<div class="loading">' + escH(e.message) + '</div>'; });
+}
+function renderOrders(){
+  if (!S.ordersAll) return;
+  var filtered = S.ordFilter === 'all' ? S.ordersAll : S.ordersAll.filter(function(o){ return ordCat(o.status) === S.ordFilter; });
+  var pages = Math.max(1, Math.ceil(filtered.length / 10));
+  if (S.ordPage > pages) S.ordPage = pages;
+  if (S.ordPage < 1) S.ordPage = 1;
+  var slice = filtered.slice((S.ordPage - 1) * 10, S.ordPage * 10);
+  var html = listToolbar('orders');
+  html += slice.length ? slice.map(ordRow).join('') : '<div class="loading">' + (S.ordersAll.length ? W('در این فیلتر موردی نیست', 'Nothing matches this filter') : W('هنوز سفارشی ندارید', 'No orders yet')) + '</div>';
+  html += pagerHtml('orders', S.ordPage, pages);
+  $('ordList').innerHTML = html;
 }
 function maskPhoneW(p){
   var d = String(p || '').replace(/\D/g, '');
@@ -4796,20 +4882,30 @@ function loadOpenPays(){
     $('openPays').innerHTML = list.length ? '<div class="ophead">' + W('پرداخت‌های باز شما', 'Your open payments') + '</div>' + list.map(openPayCard).join('') : '';
   }).catch(function(){});
 }
+function payHistRow(t){
+  var st = payStatusInfo(t);
+  var amtCls = t.status === 'approved' ? 'ok' : (['cancelled','rejected','expired'].indexOf(t.status) !== -1 ? 'bad' : '');
+  return '<div class="hrow"><div class="hmain"><b class="' + amtCls + '">' + faUsd(t.creditUsd) + '</b><span>' + methodLabel(t) + (t.bonusUsd > 0 ? W(' — بونوس +', ' — bonus +') + faUsd(t.bonusUsd) : '') + '</span></div><div class="hside"><span class="hstatus ' + st.cls + '">' + st.txt + '</span><span class="hdate">' + tehranFull(t.createdAt) + '</span></div></div>';
+}
 function loadPayHistory(){
   api('/api/topups').then(function(d){
     watchTopups(d);
-    var open = d.pending || [], hist = d.history || [];
-    var html = '';
-    if (open.length) html += '<div class="ophead">' + W('پرداخت‌های باز', 'Open payments') + '</div>' + open.map(openPayCard).join('');
-    html += '<div class="ophead" style="margin-top:' + (open.length ? '18' : '2') + 'px">' + W('تاریخچه پرداخت‌ها', 'Payment history') + '</div>';
-    html += hist.length ? hist.map(function(t){
-      var st = payStatusInfo(t);
-      var amtCls = t.status === 'approved' ? 'ok' : (['cancelled','rejected','expired'].indexOf(t.status) !== -1 ? 'bad' : '');
-      return '<div class="hrow"><div class="hmain"><b class="' + amtCls + '">' + faUsd(t.creditUsd) + '</b><span>' + methodLabel(t) + (t.bonusUsd > 0 ? W(' — بونوس +', ' — bonus +') + faUsd(t.bonusUsd) : '') + '</span></div><div class="hside"><span class="hstatus ' + st.cls + '">' + st.txt + '</span><span class="hdate">' + tehranFull(t.createdAt) + '</span></div></div>';
-    }).join('') : '<div class="loading">' + W('هنوز پرداختی ثبت نشده است.', 'No payments yet.') + '</div>';
-    $('payHist').innerHTML = html;
+    S.payData = { open: d.pending || [], hist: d.history || [] };
+    renderPays();
   }).catch(function(e){ $('payHist').innerHTML = '<div class="loading">' + escH(e.message) + '</div>'; });
+}
+function renderPays(){
+  if (!S.payData) return;
+  var items = S.payData.open.map(function(t){ return { t: t, open: true }; }).concat(S.payData.hist.map(function(t){ return { t: t, open: false }; }));
+  var filtered = S.payFilter === 'all' ? items : items.filter(function(x){ return payCat(x.t) === S.payFilter; });
+  var pages = Math.max(1, Math.ceil(filtered.length / 10));
+  if (S.payPage > pages) S.payPage = pages;
+  if (S.payPage < 1) S.payPage = 1;
+  var slice = filtered.slice((S.payPage - 1) * 10, S.payPage * 10);
+  var html = listToolbar('pays');
+  html += slice.length ? slice.map(function(x){ return x.open ? openPayCard(x.t) : payHistRow(x.t); }).join('') : '<div class="loading">' + (items.length ? W('در این فیلتر موردی نیست', 'Nothing matches this filter') : W('هنوز پرداختی ثبت نشده است.', 'No payments yet.')) + '</div>';
+  html += pagerHtml('pays', S.payPage, pages);
+  $('payHist').innerHTML = html;
 }
 function renderPkgs(){
   var row = $('pkgRow'); if (!row) return;
