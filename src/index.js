@@ -10,10 +10,11 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.7.1"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.7.2"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
+const USDT_ERC20_CONTRACT = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
 
 // ---------- small helpers ----------
 const faDigits = (v) => String(v).replace(/[0-9]/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[+d]);
@@ -440,7 +441,7 @@ async function findCryptoCandidates(env, topup) {
       const d = await r.json().catch(() => ({}));
       for (const t of d.data || []) {
         const ts = Math.floor(t.block_timestamp / 1000);
-        if (t.to === addr && ts >= sinceSec) out.push({ txid: t.transaction_id, amount: Number(t.value) / 1e6, ts, confirmed: true });
+        if (t.to === addr && t.type === "Transfer" && ts >= sinceSec) out.push({ txid: t.transaction_id, amount: Number(t.value) / 1e6, ts, confirmed: true });
       }
     } else if (topup.crypto === "TRX") {
       const wantHex = tronBase58ToHex(addr);
@@ -469,29 +470,63 @@ async function findCryptoCandidates(env, topup) {
       const d = await r.json().catch(() => ({}));
       for (const tx of d.result || []) {
         const msg = tx.in_msg;
-        if (msg && Number(tx.utime) >= sinceSec)
+        // Only genuine incoming transfers count: an internal message with a
+        // real sender. Transactions the wallet itself initiated are triggered
+        // by external messages (empty source) whose attached value is the
+        // amount being SENT plus fees — those must never count as deposits.
+        if (msg && msg.source && Number(tx.utime) >= sinceSec)
           out.push({ txid: tx.transaction_id?.hash || `${tx.utime}:${tx.lt || ""}`, amount: Number(msg.value || 0) / 1e9, ts: Number(tx.utime), confirmed: true });
       }
     } else if (topup.crypto === "USDT_BEP20") {
-      const rpcCall = async (rpc, method, params) => {
-        const r = await fetch(rpc, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
-        const d = await r.json();
-        if (d.error) throw new Error(d.error.message || "rpc error");
-        return d.result;
-      };
-      const toTopic = "0x" + "0".repeat(24) + addr.replace(/^0x/i, "").toLowerCase();
-      const transferTopic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
-      const elapsedBlocks = Math.ceil((now() - topup.createdAt) / 3000) + 300;
-      const span = Math.min(Math.max(elapsedBlocks, 600), 5000);
-      for (const rpc of ["https://bsc-dataseed.bnbchain.org", "https://bsc.publicnode.com", "https://bsc-dataseed1.defibit.io"]) {
+      // Source 1: Etherscan V2 unified API (chainid 56 = BSC) when a key is
+      // configured — the same free key that powers ERC20. Since 2025 most
+      // public BSC RPC nodes reject anonymous eth_getLogs, so this is the
+      // reliable path when available.
+      if (env.ETHERSCAN_API_KEY) {
         try {
-          const latest = parseInt(await rpcCall(rpc, "eth_blockNumber", []), 16);
-          const logs = await rpcCall(rpc, "eth_getLogs", [{ fromBlock: "0x" + Math.max(0, latest - span).toString(16), toBlock: "latest", address: USDT_BSC_CONTRACT, topics: [transferTopic, null, toTopic] }]);
-          if (Array.isArray(logs)) {
-            for (const l of logs) out.push({ txid: l.transactionHash, amount: Number(BigInt(l.data)) / 1e18, ts: Math.floor(now() / 1000), confirmed: true });
-            break;
+          const r = await fetch(`https://api.etherscan.io/v2/api?chainid=56&module=account&action=tokentx&contractaddress=${USDT_BSC_CONTRACT}&address=${addr}&sort=desc&apikey=<redacted>`);
+          const d = await r.json().catch(() => ({}));
+          for (const tx of Array.isArray(d.result) ? d.result : []) {
+            if (String(tx.to).toLowerCase() === addr.toLowerCase() && Number(tx.timeStamp) >= sinceSec)
+              out.push({ txid: tx.hash, amount: Number(tx.value) / 10 ** (Number(tx.tokenDecimal) || 18), ts: Number(tx.timeStamp), confirmed: true });
           }
-        } catch (_) { /* try the next RPC node */ }
+        } catch (_) { /* fall through to RPC logs */ }
+      }
+      // Source 2 (keyless): eth_getLogs on public BSC RPCs. BSC now produces
+      // a block every ~0.45s, so the lookback span is derived from when the
+      // amount was selected (plus margin). Every candidate log is verified
+      // against its block's real timestamp — a transfer from before this
+      // payment existed can never match it (logs carry no timestamp).
+      if (!out.length) {
+        const rpcCall = async (rpc, method, params) => {
+          const r = await fetch(rpc, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
+          const d = await r.json();
+          if (d.error) throw new Error(d.error.message || "rpc error");
+          return d.result;
+        };
+        const toTopic = "0x" + "0".repeat(24) + addr.replace(/^0x/i, "").toLowerCase();
+        const transferTopic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+        const elapsedBlocks = Math.ceil((now() - (topup.selectedAt || topup.createdAt)) / 450) + 800;
+        const span = Math.min(Math.max(elapsedBlocks, 2000), 4900);
+        for (const rpc of ["https://bsc-mainnet.public.blastapi.io", "https://bsc-dataseed.bnbchain.org", "https://bsc.publicnode.com", "https://bsc-dataseed1.defibit.io"]) {
+          try {
+            const latest = parseInt(await rpcCall(rpc, "eth_blockNumber", []), 16);
+            const logs = await rpcCall(rpc, "eth_getLogs", [{ fromBlock: "0x" + Math.max(0, latest - span).toString(16), toBlock: "latest", address: USDT_BSC_CONTRACT, topics: [transferTopic, null, toTopic] }]);
+            if (Array.isArray(logs)) {
+              const blockTs = {};
+              for (const l of logs) {
+                if (blockTs[l.blockNumber] === undefined) {
+                  const b = await rpcCall(rpc, "eth_getBlockByNumber", [l.blockNumber, false]).catch(() => null);
+                  blockTs[l.blockNumber] = b ? parseInt(b.timestamp, 16) : 0;
+                }
+                const ts = blockTs[l.blockNumber] || 0;
+                if (ts && ts < sinceSec) continue; // predates this payment
+                out.push({ txid: l.transactionHash, amount: Number(BigInt(l.data)) / 1e18, ts: ts || Math.floor(now() / 1000), confirmed: true });
+              }
+              break;
+            }
+          } catch (_) { /* try the next RPC node */ }
+        }
       }
     } else if (topup.crypto === "LTC") {
       const r = await fetch(`https://api.blockcypher.com/v1/ltc/main/addrs/${addr}/full?limit=50`);
@@ -501,15 +536,35 @@ async function findCryptoCandidates(env, topup) {
         const ts = tx.received ? Math.floor(new Date(tx.received).getTime() / 1000) : Math.floor(now() / 1000);
         if (sat > 0 && ts >= sinceSec - 3600) out.push({ txid: tx.hash, amount: sat / 1e8, ts, confirmed: Number(tx.confirmations || 0) >= 1 });
       }
-    } else if ((topup.crypto === "ETH" || topup.crypto === "USDT_ERC20") && env.ETHERSCAN_API_KEY) {
+    } else if (topup.crypto === "ETH" || topup.crypto === "USDT_ERC20") {
       const isToken = topup.crypto === "USDT_ERC20";
-      const action = isToken ? "tokentx" : "txlist";
-      const contract = isToken ? `&contractaddress=0xdAC17F958D2ee523a2206206994597C13D831ec7` : "";
-      const r = await fetch(`https://api.etherscan.io/api?module=account&action=${action}${contract}&address=${addr}&sort=desc&apikey=<redacted>`);
-      const d = await r.json().catch(() => ({}));
-      for (const tx of Array.isArray(d.result) ? d.result : []) {
-        if (String(tx.to).toLowerCase() === addr.toLowerCase() && Number(tx.timeStamp) >= sinceSec)
-          out.push({ txid: tx.hash, amount: Number(tx.value) / (isToken ? 1e6 : 1e18), ts: Number(tx.timeStamp), confirmed: true });
+      // Keyless primary for USDT: Blockscout's public Ethereum index — no
+      // API key needed, so ERC20 detection works out of the box.
+      if (isToken) {
+        try {
+          const r = await fetch(`https://eth.blockscout.com/api/v2/addresses/${addr}/token-transfers?type=ERC-20&token=${USDT_ERC20_CONTRACT}`);
+          const d = await r.json().catch(() => ({}));
+          for (const it of d.items || []) {
+            const ts = Math.floor(new Date(it.timestamp || 0).getTime() / 1000);
+            if (String(it?.to?.hash || "").toLowerCase() === addr.toLowerCase() && ts >= sinceSec)
+              out.push({ txid: it.transaction_hash, amount: Number(it?.total?.value || 0) / 10 ** (Number(it?.total?.decimals) || 6), ts, confirmed: true });
+          }
+        } catch (_) { /* fall through to Etherscan */ }
+      }
+      // Etherscan API V2 — the V1 endpoint was shut down in 2025 and returns
+      // an error STRING as `result`, which silently produced zero candidates
+      // (no ERC20 payment could ever be detected). Needs ETHERSCAN_API_KEY.
+      if (env.ETHERSCAN_API_KEY) {
+        try {
+          const action = isToken ? "tokentx" : "txlist";
+          const contract = isToken ? `&contractaddress=${USDT_ERC20_CONTRACT}` : "";
+          const r = await fetch(`https://api.etherscan.io/v2/api?chainid=1&module=account&action=${action}${contract}&address=${addr}&sort=desc&apikey=<redacted>`);
+          const d = await r.json().catch(() => ({}));
+          for (const tx of Array.isArray(d.result) ? d.result : []) {
+            if (String(tx.to).toLowerCase() === addr.toLowerCase() && Number(tx.timeStamp) >= sinceSec && tx.isError !== "1")
+              out.push({ txid: tx.hash, amount: Number(tx.value) / (isToken ? 10 ** (Number(tx.tokenDecimal) || 6) : 1e18), ts: Number(tx.timeStamp), confirmed: true });
+          }
+        } catch (_) { /* network hiccup: Blockscout results (if any) stand */ }
       }
     }
   } catch (_) { /* network hiccup: no candidates this round, cron retries */ }
