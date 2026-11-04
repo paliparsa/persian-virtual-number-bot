@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.21.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.22.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -565,9 +565,28 @@ async function throttle(env, key, limit, windowSec) {
 const clientIp = (request) => request.headers.get("cf-connecting-ip") || "unknown";
 // Full diagnostics on /health and /setup are only shown to whoever knows the
 // diag key (DIAG_KEY, or the webhook secret as a fallback).
-const diagKeyOk = (env, url) => {
-  const k = url.searchParams.get("k");
-  return !!k && ((env.DIAG_KEY && k === env.DIAG_KEY) || (env.WEBHOOK_SECRET && k === env.WEBHOOK_SECRET));
+// Constant-time secret comparison: hash both sides, then XOR-accumulate,
+// so the comparison leaks nothing about where the strings differ.
+async function safeEq(a, b) {
+  if (!a || !b) return false;
+  const enc = new TextEncoder();
+  const [ha, hb] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(String(a))),
+    crypto.subtle.digest("SHA-256", enc.encode(String(b))),
+  ]);
+  const va = new Uint8Array(ha), vb = new Uint8Array(hb);
+  let diff = 0;
+  for (let i = 0; i < va.length; i++) diff |= va[i] ^ vb[i];
+  return diff === 0;
+}
+// The diag key may arrive as ?k= (convenient in a browser) or as an
+// x-diag-key header (keeps it out of URLs and logs).
+const diagKeyOk = async (env, url, request) => {
+  const k = url.searchParams.get("k") || (request ? request.headers.get("x-diag-key") : null);
+  if (!k) return false;
+  if (env.DIAG_KEY && (await safeEq(k, env.DIAG_KEY))) return true;
+  if (env.WEBHOOK_SECRET && (await safeEq(k, env.WEBHOOK_SECRET))) return true;
+  return false;
 };
 
 // Candidate on-chain transfers TO this topup's wallet since the payment
@@ -1374,7 +1393,7 @@ const serviceLabel = (cfg, fx, tmn, s, lang = "fa") => {
 async function showServices(env, chatId, msgId, countryId, page) {
   const cfg = await getConfig(env);
   const [fx, tmn] = await Promise.all([brlToUsdRate(env), usdtTomanRate(env)]);
-  const services = await smsfull(env, `/services?countryId=${countryId}`);
+  const services = await smsfull(env, `/services?countryId=${Number(countryId)}`);
   const user = await getUser(env, chatId);
   const avail = services.filter((s) => s.available > 0);
   const items = avail.map((s) => ({ label: serviceLabel(cfg, fx, tmn, s, user.lang), id: s.id }));
@@ -1391,7 +1410,7 @@ async function showServices(env, chatId, msgId, countryId, page) {
 async function showServiceSearchResults(env, chatId, countryId, query) {
   const cfg = await getConfig(env);
   const [fx, tmn] = await Promise.all([brlToUsdRate(env), usdtTomanRate(env)]);
-  const services = await smsfull(env, `/services?countryId=${countryId}`);
+  const services = await smsfull(env, `/services?countryId=${Number(countryId)}`);
   const hits = services.filter((s) => s.available > 0 && serviceMatches(s, query)).slice(0, 20);
   const user = await getUser(env, chatId);
   if (!hits.length) {
@@ -1404,7 +1423,7 @@ async function showServiceSearchResults(env, chatId, countryId, query) {
 }
 
 async function showConfirm(env, chatId, msgId, countryId, serviceId) {
-  const services = await smsfull(env, `/services?countryId=${countryId}`);
+  const services = await smsfull(env, `/services?countryId=${Number(countryId)}`);
   const s = services.find((x) => x.id === Number(serviceId));
   const user0 = await getUser(env, chatId);
   if (!s) return edit(env, chatId, msgId, tr(user0, "این سرویس دیگر موجود نیست.", "This service is no longer available."), isEn(user0) ? kb([[btn("⬅️ Back", "countries:0")]]) : backKb);
@@ -1468,7 +1487,7 @@ async function buyActivation(env, userId, countryId, serviceId, onProgress, coup
   return res;
 }
 async function buyActivationInner(env, userId, countryId, serviceId, onProgress, couponCode = null) {
-  const services = await smsfull(env, `/services?countryId=${countryId}`);
+  const services = await smsfull(env, `/services?countryId=${Number(countryId)}`);
   const s = services.find((x) => x.id === Number(serviceId));
   if (!s) throw Object.assign(new Error("سرویس موجود نیست"), { kind: "noService" });
   const cfg = await getConfig(env);
@@ -2594,6 +2613,9 @@ async function handleMessage(env, msg, baseUrl) {
     if (text === "/cancel") {
       user.state = null; await saveUser(env, user);
       return send(env, chatId, "انصراف داده شد.", backKb);
+    }
+    if (!(await throttle(env, `cpnb:${chatId}`, 10, 600))) {
+      return send(env, chatId, "⏳ تعداد تلاش برای کد تخفیف زیاد شده است؛ چند دقیقه دیگر دوباره تلاش کنید.", backKb);
     }
     const code = text.toUpperCase().replace(/\s/g, "");
     const c = await getCoupon(env, code);
@@ -3805,13 +3827,18 @@ async function handleApi(env, request, url) {
       return jsonResp({ countries: countries.map((c) => ({ id: c.id, name: countryEnName(c), emoji: c.emoji || "🌍" })) });
     }
     if (path === "/api/services") {
-      const countryId = url.searchParams.get("countryId");
+      const countryId = Number(url.searchParams.get("countryId"));
+      if (!(countryId > 0)) return jsonResp({ error: "کشور نامعتبر است" }, 400);
       const cfg = await getConfig(env);
       const [fx, rate] = await Promise.all([brlToUsdRate(env), usdtTomanRate(env)]);
-      const services = await smsfull(env, `/services?countryId=${countryId}`);
+      const services = await smsfull(env, `/services?countryId=${Number(countryId)}`);
       return jsonResp({ rate, services: services.filter((x) => x.available > 0).map((x) => ({ id: x.id, name: x.name, available: x.available, priceUsd: fx ? sellPrice(cfg, x.price * fx) : null })) });
     }
     if (path === "/api/coupon/check" && request.method === "POST") {
+      // This endpoint is an oracle for code validity — throttle it hard so
+      // codes cannot be enumerated by a logged-in account.
+      if (!(await throttle(env, `cpn:${userId}`, 10, 60)) || !(await throttle(env, `cpn:ip:${clientIp(request)}`, 30, 60)))
+        return jsonResp({ ok: false, error: "تلاش بیش از حد؛ کمی صبر کنید" }, 429);
       const body = await request.json().catch(() => ({}));
       const price = Number(body.price);
       if (!body.code || !(price > 0)) return jsonResp({ ok: false, error: "کد یا مبلغ معتبر نیست." });
@@ -4083,7 +4110,9 @@ h2.title .icn{vertical-align:-5px;margin-left:2px}
 .formcard .chips{margin-bottom:12px}
 .formcard .amtin{margin-bottom:10px}
 .ordclick{cursor:pointer}
-.hrow .rebuy{display:inline-flex;align-items:center;gap:5px;margin-top:6px}
+.hrow .hside{display:flex;flex-direction:column;align-items:flex-end;gap:3px}
+.hrow .rebuy{display:inline-flex;align-items:center;gap:5px;margin-top:5px;background:transparent;color:#fff;border:1px solid rgba(255,255,255,.28);border-radius:999px;padding:5px 11px;font:inherit;font-size:12px;font-weight:700;cursor:pointer}
+.hrow .rebuy:active{background:rgba(255,255,255,.14)}
 .pkgrow:empty{display:none}
 .pkgcard{background:linear-gradient(180deg,rgba(255,255,255,.055),rgba(255,255,255,.02));border:1px solid rgba(255,255,255,.13);border-radius:15px;padding:12px 10px;color:#fff;font:inherit;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:4px}
 .pkgcard:active{transform:scale(.98)}
@@ -4835,8 +4864,8 @@ function ordRow(o){
   var dead = ['cancelled','expired','refunded'].indexOf(o.status) !== -1;
   var ph = dead ? maskPhoneW(o.phone) : o.phone;
   var cn = o.countryId ? countryNameOf(o.countryId) : '';
-  var rb = o.countryId ? '<button class="mini rebuy" onclick="event.stopPropagation();rebuyOrder(' + o.countryId + ',' + (o.serviceId || 0) + ')">' + rbSvg + W('خرید مجدد', 'Buy again') + '</button>' : '';
-  return '<div class="hrow ordclick" onclick="openOrder(' + o.id + ')"><div class="hmain"><b>' + escH(ph) + '</b><span>' + escH(o.serviceName) + (cn ? ' — ' + escH(cn) : '') + '</span>' + rb + '</div><div class="hside"><span class="hstatus ' + ordStatusCls(o.status) + '">' + escH(statusTxt(o.status)) + '</span><span class="hdate">' + escH(dt) + '</span></div></div>';
+  var rb = o.countryId ? '<button class="rebuy" onclick="event.stopPropagation();rebuyOrder(' + o.countryId + ',' + (o.serviceId || 0) + ')">' + rbSvg + W('خرید مجدد', 'Buy again') + '</button>' : '';
+  return '<div class="hrow ordclick" onclick="openOrder(' + o.id + ')"><div class="hmain"><b>' + escH(ph) + '</b><span>' + escH(o.serviceName) + (cn ? ' — ' + escH(cn) : '') + '</span></div><div class="hside"><span class="hstatus ' + ordStatusCls(o.status) + '">' + escH(statusTxt(o.status)) + '</span><span class="hdate">' + escH(dt) + '</span>' + rb + '</div></div>';
 }
 function loadOrders(){
   $('ordList').innerHTML = '<div class="loading">' + W('در حال بارگذاری…', 'Loading…') + '</div>';
@@ -5266,7 +5295,7 @@ export default {
     // in the background — no manual setWebhook call is needed after deploy.
     if (url.pathname !== "/webhook") ctx.waitUntil(rememberOriginAndWebhook(env, url.origin));
     if (url.pathname === "/setup") {
-      const full = diagKeyOk(env, url);
+      const full = await diagKeyOk(env, url, request);
       const lastSetup = await kvGet(env, "sys:setupAt");
       if (!full && lastSetup && now() - lastSetup.at < 30000) return Response.json({ ok: true, kv: !!env.STORE, throttled: true });
       await kvPut(env, "sys:setupAt", { at: now() }, 120);
@@ -5328,7 +5357,7 @@ export default {
       return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...HTML_SEC } });
     }
     if (url.pathname === "/health") {
-      if (!diagKeyOk(env, url)) return Response.json({ ok: true, version: BOT_VERSION });
+      if (!(await diagKeyOk(env, url, request))) return Response.json({ ok: true, version: BOT_VERSION });
       // Full probes are cached for 60s: this endpoint is public, and each
       // probe used to fan out to several external APIs on every single hit.
       let diag = await kvGet(env, "diag:health");
@@ -5357,7 +5386,7 @@ export default {
     if (url.pathname === "/webhook" && request.method === "POST") {
       if (env.WEBHOOK_SECRET) {
         const secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
-        if (secret !== env.WEBHOOK_SECRET) return new Response("forbidden", { status: 403 });
+        if (!(await safeEq(secret, env.WEBHOOK_SECRET))) return new Response("forbidden", { status: 403 });
       }
       const update = await request.json().catch(() => ({}));
       const work = (async () => {
