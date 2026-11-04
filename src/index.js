@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.9.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.10.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -89,6 +89,43 @@ async function setConfigValue(env, key, value) {
   if (value === "" || value === null) delete stored[key]; else stored[key] = value;
   await kvPut(env, "config", stored);
   return getConfig(env);
+}
+
+// ---------- admin audit log ----------
+// Every panel mutation and receipt decision is recorded (who/when/what,
+// old -> new) so a changed wallet address or card number is never a mystery.
+// Entries live 90 days under audit:<ts>:<uid>. Secret values are stored
+// masked (displayVal) — the log itself must not become a secret leak.
+async function logAudit(env, entry) {
+  try {
+    const e = { at: now(), actor: String(entry.actor || env.ADMIN_CHAT_ID || ""), ...entry };
+    if (SECRET_KEYS.includes(e.key)) {
+      e.oldV = displayVal(e.key, e.oldV || "");
+      e.newV = displayVal(e.key, e.newV || "");
+    }
+    await kvPut(env, `audit:${String(e.at).padStart(13, "0")}:${uid().slice(0, 8)}`, e, 90 * 24 * 3600);
+  } catch (_) { /* logging must never break the action it records */ }
+}
+function auditEntryText(e) {
+  const label = e.label || e.key || "";
+  if (e.action === "set") return `✏️ تنظیم «${label}» تغییر کرد\nاز: ${shortVal(e.oldV || "")} ← به: ${shortVal(e.newV || "")}`;
+  if (e.action === "del") return `🗑 تنظیم «${label}» حذف شد (بود: ${shortVal(e.oldV || "")})`;
+  if (e.action === "toggle") return `🔘 «${label}» ${e.newV === "1" ? "روشن شد ✅" : "خاموش شد ⚪️"}`;
+  if (e.action === "apr") return `✅ رسید شارژ تأیید و حساب کاربر شارژ شد — ${e.extra || ""}`;
+  if (e.action === "rej") return `❌ رسید شارژ رد شد — ${e.extra || ""}`;
+  return `${e.action} — ${label}`;
+}
+async function showAuditLog(env, chatId, msgId) {
+  const all = (await kvList(env, "audit:")).sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 15);
+  let text = "📜 <b>سوابق تغییرات پنل مدیریت</b>\n<span>(۱۵ مورد آخر؛ سوابق ۹۰ روز نگه داشته می‌شوند)</span>";
+  if (!all.length) text += "\n\nهنوز تغییری ثبت نشده است.";
+  for (const e of all) {
+    const when = new Date(e.at).toLocaleString("fa-IR", { timeZone: "Asia/Tehran", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" });
+    text += `\n\n🕐 ${esc(when)}\n${esc(auditEntryText(e))}`;
+  }
+  const rows = [[btn("🛠 پنل مدیریت", "admin"), btn("⬅️ منوی اصلی", "home")]];
+  if (msgId) return edit(env, chatId, msgId, text, kb(rows));
+  return send(env, chatId, text, kb(rows));
 }
 
 const getUser = async (env, id) =>
@@ -687,7 +724,70 @@ async function checkProviderBalance(env) {
     await kvPut(env, "sys:balCheck", { at: now() }, 3600);
     const b = await smsfull(env, "/balance");
     await evaluateBalanceAlert(env, b.spendable, b.currency);
-  } catch (_) { /* provider unreachable — outage alerting is a separate feature */ }
+  } catch (_) { /* provider unreachable — the health monitor below reports it */ }
+}
+
+// ---------- automated health monitoring ----------
+// The bot once sat dead for hours when its webhook was cleared externally.
+// The cron now also watches the systems the shop depends on and alerts the
+// admin on failure (once, then at most every 6 hours) and on recovery:
+// the Telegram webhook (verified live every cron tick by ensureWebhook),
+// the SmsFull provider (an auth failure is called out separately — an
+// expired/revoked key looks exactly like an outage otherwise), the
+// Toman-rate chain, and KV read/write sanity. Probes run every 10 minutes.
+async function healthTransition(env, st, key, down, downMsg, upMsg) {
+  const cur = st[key] || {};
+  if (down) {
+    if (!cur.down || now() - (cur.lastAlertAt || 0) > 6 * 3600 * 1000) {
+      await send(env, env.ADMIN_CHAT_ID, downMsg, kb([[btn("🛠 پنل مدیریت", "admin")]]));
+      cur.lastAlertAt = now();
+    }
+    if (!cur.down) cur.since = now();
+    cur.down = true;
+  } else {
+    if (cur.down) await send(env, env.ADMIN_CHAT_ID, upMsg, kb([[btn("🛠 پنل مدیریت", "admin")]]));
+    cur.down = false;
+    cur.since = 0;
+  }
+  st[key] = cur;
+}
+async function runHealthChecks(env, webhookRes) {
+  try {
+    const st = (await kvGet(env, "sys:health")) || {};
+    if (webhookRes) {
+      await healthTransition(env, st, "hook", !webhookRes.ok,
+        `🛑 <b>هشدار سلامت: وب‌هوک تلگرام</b>\n\nربات نمی‌تواند وب‌هوک را روی آدرس درست تنظیم کند${webhookRes.reason ? ` (${esc(webhookRes.reason)})` : ""}. پیام‌های کاربران ممکن است به ربات نرسد.`,
+        "✅ <b>سلامت: وب‌هوک تلگرام برطرف شد</b>\n\nوب‌هوک دوباره روی آدرس درست تنظیم است.");
+    }
+    const last = (await kvGet(env, "sys:healthAt"))?.at || 0;
+    if (now() - last >= 10 * 60 * 1000) {
+      await kvPut(env, "sys:healthAt", { at: now() }, 3600);
+      try {
+        await smsfull(env, "/balance");
+        await healthTransition(env, st, "sms", false, "",
+          "✅ <b>سلامت: تأمین‌کننده برطرف شد</b>\n\nارتباط با SmsFull دوباره برقرار است.");
+      } catch (e) {
+        const auth = e.status === 401 || e.status === 403;
+        await healthTransition(env, st, "sms", true,
+          `🛑 <b>هشدار سلامت: تأمین‌کننده</b>\n\n${auth ? "کلید API تأمین‌کننده (SmsFull) رد می‌شود — احتمالاً کلید عوض یا منقضی شده است." : "ارتباط با تأمین‌کننده (SmsFull) برقرار نمی‌شود."}\nدر این مدت خرید شماره ناموفق خواهد بود.`, "");
+      }
+      const tmn = await usdtTomanRate(env).catch(() => null);
+      await healthTransition(env, st, "rate", !tmn,
+        "🛑 <b>هشدار سلامت: نرخ تومان</b>\n\nهیچ‌یک از منابع نرخ تتر/تومان پاسخ نمی‌دهند؛ نمایش معادل تومانی قیمت‌ها و شارژ کارتی مختل می‌شود.",
+        "✅ <b>سلامت: نرخ تومان برطرف شد</b>\n\nنرخ تتر/تومان دوباره در دسترس است.");
+      let kvOk = true;
+      try {
+        const probe = { at: now() };
+        await kvPut(env, "sys:healthProbe", probe, 600);
+        const back = await kvGet(env, "sys:healthProbe");
+        if (!back || back.at !== probe.at) kvOk = false;
+      } catch (_) { kvOk = false; }
+      await healthTransition(env, st, "kv", !kvOk,
+        "🛑 <b>هشدار سلامت: دیتابیس (KV)</b>\n\nخواندن/نوشتن در دیتابیس فروشگاه خطا دارد؛ ممکن است سفارش‌ها و موجودی‌ها درست ذخیره نشوند.",
+        "✅ <b>سلامت: دیتابیس (KV) برطرف شد</b>");
+    }
+    await kvPut(env, "sys:health", st, 7 * 24 * 3600);
+  } catch (_) { /* monitoring must never break the cron */ }
 }
 
 // ---------- bot UI (Persian) ----------
@@ -1313,6 +1413,7 @@ async function showAdmin(env, chatId, msgId) {
     [btn("🧾 رسیدهای در انتظار تأیید", "adm_pending")],
     [btn("🪙 پرداخت‌های کریپتوی در انتظار", "adm_crypto_pending")],
     [btn("⚙️ تنظیمات فروشگاه", "cfg")],
+    [btn("📜 سوابق تغییرات", "adm_audit")],
     [btn("⬅️ منوی اصلی", "home")],
   ];
   if (msgId) return edit(env, chatId, msgId, text, kb(rows));
@@ -1786,7 +1887,9 @@ async function handleMessage(env, msg, baseUrl) {
     }
     const { value, error } = await validateSetting(key, text);
     if (error) return send(env, chatId, `❌ ${error}\nدوباره بفرستید یا /cancel بزنید.`);
+    const prevVal = (await getConfig(env))[key] || "";
     await setConfigValue(env, key, value);
+    await logAudit(env, { actor: chatId, action: "set", key, label: settingLabel(key), oldV: prevVal, newV: value });
     user.state = null; await saveUser(env, user);
     const group = groupOfKey(key);
     const cfg = await getConfig(env);
@@ -2049,7 +2152,9 @@ async function handleCallback(env, cq, baseUrl) {
       return showConfigOverview(env, chatId, msgId);
     }
     if (head === "cfg_del" && isAdmin(env, chatId)) {
+      const prevVal = (await getConfig(env))[a] || "";
       await setConfigValue(env, a, "");
+      await logAudit(env, { actor: chatId, action: "del", key: a, label: settingLabel(a), oldV: prevVal });
       await answerCb(env, cq.id, "حذف شد 🗑");
       return showConfigGroup(env, chatId, msgId, groupOfKey(a));
     }
@@ -2057,10 +2162,12 @@ async function handleCallback(env, cq, baseUrl) {
       const cfg = await getConfig(env);
       const on = cfg[a] === "1";
       await setConfigValue(env, a, on ? "" : "1");
+      await logAudit(env, { actor: chatId, action: "toggle", key: a, label: settingLabel(a), newV: on ? "0" : "1" });
       await answerCb(env, cq.id, on ? "خاموش شد ⚪️" : "روشن شد ✅");
       return showConfigGroup(env, chatId, msgId, groupOfKey(a));
     }
     if (data === "admin" && isAdmin(env, chatId)) return showAdmin(env, chatId, msgId);
+    if (data === "adm_audit" && isAdmin(env, chatId)) return showAuditLog(env, chatId, msgId);
     if (data === "adm_pending" && isAdmin(env, chatId)) return showPending(env, chatId, msgId, "card");
     if (data === "adm_crypto_pending" && isAdmin(env, chatId)) return showPending(env, chatId, msgId, "crypto");
     if ((head === "apr" || head === "rej") && isAdmin(env, chatId)) {
@@ -2074,10 +2181,12 @@ async function handleCallback(env, cq, baseUrl) {
         topup.status = "pending"; // creditTopup expects pending
         await kvPut(env, `topup:${topup.id}`, topup);
         await creditTopup(env, topup, "admin-approved");
+        await logAudit(env, { actor: chatId, action: "apr", key: topup.id, extra: `$${faNum(topupCredit(topup))} — کاربر ${topup.userId}` });
         await answerCb(env, cq.id, "تأیید و شارژ شد ✅");
       } else {
         topup.status = "rejected"; topup.resolvedAt = now();
         await kvPut(env, `topup:${topup.id}`, topup);
+        await logAudit(env, { actor: chatId, action: "rej", key: topup.id, extra: `$${faNum(topupCredit(topup))} — کاربر ${topup.userId}` });
         await send(env, topup.userId, "❌ درخواست افزایش موجودی شما رد شد. برای پیگیری با پشتیبانی در تماس باشید.", mainMenuKb(env, await getConfig(env), topup.userId));
         await answerCb(env, cq.id, "رد شد");
       }
@@ -3811,11 +3920,12 @@ export default {
       // an externally-cleared webhook go unnoticed for hours (bot fully
       // silent with updates piling up). A getWebhookInfo call every 2 min is
       // cheap; setWebhook is only sent when Telegram's URL actually differs.
-      if (origin) await ensureWebhook(env, origin, true);
+      const hookRes = origin ? await ensureWebhook(env, origin, true) : null;
       for (const t of await kvList(env, "topup:")) {
         if (t.status === "pending") await settleTopupLazy(env, t);
       }
       await checkProviderBalance(env);
+      await runHealthChecks(env, hookRes);
     })();
     ctx.waitUntil(work);
   },
