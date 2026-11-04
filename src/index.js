@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.8.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.9.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -1356,7 +1356,7 @@ const SETTING_FIELDS = {
 };
 const walletField = (code) => ({
   label: `کیف‌پول ${CRYPTOS[code].label}`,
-  hint: "آدرس کیف‌پول را دقیق و بدون فاصله بفرستید.",
+  hint: "آدرس کیف‌پول را دقیق و کامل کپی کنید — چک‌سام آدرس به‌صورت خودکار بررسی می‌شود و آدرس اشتباه یا ناقص قبول نمی‌شود.",
 });
 function settingLabel(key) {
   if (SETTING_FIELDS[key]) return SETTING_FIELDS[key].label;
@@ -1423,7 +1423,175 @@ async function showConfigGroup(env, chatId, msgId, group) {
   if (msgId) return edit(env, chatId, msgId, text, configGroupKb(cfg, group));
   return send(env, chatId, text, configGroupKb(cfg, group));
 }
-function validateSetting(key, raw) {
+// ---------- wallet address validation (real checksums, per network) ----------
+// A typo'd wallet address silently burns user payments forever, so panel
+// entries are verified against each network's actual checksum scheme:
+// TRON/BTC/LTC legacy = Base58Check (double-SHA256), BTC/LTC SegWit =
+// Bech32/Bech32m (BIP-173/350), TON friendly = CRC16-XMODEM, EVM = EIP-55
+// (mixed-case addresses only; single-case addresses carry no checksum).
+const sha256Bytes = async (bytes) => new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+function base58Decode(str) {
+  let n = 0n;
+  for (const ch of str) {
+    const i = B58_ALPHABET.indexOf(ch);
+    if (i < 0) return null;
+    n = n * 58n + BigInt(i);
+  }
+  let hex = n.toString(16);
+  if (hex.length % 2) hex = "0" + hex;
+  const body = [];
+  if (n !== 0n) for (let i = 0; i < hex.length; i += 2) body.push(parseInt(hex.slice(i, i + 2), 16));
+  let zeros = 0;
+  while (zeros < str.length && str[zeros] === "1") zeros++;
+  return Uint8Array.from([...Array(zeros).fill(0), ...body]);
+}
+async function base58CheckValid(addr, versions) {
+  const bytes = base58Decode(addr);
+  if (!bytes || bytes.length !== 25 || !versions.includes(bytes[0])) return false;
+  const h = await sha256Bytes(await sha256Bytes(bytes.slice(0, 21)));
+  return bytes.slice(21).every((b, i) => b === h[i]);
+}
+const BECH32_Q = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+function bech32Polymod(values) {
+  const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+  let chk = 1;
+  for (const v of values) {
+    const top = chk >> 25;
+    chk = ((chk & 0x1ffffff) << 5) ^ v;
+    for (let i = 0; i < 5; i++) if ((top >> i) & 1) chk ^= GEN[i];
+  }
+  return chk >>> 0;
+}
+function convertBits(data, from, to, pad) {
+  let acc = 0, bits = 0;
+  const out = [], maxv = (1 << to) - 1;
+  for (const value of data) {
+    acc = (acc << from) | value; bits += from;
+    while (bits >= to) { bits -= to; out.push((acc >> bits) & maxv); }
+  }
+  if (pad) { if (bits) out.push((acc << (to - bits)) & maxv); }
+  else if (bits >= from || ((acc << (to - bits)) & maxv)) return null;
+  return out;
+}
+function bech32Valid(addr, hrpWant) {
+  if (addr !== addr.toLowerCase() && addr !== addr.toUpperCase()) return false; // mixed case is invalid in bech32
+  const a = addr.toLowerCase();
+  const pos = a.lastIndexOf("1");
+  if (pos < 1 || a.slice(0, pos) !== hrpWant) return false;
+  const dataPart = a.slice(pos + 1);
+  if (dataPart.length < 6) return false;
+  const expanded = [];
+  for (const ch of hrpWant) expanded.push(ch.charCodeAt(0) >> 5);
+  expanded.push(0);
+  for (const ch of hrpWant) expanded.push(ch.charCodeAt(0) & 31);
+  const data = [];
+  for (const ch of dataPart) { const v = BECH32_Q.indexOf(ch); if (v < 0) return false; data.push(v); }
+  const pm = bech32Polymod([...expanded, ...data]);
+  const enc = pm === 1 ? 0 : pm === 0x2bc830a3 ? 1 : -1; // 0 = bech32 (witness v0), 1 = bech32m (v1+)
+  if (enc < 0) return false;
+  const witVer = data[0];
+  if (witVer > 16 || (witVer === 0 && enc !== 0) || (witVer > 0 && enc !== 1)) return false;
+  const prog = convertBits(data.slice(1, -6), 5, 8, false);
+  if (!prog || prog.length < 2 || prog.length > 40) return false;
+  if (witVer === 0 && prog.length !== 20 && prog.length !== 32) return false;
+  if (witVer === 1 && prog.length !== 32) return false;
+  return true;
+}
+function crc16Xmodem(bytes) {
+  let crc = 0;
+  for (const b of bytes) {
+    crc ^= b << 8;
+    for (let i = 0; i < 8; i++) crc = crc & 0x8000 ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff;
+  }
+  return crc;
+}
+function tonAddressValid(v) {
+  if (/^-?\d+:[0-9a-fA-F]{64}$/.test(v)) return true; // raw form (carries no checksum)
+  let bytes;
+  try {
+    const bin = atob(v.replace(/-/g, "+").replace(/_/g, "/"));
+    bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  } catch (_) { return false; }
+  if (bytes.length !== 36) return false;
+  if (![0x11, 0x51, 0x91, 0xd1].includes(bytes[0])) return false; // bounceable / non-bounceable (optionally testnet-flagged)
+  if (bytes[1] !== 0 && bytes[1] !== 0xff) return false; // workchain 0 / masterchain
+  const crc = crc16Xmodem(bytes.slice(0, 34));
+  return bytes[34] === (crc >> 8) && bytes[35] === (crc & 0xff);
+}
+// Keccak-256 (original Keccak padding — NOT SHA3-256) for EIP-55 checksums.
+const KECCAK_RC = ["0000000000000001", "0000000000008082", "800000000000808a", "8000000080008000", "000000000000808b", "0000000080000001", "8000000080008081", "8000000000008009", "000000000000008a", "0000000000000088", "0000000080008009", "000000008000000a", "000000008000808b", "800000000000008b", "8000000000008089", "8000000000008003", "8000000000008002", "8000000000000080", "000000000000800a", "800000008000000a", "8000000080008081", "8000000000008080", "0000000080000001", "8000000080008008"].map((h) => BigInt("0x" + h));
+const KECCAK_ROT = [[0, 36, 3, 41, 18], [1, 44, 10, 45, 2], [62, 6, 43, 15, 61], [28, 55, 25, 21, 56], [27, 20, 39, 8, 14]];
+const MASK64 = (1n << 64n) - 1n;
+const rotl64 = (x, n) => n === 0 ? x : ((x << BigInt(n)) | (x >> BigInt(64 - n))) & MASK64;
+function keccakF1600(s) {
+  for (let round = 0; round < 24; round++) {
+    const c = [], d = [];
+    for (let x = 0; x < 5; x++) c[x] = s[x] ^ s[x + 5] ^ s[x + 10] ^ s[x + 15] ^ s[x + 20];
+    for (let x = 0; x < 5; x++) d[x] = c[(x + 4) % 5] ^ rotl64(c[(x + 1) % 5], 1);
+    for (let x = 0; x < 5; x++) for (let y = 0; y < 5; y++) s[x + 5 * y] ^= d[x];
+    const b = new Array(25).fill(0n);
+    for (let x = 0; x < 5; x++) for (let y = 0; y < 5; y++) b[y + 5 * ((2 * x + 3 * y) % 5)] = rotl64(s[x + 5 * y], KECCAK_ROT[x][y]);
+    for (let x = 0; x < 5; x++) for (let y = 0; y < 5; y++) s[x + 5 * y] = b[x + 5 * y] ^ ((~b[(x + 1) % 5 + 5 * y]) & b[(x + 2) % 5 + 5 * y]);
+    s[0] ^= KECCAK_RC[round];
+  }
+}
+function keccak256Hex(ascii) {
+  const rate = 136;
+  const padded = Array.from(ascii, (c) => c.charCodeAt(0));
+  padded.push(0x01);
+  while (padded.length % rate !== 0) padded.push(0);
+  padded[padded.length - 1] |= 0x80;
+  const s = new Array(25).fill(0n);
+  for (let off = 0; off < padded.length; off += rate) {
+    for (let i = 0; i < rate / 8; i++) {
+      let lane = 0n;
+      for (let j = 7; j >= 0; j--) lane = (lane << 8n) | BigInt(padded[off + i * 8 + j] || 0);
+      s[i] ^= lane;
+    }
+    keccakF1600(s);
+  }
+  let hex = "";
+  for (let i = 0; i < 4; i++) {
+    let lane = s[i];
+    for (let j = 0; j < 8; j++) { hex += Number(lane & 0xffn).toString(16).padStart(2, "0"); lane >>= 8n; }
+  }
+  return hex;
+}
+function evmAddressValid(v) {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(v)) return false;
+  const hex = v.slice(2);
+  if (hex === hex.toLowerCase() || hex === hex.toUpperCase()) return true; // no checksum embedded
+  const hash = keccak256Hex(hex.toLowerCase());
+  for (let i = 0; i < 40; i++) {
+    const ch = hex[i];
+    if (/[a-f]/i.test(ch) && (parseInt(hash[i], 16) >= 8) !== (ch === ch.toUpperCase())) return false;
+  }
+  return true;
+}
+const WALLET_NETWORKS = {
+  WALLET_USDT_TRC20: { net: "tron", name: "تتر TRC20" },
+  WALLET_TRX: { net: "tron", name: "ترون" },
+  WALLET_BTC: { net: "btc", name: "بیت‌کوین" },
+  WALLET_LTC: { net: "ltc", name: "لایت‌کوین" },
+  WALLET_TON: { net: "ton", name: "تون" },
+  WALLET_ETH: { net: "evm", name: "اتریوم" },
+  WALLET_USDT_ERC20: { net: "evm", name: "تتر ERC20" },
+  WALLET_USDT_BEP20: { net: "evm", name: "تتر BEP20" },
+};
+async function walletAddressValid(key, v) {
+  const info = WALLET_NETWORKS[key];
+  if (!info) return v.length >= 15 && /^[A-Za-z0-9:_\-\.]+$/.test(v);
+  switch (info.net) {
+    case "tron": return base58CheckValid(v, [0x41]);
+    case "btc": return v.toLowerCase().startsWith("bc1") ? bech32Valid(v, "bc") : base58CheckValid(v, [0x00, 0x05]);
+    case "ltc": return v.toLowerCase().startsWith("ltc1") ? bech32Valid(v, "ltc") : base58CheckValid(v, [0x30, 0x32, 0x05]);
+    case "ton": return tonAddressValid(v);
+    case "evm": return evmAddressValid(v);
+  }
+  return false;
+}
+
+async function validateSetting(key, raw) {
   const clean = raw.replace(/\s+/g, " ").trim();
   if (!clean) return { error: "مقدار خالی است." };
   if (key === "CARD_NUMBER") {
@@ -1469,8 +1637,10 @@ function validateSetting(key, raw) {
   }
   if (key.startsWith("WALLET_")) {
     const v = clean.replace(/\s/g, "");
-    return v.length >= 15 && /^[A-Za-z0-9:_\-\.]+$/.test(v)
-      ? { value: v } : { error: "آدرس کیف‌پول معتبر نیست؛ بدون فاصله و کامل بفرستید." };
+    const ok = await walletAddressValid(key, v);
+    return ok
+      ? { value: v }
+      : { error: `آدرس کیف‌پول ${WALLET_NETWORKS[key]?.name || ""} معتبر نیست — قالب یا چک‌سام آدرس اشتباه است. آدرس را مستقیم از کیف‌پول یا صرافی کپی کنید و دوباره بفرستید.` };
   }
   return { value: clean };
 }
@@ -1614,7 +1784,7 @@ async function handleMessage(env, msg, baseUrl) {
       user.state = null; await saveUser(env, user);
       return send(env, chatId, "لغو شد.", kb([[btn("⚙️ تنظیمات فروشگاه", "cfg")]]));
     }
-    const { value, error } = validateSetting(key, text);
+    const { value, error } = await validateSetting(key, text);
     if (error) return send(env, chatId, `❌ ${error}\nدوباره بفرستید یا /cancel بزنید.`);
     await setConfigValue(env, key, value);
     user.state = null; await saveUser(env, user);
