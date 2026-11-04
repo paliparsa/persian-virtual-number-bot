@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.17.1"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.18.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -1266,7 +1266,7 @@ function mainMenuKb(env, cfg, userId, origin, pendingCount = 0, lang = "fa") {
   );
   if (pendingCount > 0) rows.push([btn(en ? `⏳ Pending payments (${pendingCount})` : "⏳ پرداخت‌های در انتظار (" + faDigits(pendingCount) + ")", "pays")]);
   const rowInfo = [origin
-    ? urlBtn(en ? "📜 Terms" : "📜 قوانین", `${String(origin).replace(/\/+$/, "")}/terms`)
+    ? urlBtn(en ? "📜 Terms" : "📜 قوانین", `${String(origin).replace(/\/+$/, "")}/terms?lang=${en ? "en" : "fa"}`)
     : btn(en ? "📜 Terms" : "📜 قوانین", "terms")];
   if (cfg?.SUPPORT_USERNAME) rowInfo.push(urlBtn(en ? "🎧 Support" : "🎧 پشتیبانی", `https://t.me/${cfg.SUPPORT_USERNAME}`));
   rows.push(rowInfo);
@@ -2748,7 +2748,8 @@ async function handleCallback(env, cq, baseUrl) {
       const base = cfgT.WORKER_BASE_URL || (await kvGet(env, "sys:origin"))?.origin;
       if (base) {
         await answerCb(env, cq.id, "");
-        return send(env, chatId, "📜 قوانین و مقررات استفاده از BlueGate:", kb([[urlBtn("📜 مشاهده قوانین", `${String(base).replace(/\/+$/, "")}/terms`)]]));
+        const uT = await getUser(env, chatId);
+        return send(env, chatId, tr(uT, "📜 قوانین و مقررات استفاده از BlueGate:", "📜 BlueGate terms and conditions:"), kb([[urlBtn(tr(uT, "📜 مشاهده قوانین", "📜 View the terms"), `${String(base).replace(/\/+$/, "")}/terms?lang=${isEn(uT) ? "en" : "fa"}`)]]));
       }
       return answerCb(env, cq.id, "لینک قوانین هنوز آماده نیست؛ چند دقیقه دیگر تلاش کنید.", true);
     }
@@ -3383,11 +3384,13 @@ function qrSvg(text, px) {
   } catch (_) { return ""; }
 }
 
-function payShell(body, script = "") {
-  return `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8">
+function payShell(body, script = "", lang = "fa", langSrc = "user") {
+  const en = lang === "en";
+  return `<!doctype html><html lang="${en ? "en" : "fa"}" dir="${en ? "ltr" : "rtl"}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <meta name="theme-color" content="#000000">
-<title>پرداخت — فروشگاه شماره مجازی</title>
+<title>${en ? "Payment — Virtual Number Shop" : "پرداخت — فروشگاه شماره مجازی"}</title>
+<script>window._pl='${en ? "en" : "fa"}';window._ps='${langSrc}';(function(){try{if(window._ps!=='default')return;var l=localStorage.getItem('bm_lang');if(l&&(l==='en'||l==='fa')&&l!==window._pl){var u=new URL(location.href);u.searchParams.set('lang',l);location.replace(u.toString())}}catch(e){}})();</script>
 <link rel="preconnect" href="https://cdn.jsdelivr.net">
 <link href="https://fonts.cdnfonts.com/css/yekan-bakh" rel="stylesheet">
 <style>
@@ -3519,9 +3522,9 @@ footer a{color:#a3a3a3}
 .footbtn.danger{color:#ff6b61;border-color:#3d1d1a}
 </style></head>
 <body><main>
-<header class="brand"><div class="mark">S</div><div><b>فروشگاه شماره مجازی</b><span>درگاه پرداخت</span></div><div class="secure">پرداخت امن</div></header>
+<header class="brand"><div class="mark">S</div><div><b>${en ? "Virtual Number Shop" : "فروشگاه شماره مجازی"}</b><span>${en ? "Payment gateway" : "درگاه پرداخت"}</span></div><div class="secure">${en ? "Secure payment" : "پرداخت امن"}</div><button class="secure" style="background:none;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center" title="Language / زبان" onclick="flipPayLang()"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></button></header>
 ${body}
-<footer>مبلغ و آدرس را پیش از واریز یک‌بار دیگر بررسی کنید. هر پرداخت ۳۰ دقیقه مهلت دارد؛ پس از آن، درخواست به‌صورت خودکار بسته می‌شود.</footer>
+<footer>${en ? "Double-check the amount and address before sending. Every payment has a 30-minute window; after that, the request closes automatically." : "مبلغ و آدرس را پیش از واریز یک‌بار دیگر بررسی کنید. هر پرداخت ۳۰ دقیقه مهلت دارد؛ پس از آن، درخواست به‌صورت خودکار بسته می‌شود."}</footer>
 </main>
 <div id="toast"></div>
 <script>
@@ -3529,14 +3532,15 @@ function toast(msg){var t=document.getElementById('toast');t.textContent=msg;t.c
 document.addEventListener('gesturestart',function(e){e.preventDefault()});
 document.addEventListener('gesturechange',function(e){e.preventDefault()});
 document.addEventListener('wheel',function(e){if(e.ctrlKey)e.preventDefault()},{passive:false});
-function copyText(text,btn){var done=function(){toast('کپی شد');if(btn&&!btn._cp){btn._cp=1;var o=btn.textContent;btn.textContent='✓ کپی شد';btn.classList.add('done');setTimeout(function(){btn.textContent=o;btn.classList.remove('done');btn._cp=0},1500)}};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done).catch(done)}else{var ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();try{document.execCommand('copy')}catch(e){}ta.remove();done()}}
+function flipPayLang(){var n=window._pl==='en'?'fa':'en';try{localStorage.setItem('bm_lang',n)}catch(e){}var u=new URL(location.href);u.searchParams.set('lang',n);location.href=u.toString()}
+function copyText(text,btn){var done=function(){toast(window._pl==='en'?'Copied':'کپی شد');if(btn&&!btn._cp){btn._cp=1;var o=btn.textContent;btn.textContent=window._pl==='en'?'✓ Copied':'✓ کپی شد';btn.classList.add('done');setTimeout(function(){btn.textContent=o;btn.classList.remove('done');btn._cp=0},1500)}};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done).catch(done)}else{var ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();try{document.execCommand('copy')}catch(e){}ta.remove();done()}}
 ${script}
 </script>
 </body></html>`;
 }
 
-function paySteps(active) {
-  const names = ["انتخاب روش", "پرداخت", "تأیید شارژ"];
+function paySteps(active, lang = "fa") {
+  const names = lang === "en" ? ["Select method", "Payment", "Credited"] : ["انتخاب روش", "پرداخت", "تأیید شارژ"];
   const parts = names.map((n, i) => {
     const cls = i + 1 < active ? "step done" : i + 1 === active ? "step on" : "step";
     const inner = i + 1 < active ? "✓" : String(i + 1);
@@ -3545,19 +3549,20 @@ function paySteps(active) {
   return `<div class="steps">${parts.join('<div class="line"></div>')}</div>`;
 }
 
-function payScript(topup, poll) {
+function payScript(topup, poll, lang = "fa") {
+  const P = (fa, en) => (lang === "en" ? en : fa);
   const expiresAt = topupExpiresAt(topup);
   return `
 var TID='${esc(topup.id)}', EXP=${expiresAt}, SPAN=${PAY_TTL_MS}, HAS_RECEIPT=${topup.receiptFileId ? "true" : "false"};
 function pad(n){return (n<10?'0':'')+n}
 function tick(){var ms=EXP-Date.now();var s=Math.max(0,Math.floor(ms/1000));var txt=pad(Math.floor(s/60))+':'+pad(s%60);document.querySelectorAll('.cd').forEach(function(e){e.textContent=txt});var low=ms<5*60*1000;document.querySelectorAll('.timer').forEach(function(e){e.classList.toggle('low',low)});var tb=document.querySelector('.timebar');if(tb)tb.classList.toggle('low',low);var bar=document.getElementById('timebar');if(bar)bar.style.width=Math.max(0,ms/SPAN*100)+'%';var ring=document.getElementById('ringfg');if(ring){var C=163.36;ring.style.strokeDashoffset=C*(1-Math.max(0,ms)/SPAN);ring.style.stroke=low?'#ff9f43':'#fff'}var rc=document.querySelector('.rc');if(rc)rc.style.color=low?'#ff9f43':'';if(ms<=0&&!window._exp){window._exp=1;setTimeout(function(){location.reload()},1500)}}
 setInterval(tick,250);tick();
-async function selectMethod(m){toast('در حال ثبت روش پرداخت…');try{var r=await fetch('/pay/select',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({t:TID,m:m})});var d=await r.json().catch(function(){return{}});if(d.ok){location.reload()}else{toast(d.error||'خطا رخ داد')}}catch(e){toast('خطا در ارتباط')}};
-async function checkNow(btn){btn.disabled=true;btn.textContent='در حال بررسی…';try{var r=await fetch('/pay/status?t='+TID+'&_='+Date.now(),{cache:'no-store'});var d=await r.json();if(d.status!=='pending'){location.reload();return}toast('هنوز پرداختی پیدا نشد؛ اگر تازه واریز کرده‌اید چند دقیقه صبر کنید')}catch(e){toast('خطا در بررسی')}btn.disabled=false;btn.innerHTML='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg> بررسی پرداخت'}
+async function selectMethod(m){toast('${P("در حال ثبت روش پرداخت…", "Saving your payment method…")}');try{var r=await fetch('/pay/select',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({t:TID,m:m})});var d=await r.json().catch(function(){return{}});if(d.ok){location.reload()}else{toast(d.error||'${P("خطا رخ داد", "Something went wrong")}')}}catch(e){toast('${P("خطا در ارتباط", "Connection error")}')}};
+async function checkNow(btn){btn.disabled=true;btn.textContent='${P("در حال بررسی…", "Checking…")}';try{var r=await fetch('/pay/status?t='+TID+'&lang=${lang}&_='+Date.now(),{cache:'no-store'});var d=await r.json();if(d.status!=='pending'){location.reload();return}toast('${P("هنوز پرداختی پیدا نشد؛ اگر تازه واریز کرده‌اید چند دقیقه صبر کنید", "No payment found yet — if you just sent it, wait a few minutes")}')}catch(e){toast('${P("خطا در بررسی", "Check failed")}')}btn.disabled=false;btn.innerHTML='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg> ${P("بررسی پرداخت", "Check payment")}'}
 function onReceiptFile(inp){var f=inp.files&&inp.files[0];var prev=document.getElementById('rcPrev');var btn=document.getElementById('rcBtn');var nm=document.getElementById('rcName');if(!f){if(btn)btn.disabled=true;return}if(nm)nm.textContent=f.name;if(prev){prev.src=URL.createObjectURL(f);prev.style.display='block'}if(btn)btn.disabled=false}
-async function submitReceipt(btn){var inp=document.getElementById('rcFile');if(!inp||!inp.files||!inp.files[0]){toast('اول عکس رسید را انتخاب کنید');return}btn.disabled=true;btn.textContent='در حال ارسال…';try{var fd=new FormData();fd.append('receipt',inp.files[0]);var r=await fetch('/pay/receipt?t='+TID,{method:'POST',body:fd});var d=await r.json().catch(function(){return{}});if(d.ok){toast('رسید ثبت شد');setTimeout(function(){location.reload()},700)}else{toast(d.error||'خطا در ثبت رسید');btn.disabled=false;btn.textContent='📤 ثبت رسید'}}catch(e){toast('خطا در ارتباط');btn.disabled=false;btn.textContent='📤 ثبت رسید'}}
-async function pollStatus(){try{var r=await fetch('/pay/status?t='+TID+'&_='+Date.now(),{cache:'no-store'});var d=await r.json();if(d.toman)document.querySelectorAll('.tmnFill').forEach(function(e){e.textContent=d.toman});if(d.status!=='pending'||(!!d.receipt)!==HAS_RECEIPT)location.reload()}catch(e){}}
-async function checkStatusBtn(btn){btn.disabled=true;btn.textContent='در حال بررسی…';await pollStatus();setTimeout(function(){toast('هنوز تأیید نشده؛ به محض تأیید ادمین، صفحه خودکار به‌روز می‌شود');btn.disabled=false;btn.innerHTML='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg> بررسی وضعیت'},700)}
+async function submitReceipt(btn){var inp=document.getElementById('rcFile');if(!inp||!inp.files||!inp.files[0]){toast('${P("اول عکس رسید را انتخاب کنید", "Choose the receipt photo first")}');return}btn.disabled=true;btn.textContent='${P("در حال ارسال…", "Uploading…")}';try{var fd=new FormData();fd.append('receipt',inp.files[0]);var r=await fetch('/pay/receipt?t='+TID,{method:'POST',body:fd});var d=await r.json().catch(function(){return{}});if(d.ok){toast('${P("رسید ثبت شد", "Receipt submitted")}');setTimeout(function(){location.reload()},700)}else{toast(d.error||'${P("خطا در ثبت رسید", "Receipt upload failed")}');btn.disabled=false;btn.textContent='${P("📤 ثبت رسید", "Submit receipt")}'} }catch(e){toast('${P("خطا در ارتباط", "Connection error")}');btn.disabled=false;btn.textContent='${P("📤 ثبت رسید", "Submit receipt")}'}}
+async function pollStatus(){try{var r=await fetch('/pay/status?t='+TID+'&lang=${lang}&_='+Date.now(),{cache:'no-store'});var d=await r.json();if(d.toman)document.querySelectorAll('.tmnFill').forEach(function(e){e.textContent=d.toman});if(d.status!=='pending'||(!!d.receipt)!==HAS_RECEIPT)location.reload()}catch(e){}}
+async function checkStatusBtn(btn){btn.disabled=true;btn.textContent='${P("در حال بررسی…", "Checking…")}';await pollStatus();setTimeout(function(){toast('${P("هنوز تأیید نشده؛ به محض تأیید ادمین، صفحه خودکار به‌روز می‌شود", "Not approved yet — this page updates automatically once the admin approves")}');btn.disabled=false;btn.innerHTML='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg> ${P("بررسی وضعیت", "Check status")}'},700)}
 ${poll ? "setInterval(pollStatus,5000);document.addEventListener('visibilitychange',function(){if(!document.hidden)pollStatus()});window.addEventListener('focus',pollStatus);pollStatus();" : ""}`;
 }
 
@@ -3565,19 +3570,74 @@ ${poll ? "setInterval(pollStatus,5000);document.addEventListener('visibilitychan
 // Distilled, Persian-only version of the service rules under the BlueGate
 // brand (per Reza's request): only the rules that actually matter, no
 // mention of the upstream provider anywhere on the page.
-function termsPage(cfg) {
+function termsPage(cfg, initialLang = "fa") {
   const support = cfg?.SUPPORT_USERNAME;
+  const supLink = support ? `<a href="https://t.me/${esc(support)}">@${esc(support)}</a>` : "";
+  const docIco = `<svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-4px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>`;
+  const T = {
+    fa: {
+      title: "قوانین و مقررات — BlueGate", back: "‹ بازگشت", h1: "قوانین و مقررات",
+      intro: "استفاده از ربات و خدمات BlueGate به‌معنای خواندن و پذیرفتن این قوانین است. اگر با هر بخش مخالفید، از خدمات استفاده نکنید.",
+      slogan: "دروازه‌ای امن به دنیای پرسرعت", home: "بازگشت به صفحه اصلی فروشگاه", supLabel: "پشتیبانی",
+      secs: [
+        ["۱) ماهیت سرویس", `<p>BlueGate شماره‌های مجازی <b>موقت</b> برای دریافت پیامک ارائه می‌کند. ارسال و تحویل پیامک به اپراتورها، زیرساخت مخابراتی و سیاست‌های سرویس مقصد بستگی دارد؛ بنابراین تحویل پیامک در همه موارد قابل تضمین نیست.</p>`],
+        ["۲) حساب و امنیت", `<p>مسئولیت امنیت حساب تلگرام و دستگاه‌های شما با خودتان است. هر عملیاتی که از حساب شما انجام شود، انجام‌شده توسط شما محسوب می‌شود. حساب خود را در اختیار دیگران قرار ندهید.</p>`],
+        ["۳) استفاده مجاز", `<p>استفاده از شماره‌ها فقط برای اهداف قانونی مجاز است. موارد زیر <b>ممنوع</b> است:</p><ul><li>کلاهبرداری، فیشینگ و پول‌شویی</li><li>سوءاستفاده از هویت دیگران</li><li>اسپم، مزاحمت و آزار</li><li>نفوذ یا دسترسی غیرمجاز به حساب دیگران</li><li>ساخت یا اداره حساب با هدف نقض قوانین سرویس‌های دیگر</li><li>هرگونه فعالیت غیرقانونی</li></ul><p>مسئولیت کامل نحوه استفاده از شماره خریداری‌شده با کاربر است.</p>`],
+        ["۴) مهلت شماره و فعال‌سازی", `<p>هر شماره مهلت محدودی دارد که هنگام خرید نمایش داده می‌شود. پس از پایان مهلت، شماره از دسترس خارج می‌شود، پیام‌های قبلی حذف می‌شوند و شماره ممکن است دوباره عرضه شود. از شماره موقت به‌عنوان تنها روش بازیابی حساب‌های مهم استفاده نکنید.</p>`],
+        ["۵) عدم تضمین پذیرش توسط سرویس مقصد", `<p>BlueGate ساخت حساب، تأیید ثبت‌نام، ماندگاری حساب یا پذیرش شماره توسط سرویس مقصد (مانند تلگرام، واتس‌اپ و…) را تضمین نمی‌کند. رد شدن یک شماره توسط سرویس مقصد، به‌تنهایی به‌معنای خطای فنی BlueGate نیست. BlueGate با این سرویس‌ها وابستگی یا شراکت ندارد و نام آن‌ها صرفاً برای شناسایی سرویس درخواستی استفاده می‌شود.</p>`],
+        ["۶) موجودی و قیمت‌ها", `<p>موجودی حساب فقط برای خرید در همین ربات است و قابل فروش یا انتقال به دیگران نیست. قیمت‌ها بر اساس کشور، سرویس و موجودی تعیین می‌شوند و ممکن است در هر زمان تغییر کنند؛ تغییر قیمت بر خریدهای قبلی اثری ندارد.</p>`],
+        ["۷) بازگشت وجه", `<p>اگر پیامکی دریافت نشود و فعال‌سازی لغو یا منقضی شود، مبلغ به موجودی حساب شما برمی‌گردد. اگر شماره در سرویس مقصد مسدود یا قبلاً استفاده شده باشد، برای بررسی بازگشت وجه باید مدرک قابل‌بررسی — یک ویدیوی پیوسته که پیام مسدودی و فعال‌سازی شما در ربات را نشان دهد — برای پشتیبانی ارسال شود. مدرک ناقص یا نامرتبط با فعال‌سازی قابل پذیرش نیست.</p>`],
+        ["۸) پرداخت و شارژ حساب", `<p>سفارش‌های شارژ ممکن است برای بررسی‌های ضدتقلب مدتی در وضعیت انتظار بمانند. زمان تأیید پرداخت‌های رمزارزی به تأیید شبکه بلاک‌چین بستگی دارد.</p>`],
+        ["۹) تعلیق دسترسی", `<p>در صورت تقلب یا تلاش برای تقلب، سوءاستفاده، نقض این قوانین یا ایجاد ریسک امنیتی، BlueGate می‌تواند دسترسی حساب را محدود یا مسدود کند. مسدودی به‌معنای ضبط موجودی نیست و وضعیت موجودی از طریق پشتیبانی قابل پیگیری است.</p>`],
+        ["۱۰) دسترس‌پذیری سرویس", `<p>سرویس ممکن است برای نگهداری، به‌روزرسانی یا به‌علت اختلال زیرساخت و اپراتورها موقتاً در دسترس نباشد؛ کارکرد بدون وقفه و بدون خطا تضمین نمی‌شود.</p>`],
+        ["۱۱) حریم خصوصی", `<p>اطلاعات و سوابق فنی لازم برای ارائه سرویس، امنیت، جلوگیری از تقلب و پشتیبانی نگهداری می‌شوند و فقط در مواردی که قانون مقرر کند در اختیار مراجع ذی‌صلاح قرار می‌گیرند.</p>`],
+        ["۱۲) پشتیبانی و پیگیری", `<p>برای پیگیری هر مشکل، آیدی عددی، زمان خرید، شرح مشکل و در صورت نیاز رسید پرداخت یا تصویر/ویدیو را برای پشتیبانی ارسال کنید؛ اطلاعات ناقص، بررسی را به تأخیر می‌اندازد.</p>`],
+        ["۱۳) تغییر قوانین", `<p>این قوانین ممکن است به‌روزرسانی شوند. نسخه معتبر همیشه در همین صفحه منتشر می‌شود و ادامه استفاده از ربات به‌معنای پذیرش نسخه جدید است.</p>`],
+      ],
+    },
+    en: {
+      title: "Terms and Conditions — BlueGate", back: "‹ Back", h1: "Terms and Conditions",
+      intro: "Using the BlueGate bot and services means you have read and accepted these terms. If you disagree with any part, do not use the services.",
+      slogan: "A secure gateway to a high-speed world", home: "Back to the shop home", supLabel: "Support",
+      secs: [
+        ["1) Nature of the service", `<p>BlueGate provides <b>temporary</b> virtual numbers for receiving SMS. Sending and delivery of SMS depend on operators, telecom infrastructure and the policies of the destination service; therefore SMS delivery cannot be guaranteed in all cases.</p>`],
+        ["2) Account and security", `<p>You are responsible for the security of your Telegram account and your devices. Any action taken from your account is considered to have been taken by you. Do not give others access to your account.</p>`],
+        ["3) Permitted use", `<p>Numbers may only be used for lawful purposes. The following are <b>prohibited</b>:</p><ul><li>Fraud, phishing and money laundering</li><li>Impersonating or misusing the identity of others</li><li>Spam, nuisance and harassment</li><li>Intrusion or unauthorized access to the accounts of others</li><li>Creating or running accounts in order to violate the rules of other services</li><li>Any illegal activity</li></ul><p>Full responsibility for how a purchased number is used lies with the user.</p>`],
+        ["4) Number lifetime and activation", `<p>Each number has a limited window, shown at the time of purchase. After it ends, the number becomes unavailable, previous messages are deleted, and the number may be offered again. Do not rely on a temporary number as the only recovery method for important accounts.</p>`],
+        ["5) No guarantee of acceptance by the destination service", `<p>BlueGate does not guarantee account creation, signup approval, account longevity, or acceptance of the number by the destination service (such as Telegram, WhatsApp, etc.). A number being rejected by the destination service is not, by itself, a technical fault of BlueGate. BlueGate has no affiliation or partnership with these services, and their names are used only to identify the requested service.</p>`],
+        ["6) Balance and pricing", `<p>Account balance is only for purchases inside this bot and cannot be sold or transferred to others. Prices are set by country, service and availability and may change at any time; price changes do not affect previous purchases.</p>`],
+        ["7) Refunds", `<p>If no SMS is received and the activation is cancelled or expires, the amount returns to your account balance. If a number is blocked at the destination service or was previously used, a refund review requires verifiable proof — one continuous video showing the block message and your activation in the bot — sent to support. Incomplete proof, or proof unrelated to the activation, cannot be accepted.</p>`],
+        ["8) Payments and top-ups", `<p>Top-up orders may remain pending for a while for anti-fraud checks. Confirmation times for crypto payments depend on blockchain network confirmations.</p>`],
+        ["9) Suspension of access", `<p>In cases of fraud or attempted fraud, abuse, violation of these terms, or security risk, BlueGate may limit or block account access. Blocking does not mean confiscating the balance, and the balance status can be followed up through support.</p>`],
+        ["10) Service availability", `<p>The service may be temporarily unavailable for maintenance, updates, or due to infrastructure and operator outages; uninterrupted, error-free operation is not guaranteed.</p>`],
+        ["11) Privacy", `<p>The information and technical records needed to provide the service, ensure security, prevent fraud and provide support are retained, and are shared with competent authorities only where the law requires.</p>`],
+        ["12) Support and follow-up", `<p>To follow up any issue, send support your numeric ID, the purchase time, a description of the problem and, if needed, the payment receipt or a photo/video; incomplete information delays the review.</p>`],
+        ["13) Changes to the terms", `<p>These terms may be updated. The valid version is always published on this page, and continued use of the bot means accepting the new version.</p>`],
+      ],
+    },
+  };
+  const render = (t) => {
+    const secs = t.secs.map(([h, b], i) => `<section><h2>${h}</h2>${b}${i === 11 && support ? `<p style="margin-top:8px">${t.supLabel}: ${supLink}</p>` : ""}</section>`).join("\n");
+    return `<button class="backbtn" onclick="if(history.length>1){history.back()}else{location.href='/app'}">${t.back}</button>
+<h1>${docIco} ${t.h1}</h1>
+<p class="intro">${t.intro}</p>
+<hr>
+${secs}
+<p class="foot">BlueGate — ${t.slogan}<br><a href="/app">${t.home}</a></p>`;
+  };
   return `<!doctype html>
 <html lang="fa" dir="rtl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>قوانین و مقررات — BlueGate</title>
 <link href="https://fonts.cdnfonts.com/css/yekan-bakh" rel="stylesheet">
+<script>window._tl='${initialLang === "en" ? "en" : "fa"}';(function(){try{var l=localStorage.getItem('bm_lang');if(l==='en'||l==='fa')window._tl=l;}catch(e){}document.documentElement.lang=window._tl;document.documentElement.dir=window._tl==='en'?'ltr':'rtl';})();</script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 html{touch-action:manipulation}
 body{background:#000;color:#fff;font-family:'Yekan Bakh',Tahoma,sans-serif;padding:28px 16px 48px;line-height:1.9}
 .wrap{max-width:620px;margin:0 auto}
-.brand{color:#8e8e93;font-size:13px;letter-spacing:.5px}
+.brand{color:#8e8e93;font-size:13px;letter-spacing:.5px;display:flex;align-items:center}
+.langbtn{margin-inline-start:auto;background:transparent;border:1px solid #2c2c31;color:#d6d6da;border-radius:999px;padding:5px 10px;cursor:pointer;display:inline-flex;align-items:center}
 h1{font-size:24px;font-weight:800;margin:4px 0 6px}
 .intro{color:#c9c9ce;font-size:14.5px}
 hr{border:none;border-top:1px solid #1f1f22;margin:20px 0}
@@ -3586,37 +3646,18 @@ section:last-of-type{border-bottom:none}
 h2{font-size:16.5px;font-weight:700;margin-bottom:6px}
 p,li{color:#c9c9ce;font-size:14.5px}
 ul{padding-right:18px}
+html[dir="ltr"] ul{padding-right:0;padding-left:18px}
 a{color:#fff}
 .foot{color:#8e8e93;font-size:13px;margin-top:22px}
 .backbtn{display:inline-flex;align-items:center;gap:6px;background:transparent;color:#d6d6da;border:1px solid #2c2c31;border-radius:11px;padding:8px 14px;font-family:inherit;font-size:13.5px;cursor:pointer;margin-bottom:16px}
 </style></head><body><div class="wrap">
-<div class="brand">BlueGate</div>
-<button class="backbtn" onclick="if(history.length>1){history.back()}else{location.href='/app'}">‹ بازگشت</button>
-<h1><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-4px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/></svg> قوانین و مقررات</h1>
-<p class="intro">استفاده از ربات و خدمات BlueGate به‌معنای خواندن و پذیرفتن این قوانین است. اگر با هر بخش مخالفید، از خدمات استفاده نکنید.</p>
-<hr>
-<section><h2>۱) ماهیت سرویس</h2><p>BlueGate شماره‌های مجازی <b>موقت</b> برای دریافت پیامک ارائه می‌کند. ارسال و تحویل پیامک به اپراتورها، زیرساخت مخابراتی و سیاست‌های سرویس مقصد بستگی دارد؛ بنابراین تحویل پیامک در همه موارد قابل تضمین نیست.</p></section>
-<section><h2>۲) حساب و امنیت</h2><p>مسئولیت امنیت حساب تلگرام و دستگاه‌های شما با خودتان است. هر عملیاتی که از حساب شما انجام شود، انجام‌شده توسط شما محسوب می‌شود. حساب خود را در اختیار دیگران قرار ندهید.</p></section>
-<section><h2>۳) استفاده مجاز</h2><p>استفاده از شماره‌ها فقط برای اهداف قانونی مجاز است. موارد زیر <b>ممنوع</b> است:</p><ul>
-<li>کلاهبرداری، فیشینگ و پول‌شویی</li>
-<li>سوءاستفاده از هویت دیگران</li>
-<li>اسپم، مزاحمت و آزار</li>
-<li>نفوذ یا دسترسی غیرمجاز به حساب دیگران</li>
-<li>ساخت یا اداره حساب با هدف نقض قوانین سرویس‌های دیگر</li>
-<li>هرگونه فعالیت غیرقانونی</li></ul>
-<p>مسئولیت کامل نحوه استفاده از شماره خریداری‌شده با کاربر است.</p></section>
-<section><h2>۴) مهلت شماره و فعال‌سازی</h2><p>هر شماره مهلت محدودی دارد که هنگام خرید نمایش داده می‌شود. پس از پایان مهلت، شماره از دسترس خارج می‌شود، پیام‌های قبلی حذف می‌شوند و شماره ممکن است دوباره عرضه شود. از شماره موقت به‌عنوان تنها روش بازیابی حساب‌های مهم استفاده نکنید.</p></section>
-<section><h2>۵) عدم تضمین پذیرش توسط سرویس مقصد</h2><p>BlueGate ساخت حساب، تأیید ثبت‌نام، ماندگاری حساب یا پذیرش شماره توسط سرویس مقصد (مانند تلگرام، واتس‌اپ و…) را تضمین نمی‌کند. رد شدن یک شماره توسط سرویس مقصد، به‌تنهایی به‌معنای خطای فنی BlueGate نیست. BlueGate با این سرویس‌ها وابستگی یا شراکت ندارد و نام آن‌ها صرفاً برای شناسایی سرویس درخواستی استفاده می‌شود.</p></section>
-<section><h2>۶) موجودی و قیمت‌ها</h2><p>موجودی حساب فقط برای خرید در همین ربات است و قابل فروش یا انتقال به دیگران نیست. قیمت‌ها بر اساس کشور، سرویس و موجودی تعیین می‌شوند و ممکن است در هر زمان تغییر کنند؛ تغییر قیمت بر خریدهای قبلی اثری ندارد.</p></section>
-<section><h2>۷) بازگشت وجه</h2><p>اگر پیامکی دریافت نشود و فعال‌سازی لغو یا منقضی شود، مبلغ به موجودی حساب شما برمی‌گردد. اگر شماره در سرویس مقصد مسدود یا قبلاً استفاده شده باشد، برای بررسی بازگشت وجه باید مدرک قابل‌بررسی — یک ویدیوی پیوسته که پیام مسدودی و فعال‌سازی شما در ربات را نشان دهد — برای پشتیبانی ارسال شود. مدرک ناقص یا نامرتبط با فعال‌سازی قابل پذیرش نیست.</p></section>
-<section><h2>۸) پرداخت و شارژ حساب</h2><p>سفارش‌های شارژ ممکن است برای بررسی‌های ضدتقلب مدتی در وضعیت انتظار بمانند. زمان تأیید پرداخت‌های رمزارزی به تأیید شبکه بلاک‌چین بستگی دارد.</p></section>
-<section><h2>۹) تعلیق دسترسی</h2><p>در صورت تقلب یا تلاش برای تقلب، سوءاستفاده، نقض این قوانین یا ایجاد ریسک امنیتی، BlueGate می‌تواند دسترسی حساب را محدود یا مسدود کند. مسدودی به‌معنای ضبط موجودی نیست و وضعیت موجودی از طریق پشتیبانی قابل پیگیری است.</p></section>
-<section><h2>۱۰) دسترس‌پذیری سرویس</h2><p>سرویس ممکن است برای نگهداری، به‌روزرسانی یا به‌علت اختلال زیرساخت و اپراتورها موقتاً در دسترس نباشد؛ کارکرد بدون وقفه و بدون خطا تضمین نمی‌شود.</p></section>
-<section><h2>۱۱) حریم خصوصی</h2><p>اطلاعات و سوابق فنی لازم برای ارائه سرویس، امنیت، جلوگیری از تقلب و پشتیبانی نگهداری می‌شوند و فقط در مواردی که قانون مقرر کند در اختیار مراجع ذی‌صلاح قرار می‌گیرند.</p></section>
-<section><h2>۱۲) پشتیبانی و پیگیری</h2><p>برای پیگیری هر مشکل، آیدی عددی، زمان خرید، شرح مشکل و در صورت نیاز رسید پرداخت یا تصویر/ویدیو را برای پشتیبانی ارسال کنید؛ اطلاعات ناقص، بررسی را به تأخیر می‌اندازد.</p>${support ? `<p style="margin-top:8px">پشتیبانی: <a href="https://t.me/${esc(support)}">@${esc(support)}</a></p>` : ""}</section>
-<section><h2>۱۳) تغییر قوانین</h2><p>این قوانین ممکن است به‌روزرسانی شوند. نسخه معتبر همیشه در همین صفحه منتشر می‌شود و ادامه استفاده از ربات به‌معنای پذیرش نسخه جدید است.</p></section>
-<p class="foot">BlueGate — دروازه‌ای امن به دنیای پرسرعت<br><a href="/app">بازگشت به صفحه اصلی فروشگاه</a></p>
+<div class="brand">BlueGate<button class="langbtn" title="Language / زبان" onclick="flipTermsLang()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></button></div>
+<div data-lang="fa">${render(T.fa)}</div>
+<div data-lang="en">${render(T.en)}</div>
 </div><script>
+function applyTermsLang(){var l=window._tl||'fa';document.querySelectorAll('[data-lang]').forEach(function(d){d.style.display=d.getAttribute('data-lang')===l?'':'none'});document.documentElement.lang=l;document.documentElement.dir=l==='en'?'ltr':'rtl';document.title=l==='en'?'Terms and Conditions — BlueGate':'قوانین و مقررات — BlueGate'}
+function flipTermsLang(){window._tl=window._tl==='en'?'fa':'en';try{localStorage.setItem('bm_lang',window._tl)}catch(e){}applyTermsLang()}
+applyTermsLang();
 document.addEventListener('gesturestart',function(e){e.preventDefault()});
 document.addEventListener('gesturechange',function(e){e.preventDefault()});
 document.addEventListener('wheel',function(e){if(e.ctrlKey)e.preventDefault()},{passive:false});
@@ -4165,7 +4206,7 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
           <div class="rf-ico"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12v10H4V12"/><path d="M2 7h20v5H2z"/><path d="M12 22V7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg></div>
           <div class="rf-tt">
             <div class="rf-title" data-i="refTitle">دعوت دوستان</div>
-            <div class="rf-sub">از هر خرید موفق زیرمجموعه‌ها <b id="refPct">—</b> پورسانت می‌گیرید؛ پورسانت هنگام تحویل کد خرید، خودکار به موجودی‌تان می‌نشیند.</div>
+            <div class="rf-sub"><span data-i="refSub1">از هر خرید موفق زیرمجموعه‌ها </span><b id="refPct">—</b><span data-i="refSub2"> پورسانت می‌گیرید؛ پورسانت هنگام تحویل کد خرید، خودکار به موجودی‌تان می‌نشیند.</span></div>
           </div>
         </div>
         <div class="rf-linkrow">
@@ -4279,6 +4320,7 @@ var I18N = {
   backCountries:['‹ بازگشت به کشورها','‹ Back to countries'], backShop:['‹ فروشگاه','‹ Shop'],
   balLabel:['موجودی شما','Your balance'], numId:['آیدی عددی: ','Numeric ID: '], topupBtn:['افزایش موجودی','Top up'], logoutBtn:['خروج','Log out'],
   refTitle:['دعوت دوستان','Invite friends'], refCopy:['کپی لینک','Copy link'], refCountL:['زیرمجموعه','Referrals'], refEarnedL:['پورسانت دریافتی','Commission earned'],
+  refSub1:['از هر خرید موفق زیرمجموعه‌ها ','You earn '], refSub2:[' پورسانت می‌گیرید؛ پورسانت هنگام تحویل کد خرید، خودکار به موجودی‌تان می‌نشیند.',' commission on every successful purchase by your referrals — it is paid automatically to your balance when their code is delivered.'],
   chipUsd:['مبلغ به دلار','Amount in USD'], chipTmn:['مبلغ به تومان','Amount in Toman'], makeLink:['ساخت صفحه پرداخت','Create payment page'], tServices:['سرویس‌ها','Services'],
   installT:['نصب اپلیکیشن BlueMajazi','Install the BlueMajazi app'], installD:['بدون نصب از فروشگاه؛ مستقیم روی صفحه اصلی گوشی‌تان، مثل یک اپ واقعی.','No store needed — straight onto your home screen, like a real app.'], installB:['نصب','Install'],
   notifT:['اعلان‌های وب','Web notifications'], notifD:['وقتی کد پیامک برسد یا شارژتان تأیید شود، همین‌جا باخبر می‌شوید (تا وقتی وب‌اپ باز یا نصب‌شده و فعال است).','Get notified when an SMS code arrives or a top-up is approved (while the web app is open or installed and active).'],
@@ -4352,7 +4394,7 @@ function renderMe(){
   if (rc) {
     if (S.me.refLink && S.me.refPercent > 0) {
       rc.style.display = '';
-      $('refPct').textContent = faN(S.me.refPercent) + '٪';
+      $('refPct').textContent = faN(S.me.refPercent) + (S.lang === 'en' ? '%' : '٪');
       $('refLinkTxt').textContent = S.me.refLink;
       $('refCount').textContent = faN(S.me.refCount);
       $('refEarned').textContent = faUsd(S.me.refEarned);
@@ -4827,72 +4869,76 @@ boot();
 </body></html>`;
 }
 
-async function payPage(env, cfg, topup) {
-  const head = (step) => paySteps(step);
+async function payPage(env, cfg, topup, lang = "fa", langSrc = "user") {
+  const P = (fa, en) => (lang === "en" ? en : fa);
+  const fInt = (v) => (lang === "en" ? enInt(v) : faInt(v));
+  const head = (step) => paySteps(step, lang);
+  const shell = (body, script) => payShell(body, script, lang, langSrc);
+  const CRYPTO_EN = { USDT_TRC20: "USDT (TRC20)", USDT_BEP20: "USDT (BEP20)", USDT_ERC20: "USDT (ERC20)", TRX: "TRON (TRX)", BTC: "Bitcoin (BTC)", LTC: "Litecoin (LTC)", TON: "Toncoin (TON)", ETH: "Ethereum (ETH)" };
   if (!topup) {
-    return payShell(`${head(1)}
-      <h1>پرداخت و افزایش موجودی</h1>
-      <p class="sub">پرداخت از داخل ربات تلگرام شروع می‌شود: مبلغ شارژ را به دلار می‌نویسید، لینک پرداخت می‌گیرید و همین‌جا روش پرداخت را انتخاب می‌کنید.</p>
+    return shell(`${head(1)}
+      <h1>${P("پرداخت و افزایش موجودی", "Payment and top-up")}</h1>
+      <p class="sub">${P("پرداخت از داخل ربات تلگرام شروع می‌شود: مبلغ شارژ را به دلار می‌نویسید، لینک پرداخت می‌گیرید و همین‌جا روش پرداخت را انتخاب می‌کنید.", "Payments start inside the Telegram bot: enter the top-up amount in dollars, get a payment link, and choose the payment method right here.")}</p>
       <ul class="notes">
-        <li><b>۱</b> در ربات، «افزایش موجودی» و بعد «ساخت لینک پرداخت» را بزنید.</li>
-        <li><b>۲</b> روش را همین‌جا انتخاب کنید؛ فقط ولت و مبلغ همان روش نشان داده می‌شود.</li>
-        <li><b>۳</b> هر پرداخت ۳۰ دقیقه مهلت دارد و شارژ ارز دیجیتال خودکار انجام می‌شود.</li>
+        <li><b>${P("۱", "1")}</b> ${P("در ربات، «افزایش موجودی» و بعد «ساخت لینک پرداخت» را بزنید.", "In the bot, tap Top up, then Create payment link.")}</li>
+        <li><b>${P("۲", "2")}</b> ${P("روش را همین‌جا انتخاب کنید؛ فقط ولت و مبلغ همان روش نشان داده می‌شود.", "Choose the method here; only that method wallet and exact amount are shown.")}</li>
+        <li><b>${P("۳", "3")}</b> ${P("هر پرداخت ۳۰ دقیقه مهلت دارد و شارژ ارز دیجیتال خودکار انجام می‌شود.", "Every payment has a 30-minute window, and crypto top-ups are credited automatically.")}</li>
       </ul>
-      ${cfg.SUPPORT_USERNAME ? `<p class="sub">پشتیبانی: <a href="https://t.me/${esc(cfg.SUPPORT_USERNAME)}" style="color:#fff">@${esc(cfg.SUPPORT_USERNAME)}</a></p>` : ""}`);
+      ${cfg.SUPPORT_USERNAME ? `<p class="sub">${P("پشتیبانی", "Support")}: <a href="https://t.me/${esc(cfg.SUPPORT_USERNAME)}" style="color:#fff">@${esc(cfg.SUPPORT_USERNAME)}</a></p>` : ""}`);
   }
   const credit = topupCredit(topup);
   const tmn = await usdtTomanRate(env);
-  const tomanText = tmn ? `≈ ${faInt(Math.round(credit * tmn))} تومان` : "";
-  const summary = `<div class="summary"><div class="sum-main"><div class="k">مبلغ شارژ</div><div class="v">$${esc(credit)}</div><div class="vt tmnFill">${tomanText}</div></div>
-    <div class="timer"><div class="cd">30:00</div><div class="k">مهلت باقی‌مانده</div></div></div><div class="timebar"><i id="timebar"></i></div>`;
-  const script = payScript(topup, topup.method === "crypto" || topup.method === "card");
+  const tomanText = tmn ? `≈ ${fInt(Math.round(credit * tmn))} ${P("تومان", "Toman")}` : "";
+  const summary = `<div class="summary"><div class="sum-main"><div class="k">${P("مبلغ شارژ", "Top-up amount")}</div><div class="v">$${esc(credit)}</div><div class="vt tmnFill">${tomanText}</div></div>
+    <div class="timer"><div class="cd">30:00</div><div class="k">${P("مهلت باقی‌مانده", "Time left")}</div></div></div><div class="timebar"><i id="timebar"></i></div>`;
+  const script = payScript(topup, topup.method === "crypto" || topup.method === "card", lang);
   const icoX = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>';
   const icoHome = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5 12 3l9 6.5V20a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22v-8h6v8"/></svg>';
-  const actions = `<div class="payfoot"><button class="footbtn danger" onclick="openCancelPay()">${icoX} لغو پرداخت</button><a class="footbtn" href="/app">${icoHome} بازگشت به صفحه اصلی</a></div>
+  const actions = `<div class="payfoot"><button class="footbtn danger" onclick="openCancelPay()">${icoX} ${P("لغو پرداخت", "Cancel payment")}</button><a class="footbtn" href="/app">${icoHome} ${P("بازگشت به صفحه اصلی", "Back to home")}</a></div>
   <div class="cmodal" id="cmodal" onclick="if(event.target===this)closeCancelPay()"><div class="mbox"><div class="handle"></div>
-  <h3>لغو پرداخت</h3>
-  <p>این پرداخت لغو و بسته شود؟ اگر مبلغی واریز کرده‌اید، پیش از لغو با پشتیبانی هماهنگ کنید؛ بعد از لغو، این لینک دیگر کار نمی‌کند.</p>
-  <div class="mbtns"><button class="btn dangerb" onclick="doCancelPay(this)">بله، لغو شود</button><button class="btn ghost" onclick="closeCancelPay()">برگرد</button></div></div></div>
+  <h3>${P("لغو پرداخت", "Cancel payment")}</h3>
+  <p>${P("این پرداخت لغو و بسته شود؟ اگر مبلغی واریز کرده‌اید، پیش از لغو با پشتیبانی هماهنگ کنید؛ بعد از لغو، این لینک دیگر کار نمی‌کند.", "Cancel and close this payment? If you already sent money, contact support before cancelling; after cancelling, this link stops working.")}</p>
+  <div class="mbtns"><button class="btn dangerb" onclick="doCancelPay(this)">${P("بله، لغو شود", "Yes, cancel it")}</button><button class="btn ghost" onclick="closeCancelPay()">${P("برگرد", "Back")}</button></div></div></div>
   <script>function openCancelPay(){document.getElementById('cmodal').classList.add('on')}
   function closeCancelPay(){document.getElementById('cmodal').classList.remove('on')}
-  async function doCancelPay(btn){btn.disabled=true;btn.textContent='در حال لغو…';try{var r=await fetch('/pay/cancel',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({t:'${topup.id}'})});var d=await r.json();if(d.ok){location.reload()}else{closeCancelPay();toast(d.error||'خطا در لغو');btn.disabled=false;btn.textContent='بله، لغو شود'}}catch(e){closeCancelPay();toast('خطای شبکه');btn.disabled=false;btn.textContent='بله، لغو شود'}}</script>`;
+  async function doCancelPay(btn){btn.disabled=true;btn.textContent='${P("در حال لغو…", "Cancelling…")}';try{var r=await fetch('/pay/cancel',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({t:'${topup.id}'})});var d=await r.json();if(d.ok){location.reload()}else{closeCancelPay();toast(d.error||'${P("خطا در لغو", "Cancel failed")}');btn.disabled=false;btn.textContent='${P("بله، لغو شود", "Yes, cancel it")}'} }catch(e){closeCancelPay();toast('${P("خطای شبکه", "Network error")}');btn.disabled=false;btn.textContent='${P("بله، لغو شود", "Yes, cancel it")}'}}</script>`;
 
   if (topup.status === "approved") {
     const user = await getUser(env, topup.userId);
     const bonus = Number(topup.bonusUsd) || 0;
     const total = Math.round((credit + bonus) * 100) / 100;
-    return payShell(`${head(3)}
+    return shell(`${head(3)}
       <div class="state"><div class="circ fill">✓</div>
-      <h1>پرداخت تأیید شد</h1>
-      <p>موجودی شما با موفقیت شارژ شد. می‌توانید این صفحه را ببندید و به ربات برگردید.</p>
+      <h1>${P("پرداخت تأیید شد", "Payment approved")}</h1>
+      <p>${P("موجودی شما با موفقیت شارژ شد. می‌توانید این صفحه را ببندید و به ربات برگردید.", "Your balance was topped up successfully. You can close this page and return to the bot.")}</p>
       <div class="big">+$${esc(total)}</div>
-      ${bonus > 0 ? `<p>شارژ $${esc(credit)} + بونوس پکیج $${esc(bonus)}</p>` : ""}
-      <p>موجودی فعلی: $${esc(user.balance)}</p></div>`);
+      ${bonus > 0 ? `<p>${P(`شارژ $${esc(credit)} + بونوس پکیج $${esc(bonus)}`, `Top-up $${esc(credit)} + package bonus $${esc(bonus)}`)}</p>` : ""}
+      <p>${P("موجودی فعلی", "Current balance")}: $${esc(user.balance)}</p></div>`);
   }
   if (topup.status === "expired" || topupIsExpired(topup)) {
-    return payShell(`${head(2)}
+    return shell(`${head(2)}
       <div class="state"><div class="circ red">⏱</div>
-      <h1 class="red">مهلت پرداخت تمام شد</h1>
-      <p>این درخواست پرداخت بسته شد. برای شارژ حساب، داخل ربات یک پرداخت جدید بسازید.</p></div>`);
+      <h1 class="red">${P("مهلت پرداخت تمام شد", "Payment window closed")}</h1>
+      <p>${P("این درخواست پرداخت بسته شد. برای شارژ حساب، داخل ربات یک پرداخت جدید بسازید.", "This payment request is closed. To top up, create a new payment inside the bot.")}</p></div>`);
   }
   if (topup.status === "rejected") {
-    return payShell(`${head(2)}
+    return shell(`${head(2)}
       <div class="state"><div class="circ red">✕</div>
-      <h1 class="red">پرداخت رد شد</h1>
-      <p>رسید ارسالی توسط ادمین تأیید نشد. اگر مبلغی واریز کرده‌اید، برای پیگیری با پشتیبانی در تماس باشید یا داخل ربات یک پرداخت تازه بسازید.</p></div>`);
+      <h1 class="red">${P("پرداخت رد شد", "Payment rejected")}</h1>
+      <p>${P("رسید ارسالی توسط ادمین تأیید نشد. اگر مبلغی واریز کرده‌اید، برای پیگیری با پشتیبانی در تماس باشید یا داخل ربات یک پرداخت تازه بسازید.", "The receipt was not approved by the admin. If you sent money, contact support, or create a fresh payment inside the bot.")}</p></div>`);
   }
   if (topup.status === "cancelled") {
-    return payShell(`${head(2)}
+    return shell(`${head(2)}
       <div class="state"><div class="circ">✕</div>
-      <h1>پرداخت لغو شد</h1>
-      <p>این درخواست پرداخت لغو و بسته شد. برای شارژ حساب، داخل ربات یا فروشگاه وب یک پرداخت جدید بسازید.</p>
-      <p style="margin-top:18px"><a class="footbtn" style="display:inline-flex;flex:none;padding:11px 20px" href="/app">${icoHome} بازگشت به صفحه اصلی</a></p></div>`);
+      <h1>${P("پرداخت لغو شد", "Payment cancelled")}</h1>
+      <p>${P("این درخواست پرداخت لغو و بسته شد. برای شارژ حساب، داخل ربات یا فروشگاه وب یک پرداخت جدید بسازید.", "This payment request was cancelled and closed. To top up, create a new payment in the bot or the web shop.")}</p>
+      <p style="margin-top:18px"><a class="footbtn" style="display:inline-flex;flex:none;padding:11px 20px" href="/app">${icoHome} ${P("بازگشت به صفحه اصلی", "Back to home")}</a></p></div>`);
   }
   if (topup.status !== "pending") {
-    return payShell(`${head(2)}
+    return shell(`${head(2)}
       <div class="state"><div class="circ">✕</div>
-      <h1>این پرداخت بسته شده است</h1>
-      <p>برای شارژ حساب، داخل ربات یک پرداخت جدید بسازید.</p></div>`);
+      <h1>${P("این پرداخت بسته شده است", "This payment is closed")}</h1>
+      <p>${P("برای شارژ حساب، داخل ربات یک پرداخت جدید بسازید.", "To top up, create a new payment inside the bot.")}</p></div>`);
   }
 
   // --- method selection view ---
@@ -4906,18 +4952,18 @@ async function payPage(env, cfg, topup) {
       } catch (_) {}
       rows.push(`<button class="method" onclick="selectMethod('${code}')">
         <span class="tick">${COIN_TICKER[code]}</span>
-        <span class="inf"><span class="nm">${esc(c.label)}</span></span>
+        <span class="inf"><span class="nm">${esc(lang === "en" ? (CRYPTO_EN[code] || c.label) : c.label)}</span></span>
         <span class="ap">${esc(approx)}</span><span class="ch">‹</span></button>`);
     }
     if (cfg.CARD_NUMBER) {
       rows.push(`<button class="method" onclick="selectMethod('CARD')">
-        <span class="tick">کارت</span>
-        <span class="inf"><span class="nm">کارت به کارت</span></span>
-        <span class="ap">${tmn ? esc(faInt(Math.round(credit * tmn))) + " تومان" : "—"}</span><span class="ch">‹</span></button>`);
+        <span class="tick">${P("کارت", "CARD")}</span>
+        <span class="inf"><span class="nm">${P("کارت به کارت", "Card-to-card")}</span></span>
+        <span class="ap">${tmn ? esc(fInt(Math.round(credit * tmn))) + " " + P("تومان", "Toman") : "—"}</span><span class="ch">‹</span></button>`);
     }
-    return payShell(`${head(1)}
-      <h1>روش پرداخت را انتخاب کنید</h1>
-      <p class="sub">بعد از انتخاب، فقط ولت و مبلغ دقیق همان روش نمایش داده می‌شود.</p>
+    return shell(`${head(1)}
+      <h1>${P("روش پرداخت را انتخاب کنید", "Choose a payment method")}</h1>
+      <p class="sub">${P("بعد از انتخاب، فقط ولت و مبلغ دقیق همان روش نمایش داده می‌شود.", "After you choose, only the wallet and exact amount of that method are shown.")}</p>
       ${summary}
       ${rows.join("\n")}
       ${actions}`, script);
@@ -4927,18 +4973,18 @@ async function payPage(env, cfg, topup) {
   if (topup.method === "card_verify") {
     const botUser = await botUsername(env);
     const deep = botUser ? `https://t.me/${botUser}?start=vfy_${topup.id}` : "";
-    return payShell(`${head(2)}
+    return shell(`${head(2)}
       ${summary}
-      <h1>احراز هویت با شماره موبایل</h1>
-      <p class="sub">برای پرداخت کارت‌به‌کارت، ابتدا باید شماره موبایلتان را <b>یک‌بار</b> احراز کنید. این کار داخل ربات تلگرام و با دکمه «ارسال شماره» انجام می‌شود؛ شماره باید متعلق به خودتان باشد و تلگرام اصالت آن را تضمین می‌کند.</p>
+      <h1>${P("احراز هویت با شماره موبایل", "Mobile number verification")}</h1>
+      <p class="sub">${P("برای پرداخت کارت‌به‌کارت، ابتدا باید شماره موبایلتان را <b>یک‌بار</b> احراز کنید. این کار داخل ربات تلگرام و با دکمه «ارسال شماره» انجام می‌شود؛ شماره باید متعلق به خودتان باشد و تلگرام اصالت آن را تضمین می‌کند.", "For card-to-card payments, you first verify your mobile number <b>once</b>. This happens inside the Telegram bot with the Share number button; the number must be your own, and Telegram guarantees its authenticity.")}</p>
       <ul class="notes">
-        <li><b>۱</b> دکمه زیر را بزنید تا ربات باز شود.</li>
-        <li><b>۲</b> در ربات، دکمه «ارسال شماره موبایل» را بزنید و شماره را به اشتراک بگذارید.</li>
-        <li><b>۳</b> به همین صفحه برگردید — صفحه به‌صورت خودکار وارد مرحله پرداخت کارت می‌شود.</li>
+        <li><b>${P("۱", "1")}</b> ${P("دکمه زیر را بزنید تا ربات باز شود.", "Tap the button below to open the bot.")}</li>
+        <li><b>${P("۲", "2")}</b> ${P("در ربات، دکمه «ارسال شماره موبایل» را بزنید و شماره را به اشتراک بگذارید.", "In the bot, tap Share mobile number and share your number.")}</li>
+        <li><b>${P("۳", "3")}</b> ${P("به همین صفحه برگردید — صفحه به‌صورت خودکار وارد مرحله پرداخت کارت می‌شود.", "Come back to this page — it moves to the card payment step automatically.")}</li>
       </ul>
-      ${deep ? `<a href="${deep}" style="display:block;text-align:center;background:#fff;color:#000;border-radius:14px;padding:14px 18px;font-weight:800;text-decoration:none;margin:16px 0"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg> رفتن به ربات و احراز شماره</a>` : `<p class="sub">از داخل ربات روی لینک پرداخت همین سفارش بزنید و مراحل احراز را انجام دهید.</p>`}
-      <p class="sub">همین صفحه را باز نگه دارید؛ بعد از احراز موفق، خودش به‌روز می‌شود.</p>
-      <script>setInterval(async()=>{try{const r=await fetch('/pay/status?t=${topup.id}&_='+Date.now(),{cache:'no-store'});const d=await r.json();if(d.status!=='pending'||(d.method&&d.method!=='card_verify'))location.reload()}catch(e){}},4000)</script>
+      ${deep ? `<a href="${deep}" style="display:block;text-align:center;background:#fff;color:#000;border-radius:14px;padding:14px 18px;font-weight:800;text-decoration:none;margin:16px 0"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/></svg> ${P("رفتن به ربات و احراز شماره", "Open the bot and verify number")}</a>` : `<p class="sub">${P("از داخل ربات روی لینک پرداخت همین سفارش بزنید و مراحل احراز را انجام دهید.", "From inside the bot, open this order payment link and complete the verification.")}</p>`}
+      <p class="sub">${P("همین صفحه را باز نگه دارید؛ بعد از احراز موفق، خودش به‌روز می‌شود.", "Keep this page open; it refreshes by itself after a successful verification.")}</p>
+      <script>setInterval(async()=>{try{const r=await fetch('/pay/status?t=${topup.id}&lang=${lang}&_='+Date.now(),{cache:'no-store'});const d=await r.json();if(d.status!=='pending'||(d.method&&d.method!=='card_verify'))location.reload()}catch(e){}},4000)</script>
       ${actions}`, script);
   }
 
@@ -4947,70 +4993,71 @@ async function payPage(env, cfg, topup) {
     const cardDigits = (cfg.CARD_NUMBER || "").replace(/[^0-9]/g, "");
     const cardGrouped = cardDigits.replace(/(.{4})/g, "$1 ").trim() || esc(cfg.CARD_NUMBER || "");
     const bankCard = `<div class="bankcard">
-      <div class="bc-top"><span>${esc(cfg.CARD_BANK || "بانک")}</span><span class="bc-type">کارت بانکی • کارت‌به‌کارت</span></div>
+      <div class="bc-top"><span>${esc(cfg.CARD_BANK || P("بانک", "Bank"))}</span><span class="bc-type">${P("کارت بانکی • کارت‌به‌کارت", "Bank card • Card-to-card")}</span></div>
       <div class="bc-mid"><span class="bc-chip"></span>
       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.85)" stroke-width="2" stroke-linecap="round"><path d="M6 8a8 8 0 0 1 0 8"/><path d="M9.5 5.5a12 12 0 0 1 0 13"/><path d="M13 3a16 16 0 0 1 0 18"/></svg></div>
       <div class="bc-num" dir="ltr">${esc(cardGrouped)}</div>
-      <div class="bc-bot"><div><div class="bc-k">به نام</div><div class="bc-holder">${esc(cfg.CARD_HOLDER || "")}</div></div>
-      <button class="copy bc-copy" onclick="copyText('${esc(cardDigits || cfg.CARD_NUMBER || "")}',this)">کپی شماره کارت</button></div>
+      <div class="bc-bot"><div><div class="bc-k">${P("به نام", "Card holder")}</div><div class="bc-holder">${esc(cfg.CARD_HOLDER || "")}</div></div>
+      <button class="copy bc-copy" onclick="copyText('${esc(cardDigits || cfg.CARD_NUMBER || "")}',this)">${P("کپی شماره کارت", "Copy card number")}</button></div>
     </div>`;
     const uploadBlock = `<div class="upload">
       <div class="uic"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1z"/><path d="M8 7h8"/><path d="M8 11h8"/></svg></div>
-      <p><b>آپلود رسید پرداخت</b><br>بعد از واریز، عکس رسید را همین‌جا بارگذاری و ثبت کنید؛ رسید مستقیم برای ادمین ارسال می‌شود.</p>
-      <img id="rcPrev" alt="پیش‌نمایش رسید">
+      <p><b>${P("آپلود رسید پرداخت", "Upload your payment receipt")}</b><br>${P("بعد از واریز، عکس رسید را همین‌جا بارگذاری و ثبت کنید؛ رسید مستقیم برای ادمین ارسال می‌شود.", "After paying, upload the receipt photo here; it is sent straight to the admin.")}</p>
+      <img id="rcPrev" alt="${P("پیش‌نمایش رسید", "Receipt preview")}">
       <div class="fname" id="rcName"></div>
       <input type="file" id="rcFile" accept="image/*" hidden onchange="onReceiptFile(this)">
-      <div class="btnrow" style="margin-top:12px"><button class="btn ghost" onclick="document.getElementById('rcFile').click()"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg> انتخاب عکس رسید</button><button class="btn" id="rcBtn" disabled onclick="submitReceipt(this)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg> ثبت رسید</button></div>
+      <div class="btnrow" style="margin-top:12px"><button class="btn ghost" onclick="document.getElementById('rcFile').click()"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg> ${P("انتخاب عکس رسید", "Choose receipt photo")}</button><button class="btn" id="rcBtn" disabled onclick="submitReceipt(this)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg> ${P("ثبت رسید", "Submit receipt")}</button></div>
     </div>`;
     if (topup.receiptFileId) {
-      return payShell(`${head(2)}
-        <h1>رسید شما دریافت شد</h1>
-        <p style="margin:10px 0 2px"><span class="pill"><span class="dot"></span>منتظر تأیید ادمین</span></p>
-        <p class="sub">رسید برای ادمین ارسال شده است؛ پس از تأیید، موجودی شما شارژ می‌شود و همین صفحه به‌صورت خودکار به‌روز می‌شود.</p>
+      return shell(`${head(2)}
+        <h1>${P("رسید شما دریافت شد", "Receipt received")}</h1>
+        <p style="margin:10px 0 2px"><span class="pill"><span class="dot"></span>${P("منتظر تأیید ادمین", "Awaiting admin approval")}</span></p>
+        <p class="sub">${P("رسید برای ادمین ارسال شده است؛ پس از تأیید، موجودی شما شارژ می‌شود و همین صفحه به‌صورت خودکار به‌روز می‌شود.", "Your receipt was sent to the admin; once approved, your balance is topped up and this page updates automatically.")}</p>
         ${summary}
-        <div class="btnrow"><button class="btn" onclick="checkStatusBtn(this)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg> بررسی وضعیت</button><button class="btn ghost" onclick="document.getElementById('reUp').style.display='block';this.style.display='none'">ارسال رسید جایگزین</button></div>
+        <div class="btnrow"><button class="btn" onclick="checkStatusBtn(this)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg> ${P("بررسی وضعیت", "Check status")}</button><button class="btn ghost" onclick="document.getElementById('reUp').style.display='block';this.style.display='none'">${P("ارسال رسید جایگزین", "Send a replacement receipt")}</button></div>
         <div id="reUp" style="display:none">${uploadBlock}</div>
         ${actions}`, script);
     }
-    return payShell(`${head(2)}
-      <h1>کارت به کارت</h1>
-      <p class="sub">مبلغ زیر را به کارت فروشگاه واریز کنید و رسید را همین‌جا آپلود کنید.</p>
+    return shell(`${head(2)}
+      <h1>${P("کارت به کارت", "Card-to-card")}</h1>
+      <p class="sub">${P("مبلغ زیر را به کارت فروشگاه واریز کنید و رسید را همین‌جا آپلود کنید.", "Send the amount below to the shop card and upload the receipt right here.")}</p>
       ${summary}
       ${bankCard}
-      <div class="amtbox"><div class="k">مبلغ دقیق واریزی — تومان</div>
-        <div class="amt"><span>${esc(String(topup.amountToman || 0))}</span><button class="copy" onclick="copyText('${esc(topup.amountToman || "")}',this)">کپی مبلغ</button></div></div>
+      <div class="amtbox"><div class="k">${P("مبلغ دقیق واریزی — تومان", "Exact amount to send — Toman")}</div>
+        <div class="amt"><span>${esc(String(topup.amountToman || 0))}</span><button class="copy" onclick="copyText('${esc(topup.amountToman || "")}',this)">${P("کپی مبلغ", "Copy amount")}</button></div></div>
       ${uploadBlock}
       <ul class="notes">
-        <li><b>۱</b> دقیقاً همین مبلغ را به کارت بالا کارت‌به‌کارت کنید.</li>
-        <li><b>۲</b> عکس رسید را همین‌جا آپلود و «ثبت رسید» را بزنید (یا عکس رسید را داخل ربات بفرستید).</li>
-        <li><b>۳</b> رسید برای ادمین ارسال می‌شود؛ پس از تأیید، موجودی‌تان شارژ می‌شود.</li>
+        <li><b>${P("۱", "1")}</b> ${P("دقیقاً همین مبلغ را به کارت بالا کارت‌به‌کارت کنید.", "Send exactly this amount to the card above.")}</li>
+        <li><b>${P("۲", "2")}</b> ${P("عکس رسید را همین‌جا آپلود و «ثبت رسید» را بزنید (یا عکس رسید را داخل ربات بفرستید).", "Upload the receipt photo here and tap Submit receipt (or send the receipt photo inside the bot).")}</li>
+        <li><b>${P("۳", "3")}</b> ${P("رسید برای ادمین ارسال می‌شود؛ پس از تأیید، موجودی‌تان شارژ می‌شود.", "The receipt goes to the admin; once approved, your balance is topped up.")}</li>
       </ul>
-      <div class="btnrow"><button class="btn ghost" onclick="selectMethod('')">تغییر روش پرداخت</button></div>
+      <div class="btnrow"><button class="btn ghost" onclick="selectMethod('')">${P("تغییر روش پرداخت", "Change payment method")}</button></div>
       ${actions}`, script);
   }
 
   // --- crypto payment view: only the chosen wallet + amount ---
   const c = CRYPTOS[topup.crypto] || {};
+  const cLabel = lang === "en" ? (CRYPTO_EN[topup.crypto] || c.label || "") : (c.label || "");
   const addr = topup.walletAddress || "";
-  return payShell(`${head(2)}
-    <h1>پرداخت ${esc(c.label || "")}</h1>
-    <p class="sub">فقط از همین شبکه و دقیقاً همین مبلغ را واریز کنید.</p>
+  return shell(`${head(2)}
+    <h1>${P("پرداخت", "Pay with")} ${esc(cLabel)}</h1>
+    <p class="sub">${P("فقط از همین شبکه و دقیقاً همین مبلغ را واریز کنید.", "Send only on this network and exactly this amount.")}</p>
     ${topup.seenAt ? `<div class="paywrap">
       <div class="ring" style="display:grid;place-items:center;border:1px solid #ff9f43;border-radius:50%;font-size:24px">⏳</div>
-      <div><div class="st"><span class="pill"><span class="dot"></span>تراکنش دیده شد — در انتظار تأیید شبکه</span></div><div class="st">مبلغ شارژ: $${esc(credit)} <span class="tmnFill">${tomanText}</span></div><div class="st">تراکنش شما در شبکه پیدا شده و منتظر تأیید (کانفرم) است. به محض تأیید، شارژ خودکار انجام و این صفحه به‌روز می‌شود. مهلت پرداخت شما تا آن زمان تمدید شده است.</div></div>
+      <div><div class="st"><span class="pill"><span class="dot"></span>${P("تراکنش دیده شد — در انتظار تأیید شبکه", "Transaction seen — awaiting network confirmation")}</span></div><div class="st">${P("مبلغ شارژ", "Top-up amount")}: $${esc(credit)} <span class="tmnFill">${tomanText}</span></div><div class="st">${P("تراکنش شما در شبکه پیدا شده و منتظر تأیید (کانفرم) است. به محض تأیید، شارژ خودکار انجام و این صفحه به‌روز می‌شود. مهلت پرداخت شما تا آن زمان تمدید شده است.", "Your transaction was found on the network and is awaiting confirmation. As soon as it confirms, the top-up is credited automatically and this page updates. Your payment window has been extended until then.")}</div></div>
     </div>` : `<div class="paywrap">
       <div class="ring"><svg width="66" height="66"><circle cx="33" cy="33" r="26" stroke="#222" stroke-width="3" fill="none"/><circle id="ringfg" cx="33" cy="33" r="26" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" stroke-dasharray="163.36" stroke-dashoffset="0"/></svg><div class="rc cd">30:00</div></div>
-      <div><div class="st"><span class="pill"><span class="dot"></span>در انتظار پرداخت</span></div><div class="st">مبلغ شارژ: $${esc(credit)} <span class="tmnFill">${tomanText}</span></div><div class="st">پس از دیده‌شدن تراکنش در شبکه، شارژ خودکار انجام و این صفحه به‌روز می‌شود.</div></div>
+      <div><div class="st"><span class="pill"><span class="dot"></span>${P("در انتظار پرداخت", "Awaiting payment")}</span></div><div class="st">${P("مبلغ شارژ", "Top-up amount")}: $${esc(credit)} <span class="tmnFill">${tomanText}</span></div><div class="st">${P("پس از دیده‌شدن تراکنش در شبکه، شارژ خودکار انجام و این صفحه به‌روز می‌شود.", "Once the transaction is seen on the network, the top-up is credited automatically and this page updates.")}</div></div>
     </div>`}
-    <div class="amtbox"><div class="k">مبلغ دقیق پرداختی — ${esc(c.label || "")}</div>
-      <div class="amt"><span>${esc(topup.expectedCrypto)}</span><button class="copy" onclick="copyText('${esc(topup.expectedCrypto)}',this)">کپی مبلغ</button></div></div>
-    <div class="addr-box"><code class="addr">${esc(addr)}</code><button class="copy" onclick="copyText('${esc(addr)}',this)">کپی آدرس</button></div>
+    <div class="amtbox"><div class="k">${P("مبلغ دقیق پرداختی", "Exact amount")} — ${esc(cLabel)}</div>
+      <div class="amt"><span>${esc(topup.expectedCrypto)}</span><button class="copy" onclick="copyText('${esc(topup.expectedCrypto)}',this)">${P("کپی مبلغ", "Copy amount")}</button></div></div>
+    <div class="addr-box"><code class="addr">${esc(addr)}</code><button class="copy" onclick="copyText('${esc(addr)}',this)">${P("کپی آدرس", "Copy address")}</button></div>
     ${addr ? `<div class="qrwrap"><div class="qr">${qrSvg(addr)}</div></div>` : ""}
     <ul class="notes">
-      <li><b>شبکه</b> واریز از شبکه دیگری به این آدرس، قابل شناسایی نیست.</li>
-      <li><b>مبلغ دقیق</b> کمتر یا بیشتر از مبلغ بالا واریز نکنید؛ سیستم با همین مبلغ پرداخت شما را پیدا می‌کند.</li>
+      <li><b>${P("شبکه", "Network")}</b> ${P("واریز از شبکه دیگری به این آدرس، قابل شناسایی نیست.", "Sending from another network to this address cannot be detected.")}</li>
+      <li><b>${P("مبلغ دقیق", "Exact amount")}</b> ${P("کمتر یا بیشتر از مبلغ بالا واریز نکنید؛ سیستم با همین مبلغ پرداخت شما را پیدا می‌کند.", "Do not send less or more than the amount above; the system finds your payment by this exact amount.")}</li>
     </ul>
-    <div class="btnrow"><button class="btn" onclick="checkNow(this)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg> بررسی پرداخت</button><button class="btn ghost" onclick="selectMethod('')">تغییر روش پرداخت</button></div>
+    <div class="btnrow"><button class="btn" onclick="checkNow(this)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg> ${P("بررسی پرداخت", "Check payment")}</button><button class="btn ghost" onclick="selectMethod('')">${P("تغییر روش پرداخت", "Change payment method")}</button></div>
       ${actions}`, script);
 }
 
@@ -5047,7 +5094,8 @@ export default {
       if (!topup) return Response.json({ status: "notfound" }, { status: 404 });
       topup = await settleTopupLazy(env, topup);
       const rateNow = await usdtTomanRate(env);
-      return Response.json({ status: topup.status, method: topup.method, receipt: !!topup.receiptFileId, expiresAt: topupExpiresAt(topup), toman: rateNow ? `≈ ${faInt(Math.round(topupCredit(topup) * rateNow))} تومان` : null }, { headers: { "cache-control": "no-store" } });
+      const sEn = url.searchParams.get("lang") === "en";
+      return Response.json({ status: topup.status, method: topup.method, receipt: !!topup.receiptFileId, expiresAt: topupExpiresAt(topup), toman: rateNow ? (sEn ? `≈ ${enInt(Math.round(topupCredit(topup) * rateNow))} Toman` : `≈ ${faInt(Math.round(topupCredit(topup) * rateNow))} تومان`) : null }, { headers: { "cache-control": "no-store" } });
     }
     if (url.pathname.startsWith("/api/")) return handleApi(env, request, url);
     if (url.pathname === "/manifest.webmanifest") {
@@ -5066,14 +5114,21 @@ export default {
     }
     if (url.pathname === "/terms") {
       const cfgTerms = await getConfig(env);
-      return new Response(termsPage(cfgTerms), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...HTML_SEC } });
+      return new Response(termsPage(cfgTerms, url.searchParams.get("lang") === "en" ? "en" : "fa"), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...HTML_SEC } });
     }
     if (url.pathname === "/pay") {
       const t = url.searchParams.get("t");
       let topup = t ? await kvGet(env, `topup:${t}`) : null;
       if (topup) topup = await settleTopupLazy(env, topup);
       const cfg = await getConfig(env);
-      const html = await payPage(env, cfg, topup);
+      const lp = url.searchParams.get("lang");
+      let payLang = "fa", payLangSrc = "default";
+      if (lp === "en" || lp === "fa") { payLang = lp; payLangSrc = "param"; }
+      else if (topup) {
+        const owner = await kvGet(env, `user:${topup.userId}`);
+        if (owner?.lang === "en" || owner?.lang === "fa") { payLang = owner.lang; payLangSrc = "user"; }
+      }
+      const html = await payPage(env, cfg, topup, payLang, payLangSrc);
       return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", ...HTML_SEC } });
     }
     if (url.pathname === "/health") {
