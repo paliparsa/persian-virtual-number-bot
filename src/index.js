@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.7.2"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.7.3"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -74,7 +74,7 @@ const CONFIG_KEYS = [
   "WALLET_USDT_TRC20", "WALLET_TRX", "WALLET_BTC", "WALLET_TON",
   "WALLET_LTC", "WALLET_ETH", "WALLET_USDT_ERC20", "WALLET_USDT_BEP20",
   "SUPPORT_USERNAME", "WORKER_BASE_URL", "PRICE_MARKUP_PERCENT", "TMN_RATE_MANUAL", "GROUP_CHAT_ID", "MIN_TOPUP_USD",
-  "FORCE_JOIN_ENABLED", "FORCE_JOIN_CHANNEL", "PHONE_VERIFY_ENABLED",
+  "FORCE_JOIN_ENABLED", "FORCE_JOIN_CHANNEL", "PHONE_VERIFY_ENABLED", "ETHERSCAN_API_KEY",
 ];
 async function getConfig(env) {
   const stored = (await kvGet(env, "config")) || {};
@@ -434,6 +434,9 @@ const diagKeyOk = (env, url) => {
 async function findCryptoCandidates(env, topup) {
   const addr = topup.walletAddress;
   const sinceSec = Math.floor((topup.selectedAt || topup.createdAt) / 1000) - 30;
+  // The Etherscan key can be registered from the bot's admin panel (stored in
+  // KV config) or as a Cloudflare secret — getConfig merges both, panel wins.
+  const etherscanKey = (await getConfig(env)).ETHERSCAN_API_KEY || "";
   const out = [];
   try {
     if (topup.crypto === "USDT_TRC20") {
@@ -482,9 +485,11 @@ async function findCryptoCandidates(env, topup) {
       // configured — the same free key that powers ERC20. Since 2025 most
       // public BSC RPC nodes reject anonymous eth_getLogs, so this is the
       // reliable path when available.
-      if (env.ETHERSCAN_API_KEY) {
+      if (etherscanKey) {
         try {
-          const r = await fetch(`https://api.etherscan.io/v2/api?chainid=56&module=account&action=tokentx&contractaddress=${USDT_BSC_CONTRACT}&address=${addr}&sort=desc&apikey=<redacted>`);
+          const qs = new URLSearchParams({ chainid: "56", module: "account", action: "tokentx", contractaddress: USDT_BSC_CONTRACT, address: addr, sort: "desc" });
+          qs.set("apikey", etherscanKey);
+          const r = await fetch(`https://api.etherscan.io/v2/api?${qs}`);
           const d = await r.json().catch(() => ({}));
           for (const tx of Array.isArray(d.result) ? d.result : []) {
             if (String(tx.to).toLowerCase() === addr.toLowerCase() && Number(tx.timeStamp) >= sinceSec)
@@ -553,12 +558,15 @@ async function findCryptoCandidates(env, topup) {
       }
       // Etherscan API V2 — the V1 endpoint was shut down in 2025 and returns
       // an error STRING as `result`, which silently produced zero candidates
-      // (no ERC20 payment could ever be detected). Needs ETHERSCAN_API_KEY.
-      if (env.ETHERSCAN_API_KEY) {
+      // (no ERC20 payment could ever be detected). The key is set from the
+      // admin panel (تنظیمات عمومی) or as a Cloudflare secret.
+      if (etherscanKey) {
         try {
           const action = isToken ? "tokentx" : "txlist";
-          const contract = isToken ? `&contractaddress=${USDT_ERC20_CONTRACT}` : "";
-          const r = await fetch(`https://api.etherscan.io/v2/api?chainid=1&module=account&action=${action}${contract}&address=${addr}&sort=desc&apikey=<redacted>`);
+          const qs = new URLSearchParams({ chainid: "1", module: "account", action, address: addr, sort: "desc" });
+          if (isToken) qs.set("contractaddress", USDT_ERC20_CONTRACT);
+          qs.set("apikey", etherscanKey);
+          const r = await fetch(`https://api.etherscan.io/v2/api?${qs}`);
           const d = await r.json().catch(() => ({}));
           for (const tx of Array.isArray(d.result) ? d.result : []) {
             if (String(tx.to).toLowerCase() === addr.toLowerCase() && Number(tx.timeStamp) >= sinceSec && tx.isError !== "1")
@@ -1292,6 +1300,7 @@ const SETTING_FIELDS = {
   FORCE_JOIN_CHANNEL: { label: "کانال عضویت اجباری", hint: "یوزرنیم کانال را با @ بفرستید، مثال: @blluegate — ربات باید در آن کانال ادمین باشد تا بتواند عضویت کاربران را بررسی کند." },
   PHONE_VERIFY_ENABLED: { label: "احراز با شماره (فقط کارت‌به‌کارت)", hint: "" },
   WORKER_BASE_URL: { label: "آدرس عمومی ورکر", hint: "آدرس کامل با https:// — برای اطمینان از تنظیم خودکار وبهوک" },
+  ETHERSCAN_API_KEY: { label: "کلید API اتراسکن (Etherscan)", hint: "کلید رایگان API از سایت etherscan.io — برای تشخیص مطمئن پرداخت‌های تتر ERC20 و BEP20. کلید را کامل بفرستید؛ در پنل فقط چهار رقم آخرش دیده می‌شود." },
 };
 const walletField = (code) => ({
   label: `کیف‌پول ${CRYPTOS[code].label}`,
@@ -1309,18 +1318,24 @@ function settingHint(key) {
 const CONFIG_GROUPS = {
   card: { title: "💳 تنظیمات پرداخت کارتی", keys: ["CARD_NUMBER", "CARD_HOLDER", "CARD_BANK"] },
   wallet: { title: "🪙 کیف‌پول‌های کریپتو", keys: Object.values(CRYPTOS).map((c) => c.envKey) },
-  general: { title: "🧰 تنظیمات عمومی", keys: ["PRICE_MARKUP_PERCENT", "MIN_TOPUP_USD", "TMN_RATE_MANUAL", "GROUP_CHAT_ID", "SUPPORT_USERNAME", "WORKER_BASE_URL"] },
+  general: { title: "🧰 تنظیمات عمومی", keys: ["PRICE_MARKUP_PERCENT", "MIN_TOPUP_USD", "TMN_RATE_MANUAL", "GROUP_CHAT_ID", "SUPPORT_USERNAME", "WORKER_BASE_URL", "ETHERSCAN_API_KEY"] },
   access: { title: "🔒 عضویت و احراز هویت", keys: ["FORCE_JOIN_ENABLED", "FORCE_JOIN_CHANNEL", "PHONE_VERIFY_ENABLED"] },
 };
 const groupOfKey = (key) =>
   Object.entries(CONFIG_GROUPS).find(([, g]) => g.keys.includes(key))?.[0] || "general";
 const shortVal = (v) => !v ? "— تنظیم نشده" : v.length > 26 ? `${v.slice(0, 12)}…${v.slice(-8)}` : v;
+// Secret values (API keys) are never shown in the panel beyond their last
+// four characters — the admin chat is private, but panels get screenshotted.
+const SECRET_KEYS = ["ETHERSCAN_API_KEY"];
+const displayVal = (key, v) => SECRET_KEYS.includes(key)
+  ? (v ? `ثبت شده (…${String(v).slice(-4)})` : "— تنظیم نشده")
+  : shortVal(v);
 
 function configGroupText(cfg, group) {
   const g = CONFIG_GROUPS[group];
   let text = `⚙️ <b>${g.title}</b>\n\nبرای ویرایش، روی هر مورد بزنید. دکمه 🗑 مقدار را حذف می‌کند.\n`;
   for (const k of g.keys) {
-    const v = TOGGLE_KEYS.includes(k) ? (cfg[k] === "1" ? "روشن ✅" : "خاموش ⚪️") : shortVal(cfg[k]);
+    const v = TOGGLE_KEYS.includes(k) ? (cfg[k] === "1" ? "روشن ✅" : "خاموش ⚪️") : displayVal(k, cfg[k]);
     text += `\n<b>${esc(settingLabel(k))}:</b> <code>${esc(v)}</code>`;
   }
   return text;
@@ -1330,7 +1345,7 @@ function configGroupKb(cfg, group) {
   const rows = g.keys.map((k) => TOGGLE_KEYS.includes(k)
     ? [btn(`${settingLabel(k)}: ${cfg[k] === "1" ? "روشن ✅" : "خاموش ⚪️"}`, `cfgtgl:${k}`)]
     : [
-      btn(`${settingLabel(k)}: ${shortVal(cfg[k])}`, `cfg_set:${k}`),
+      btn(`${settingLabel(k)}: ${displayVal(k, cfg[k])}`, `cfg_set:${k}`),
       btn("🗑", `cfg_del:${k}`),
     ]);
   rows.push([btn("⬅️ همه تنظیمات", "cfg"), btn("🛠 پنل مدیریت", "admin")]);
@@ -1373,6 +1388,11 @@ function validateSetting(key, raw) {
   if (key === "GROUP_CHAT_ID") {
     const v = clean.replace(/\s/g, "");
     return /^-?\d{5,20}$/.test(v) ? { value: v } : { error: "آیدی عددی گروه معتبر نیست (مثال: -1001234567890). یا ربات را در گروه اضافه کنید و آنجا /setgroup بفرستید." };
+  }
+  if (key === "ETHERSCAN_API_KEY") {
+    const v = clean.replace(/\s/g, "");
+    return /^[A-Za-z0-9]{20,64}$/.test(v)
+      ? { value: v } : { error: "کلید اتراسکن معتبر نیست؛ کلید فقط از حروف انگلیسی و عدد تشکیل شده و از etherscan.io گرفته می‌شود." };
   }
   if (key === "MIN_TOPUP_USD") {
     return /^\d+(\.\d+)?$/.test(clean) && Number(clean) > 0 && Number(clean) <= 5000
@@ -1544,7 +1564,7 @@ async function handleMessage(env, msg, baseUrl) {
     const group = groupOfKey(key);
     const cfg = await getConfig(env);
     return send(env, chatId,
-      `✅ <b>ذخیره شد</b>\n${esc(settingLabel(key))}: <code>${esc(value)}</code>\n\n${configGroupText(cfg, group)}`,
+      `✅ <b>ذخیره شد</b>\n${esc(settingLabel(key))}: <code>${esc(SECRET_KEYS.includes(key) ? displayVal(key, value) : value)}</code>\n\n${configGroupText(cfg, group)}`,
       configGroupKb(cfg, group));
   }
 
@@ -1793,7 +1813,7 @@ async function handleCallback(env, cq, baseUrl) {
       await saveUser(env, user);
       const cfg = await getConfig(env);
       return edit(env, chatId, msgId,
-        `✏️ <b>${esc(settingLabel(a))}</b>\n\nمقدار فعلی: <code>${esc(cfg[a] || "— تنظیم نشده")}</code>\n\n${esc(settingHint(a))}\nمقدار جدید را همین‌جا بفرستید، یا برای لغو دکمه زیر را بزنید:`,
+        `✏️ <b>${esc(settingLabel(a))}</b>\n\nمقدار فعلی: <code>${esc(SECRET_KEYS.includes(a) ? displayVal(a, cfg[a]) : (cfg[a] || "— تنظیم نشده"))}</code>\n\n${esc(settingHint(a))}\nمقدار جدید را همین‌جا بفرستید، یا برای لغو دکمه زیر را بزنید:`,
         kb([[btn("❌ انصراف", "cfg_cancel")]]));
     }
     if (data === "cfg_cancel" && isAdmin(env, chatId)) {
