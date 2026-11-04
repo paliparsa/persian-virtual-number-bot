@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.16.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.17.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -1257,11 +1257,13 @@ async function runHealthChecks(env, webhookRes) {
 // ---------- bot UI (Persian) ----------
 function mainMenuKb(env, cfg, userId, origin, pendingCount = 0, lang = "fa") {
   const en = lang === "en";
-  const rows = [
+  const rows = [];
+  if (origin) rows.push([urlBtn(en ? "🌐 Open the website" : "🌐 ورود به وبسایت", `${String(origin).replace(/\/+$/, "")}/app`)]);
+  rows.push(
     [btn(en ? "🛒 Buy number" : "🛒 خرید شماره", "countries:0"), btn(en ? "📱 My orders" : "📱 سفارش‌های من", "orders")],
     [btn(en ? "💰 My balance" : "💰 موجودی من", "balance"), btn(en ? "💳 Top up" : "💳 افزایش موجودی", "topup")],
-    [btn(en ? "🎁 Invite friends" : "🎁 دعوت دوستان", "ref"), btn("🌐 " + (en ? "Language" : "زبان"), "langmenu")],
-  ];
+    [btn(en ? "🎁 Invite friends" : "🎁 دعوت دوستان", "ref"), btn("🌐 " + (en ? "Language" : "زبان"), "langmenu")]
+  );
   if (pendingCount > 0) rows.push([btn(en ? `⏳ Pending payments (${pendingCount})` : "⏳ پرداخت‌های در انتظار (" + faDigits(pendingCount) + ")", "pays")]);
   const rowInfo = [origin
     ? urlBtn(en ? "📜 Terms" : "📜 قوانین", `${String(origin).replace(/\/+$/, "")}/terms`)
@@ -1362,9 +1364,11 @@ async function showCountrySearchResults(env, chatId, query) {
 
 const serviceLabel = (cfg, fx, tmn, s, lang = "fa") => {
   const price = fx ? sellPrice(cfg, s.price * fx) : s.price;
+  const p = (Number(price) || 0).toFixed(2);
+  const tmnEq = tmn ? Math.round((Number(price) || 0) * tmn) : null;
   return lang === "en"
-    ? `${s.name} — $${(Number(price) || 0).toFixed(2)} | Stock: ${s.available}`
-    : `${s.name} — ${usdText(tmn, price)} | موجود: ${faInt(s.available)}`;
+    ? `${s.name} ❘ $${p} ❘ ${tmnEq ? enInt(tmnEq) + " TMN" : "—"} ❘ Stock: ${s.available}`
+    : `${s.name} ❘ $${p} ❘ ${tmnEq ? faInt(tmnEq) + " تومان" : "—"} ❘ موجودی: ${faInt(s.available)}`;
 };
 
 async function showServices(env, chatId, msgId, countryId, page) {
@@ -1376,8 +1380,8 @@ async function showServices(env, chatId, msgId, countryId, page) {
   const items = avail.map((s) => ({ label: serviceLabel(cfg, fx, tmn, s, user.lang), id: s.id }));
   const text = items.length
     ? tr(user,
-      `📲 <b>سرویس را انتخاب کنید:</b>\nقیمت‌ها <b>دلاری</b> و با احتساب سود فروشگاه است${tmn ? ` — نرخ تتر (والکس): ${faInt(tmn)} تومان` : ""}.`,
-      `📲 <b>Choose a service:</b>\nPrices are in <b>USD</b>, shop markup included${tmn ? ` — USDT rate: ${enInt(tmn)} Toman` : ""}. Stock is live.`)
+      `📲 <b>سرویس را انتخاب کنید:</b>\nقیمت‌ها <b>دلاری</b> و با احتساب سود فروشگاه است${tmn ? ` — نرخ تتر: ${faInt(tmn)} تومان` : ""}.\n\n<b>سرویس ❘ قیمت ❘ معادل تومانی ❘ موجودی</b>`,
+      `📲 <b>Choose a service:</b>\nPrices are in <b>USD</b>, shop markup included${tmn ? ` — USDT rate: ${enInt(tmn)} Toman` : ""}. Stock is live.\n\n<b>Service ❘ Price ❘ Toman ❘ Stock</b>`)
     : tr(user, `در حال حاضر برای این کشور شماره‌ای موجود نیست. لطفاً بعداً دوباره تلاش کنید.`, `No numbers are available for this country right now. Please try again later.`);
   return edit(env, chatId, msgId, text,
     pageKb(items, page, 10, (it, p) => it ? `confirm:${countryId}:${it.id}` : `services:${countryId}:${p}`, "countries:0", 1,
@@ -1389,11 +1393,12 @@ async function showServiceSearchResults(env, chatId, countryId, query) {
   const [fx, tmn] = await Promise.all([brlToUsdRate(env), usdtTomanRate(env)]);
   const services = await smsfull(env, `/services?countryId=${countryId}`);
   const hits = services.filter((s) => s.available > 0 && serviceMatches(s, query)).slice(0, 20);
+  const user = await getUser(env, chatId);
   if (!hits.length) {
     return send(env, chatId, `🔍 سرویسی با «${esc(query)}» پیدا نشد. بخشی از نام سرویس را به انگلیسی بنویسید (مثلاً Whats):`,
       kb([[btn("📲 فهرست سرویس‌ها", `services:${countryId}:0`)], [btn("⬅️ منوی اصلی", "home")]]));
   }
-  const rows = hits.map((s) => [btn(serviceLabel(cfg, fx, tmn, s), `confirm:${countryId}:${s.id}`)]);
+  const rows = hits.map((s) => [btn(serviceLabel(cfg, fx, tmn, s, user.lang), `confirm:${countryId}:${s.id}`)]);
   rows.push([btn("📲 فهرست سرویس‌ها", `services:${countryId}:0`)], [btn("⬅️ منوی اصلی", "home")]);
   return send(env, chatId, `🔍 <b>نتایج جستجو برای «${esc(query)}»:</b>`, kb(rows));
 }
@@ -3723,6 +3728,7 @@ const apiAct = (act, rec) => ({
   expiresAt: act.expiresAt || null,
   createdAt: rec?.createdAt || null,
   price: rec?.price ?? null,
+  countryId: rec?.countryId || null,
 });
 
 async function handleApi(env, request, url) {
@@ -3946,7 +3952,9 @@ h2.title .icn{vertical-align:-5px;margin-left:2px}
 .hrow .hmain span{color:#aeaeb2;font-size:12.5px}
 .hrow .hside{text-align:left}
 .hrow .hstatus{display:block;font-size:12.5px;font-weight:700;color:#d6d6da}
-.hrow .hstatus.ok{color:#fff}
+.hrow .hstatus.ok{color:#30d158}
+.hrow .hmain b.ok{color:#30d158}
+.hrow .hmain b.bad{color:#ff453a}
 .hrow .hstatus.bad{color:#ff453a}
 .hrow .hstatus.seen{color:#ff9f43}
 .hrow .hdate{display:block;color:#8e8e93;font-size:11.5px;margin-top:2px}
@@ -4013,6 +4021,11 @@ h2.title .icn{vertical-align:-5px;margin-left:2px}
 .pconfirm .snote{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:11px 13px;font-size:12.8px;line-height:1.95;color:#c7c7cc;margin-top:12px}
 .pconfirm .sbtns{display:flex;flex-direction:column;gap:9px;margin-top:16px}
 .pkgrow{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:14px}
+.formcard{background:#0e0e10;border:1px solid #1f1f23;border-radius:18px;padding:16px;margin-top:14px}
+.formcard .chips{margin-bottom:12px}
+.formcard .amtin{margin-bottom:10px}
+.ordclick{cursor:pointer}
+.hrow .rebuy{display:inline-flex;align-items:center;gap:5px;margin-top:6px}
 .pkgrow:empty{display:none}
 .pkgcard{background:linear-gradient(180deg,rgba(255,255,255,.055),rgba(255,255,255,.02));border:1px solid rgba(255,255,255,.13);border-radius:15px;padding:12px 10px;color:#fff;font:inherit;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:4px}
 .pkgcard:active{transform:scale(.98)}
@@ -4033,7 +4046,7 @@ h2.title .icn{vertical-align:-5px;margin-left:2px}
 .numcard .lbl{color:#8e8e93;font-size:12.5px}
 .numcard .num{font-size:24px;font-weight:800;letter-spacing:1px;direction:ltr;text-align:left;margin:4px 0 2px}
 .pill{display:inline-flex;align-items:center;gap:7px;border-radius:999px;padding:5px 12px;font-size:12.5px;border:1px solid #3a2c17;color:#ff9f43;background:rgba(255,159,67,.07)}
-.pill.ok{border-color:#2c2c31;color:#fff;background:#141416}
+.pill.ok{border-color:#1d3a24;color:#30d158;background:rgba(48,209,88,.07)}
 .pill.bad{border-color:#3d1d1a;color:#ff453a;background:rgba(255,69,58,.06)}
 .dot{width:7px;height:7px;border-radius:50%;background:#ff9f43;animation:pl 1.2s infinite}
 @keyframes pl{50%{opacity:.25}}
@@ -4120,13 +4133,15 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
       <h2 class="title"><svg class="icn" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg> <span data-i="tTopup">افزایش موجودی</span></h2>
       <div id="openPays"></div>
       <div id="pkgRow" class="pkgrow"></div>
+      <div class="formcard">
       <div class="chips">
         <button id="chipUsd" class="on" onclick="setTopupMode('usd')"><svg class="icn" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/><path d="M6 12h.01"/><path d="M18 12h.01"/></svg> <span data-i="chipUsd">مبلغ به دلار</span></button>
         <button id="chipTmn" data-i="chipTmn" onclick="setTopupMode('tmn')">مبلغ به تومان</button>
       </div>
       <input class="amtin" id="tpAmt" inputmode="numeric" placeholder="$ مبلغ" data-ip="amtPh">
       <p class="small" id="tpHint">بعد از ساخت، به صفحه پرداخت می‌روید و روش پرداخت (رمزارز یا کارت‌به‌کارت) را آنجا انتخاب می‌کنید. هر پرداخت ۳۰ دقیقه مهلت دارد.</p>
-      <button class="wbtn" style="width:100%" data-i="makeLink" onclick="doTopup()">ساخت صفحه پرداخت</button>
+      <button class="wbtn" style="width:100%;margin-top:16px" data-i="makeLink" onclick="doTopup()">ساخت صفحه پرداخت</button>
+      </div>
       <div id="tpResult"></div>
     </section>
 
@@ -4565,7 +4580,9 @@ function pollAct(){
 function renderAct(){
   var a = S.act; if (!a) return;
   var html = '<h2 class="title">' + W('شماره شما آماده است', 'Your number is ready') + '</h2>';
-  html += '<button class=\"numcard\" id=\"numCard\"><div class=\"lbl\">' + escH(a.serviceName) + '</div><div class=\"num\">' + escH(a.phone) + '</div><div class=\"lbl\">' + W('برای کپی، روی شماره بزنید', 'Tap the number to copy') + '</div></button>';
+  var cnA = a.countryId ? countryNameOf(a.countryId) : '';
+  var deadA = ['cancelled','expired','refunded'].indexOf(a.status) !== -1;
+  html += '<button class=\"numcard\" id=\"numCard\"><div class=\"lbl\">' + escH(a.serviceName) + (cnA ? ' — ' + escH(cnA) : '') + '</div><div class=\"num\">' + escH(deadA ? maskPhoneW(a.phone) : a.phone) + '</div><div class=\"lbl\">' + W('برای کپی، روی شماره بزنید', 'Tap the number to copy') + '</div></button>';
   html += '<div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center">' + statusPill(a) + '<span style="color:#9a9aa2;font-size:13px" id="cdLeft"></span></div>';
   if (a.code) {
     var boxes = '';
@@ -4585,7 +4602,7 @@ function renderAct(){
     html += '<div class=\"btnrow\"><button class=\"gbtn\" onclick=\"showView(&#39;orders&#39;)\">' + ico('list') + ' ' + W('سفارش‌های من', 'My orders') + '</button></div>';
   }
   $('actBox').innerHTML = html;
-  var nc = $('numCard'); if (nc) nc.onclick = function(){ copyTxt(S.act.phone); };
+  var nc = $('numCard'); if (nc) nc.onclick = function(){ if (['cancelled','expired','refunded'].indexOf(S.act.status) !== -1) { toast(W('این سفارش به پایان رسیده است', 'This order has ended')); return; } copyTxt(S.act.phone); };
   var cbx = $('codeBoxes'); if (cbx) cbx.onclick = function(){ copyTxt(S.act.code); };
   tickCountdown();
 }
@@ -4611,11 +4628,33 @@ function loadOrders(){
     var rbSvg = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>';
     (j.orders||[]).forEach(function(o){
       var dt = o.createdAt ? new Date(o.createdAt).toLocaleString(S.lang === 'en' ? 'en-GB' : 'fa-IR', { timeZone:'Asia/Tehran' }) : '';
-      var rb = o.countryId ? '<button class="mini rebuy" onclick="rebuyOrder(' + o.countryId + ',' + (o.serviceId || 0) + ')">' + rbSvg + W('خرید مجدد', 'Buy again') + '</button>' : '';
-      html += '<div class="ordrow"><button class="ord" onclick="openOrder(' + o.id + ')"><span><span class="ph">' + escH(o.phone) + '</span><div class="mt">' + escH(o.serviceName) + ' — ' + escH(statusTxt(o.status)) + '</div></span><span class="mt">' + escH(dt) + '</span></button>' + rb + '</div>';
+      var dead = ['cancelled','expired','refunded'].indexOf(o.status) !== -1;
+      var ph = dead ? maskPhoneW(o.phone) : o.phone;
+      var cn = o.countryId ? countryNameOf(o.countryId) : '';
+      var rb = o.countryId ? '<button class="mini rebuy" onclick="event.stopPropagation();rebuyOrder(' + o.countryId + ',' + (o.serviceId || 0) + ')">' + rbSvg + W('خرید مجدد', 'Buy again') + '</button>' : '';
+      html += '<div class="hrow ordclick" onclick="openOrder(' + o.id + ')"><div class="hmain"><b>' + escH(ph) + '</b><span>' + escH(o.serviceName) + (cn ? ' — ' + escH(cn) : '') + '</span>' + rb + '</div><div class="hside"><span class="hstatus ' + ordStatusCls(o.status) + '">' + escH(statusTxt(o.status)) + '</span><span class="hdate">' + escH(dt) + '</span></div></div>';
     });
     $('ordList').innerHTML = html || '<div class="loading">' + W('هنوز سفارشی ندارید', 'No orders yet') + '</div>';
   }).catch(function(e){ $('ordList').innerHTML = '<div class="loading">' + escH(e.message) + '</div>'; });
+}
+function maskPhoneW(p){
+  var d = String(p || '').replace(/\D/g, '');
+  if (!d) return '***';
+  if (d.length <= 6) return '+' + d.slice(0, 2) + '***' + d.slice(-1);
+  var head = d.slice(0, 4), tail = d.slice(-3);
+  var n = Math.min(8, Math.max(3, d.length - head.length - tail.length)), stars = '';
+  for (var i = 0; i < n; i++) stars += '*';
+  return '+' + head + stars + tail;
+}
+function countryNameOf(id){
+  var c = null;
+  (S.countries || []).forEach(function(x){ if (x.id === id) c = x; });
+  return c ? (c.emoji + ' ' + c.name) : '';
+}
+function ordStatusCls(st){
+  if (st === 'codeReceived' || st === 'finished') return 'ok';
+  if (st === 'cancelled' || st === 'expired' || st === 'refunded') return 'bad';
+  return 'seen';
 }
 function rebuyOrder(cid, sid){
   var c = null;
@@ -4738,7 +4777,8 @@ function loadPayHistory(){
     html += '<div class="ophead" style="margin-top:' + (open.length ? '18' : '2') + 'px">' + W('تاریخچه پرداخت‌ها', 'Payment history') + '</div>';
     html += hist.length ? hist.map(function(t){
       var st = payStatusInfo(t);
-      return '<div class="hrow"><div class="hmain"><b>' + faUsd(t.creditUsd) + '</b><span>' + methodLabel(t) + (t.bonusUsd > 0 ? W(' — بونوس +', ' — bonus +') + faUsd(t.bonusUsd) : '') + '</span></div><div class="hside"><span class="hstatus ' + st.cls + '">' + st.txt + '</span><span class="hdate">' + tehranFull(t.createdAt) + '</span></div></div>';
+      var amtCls = t.status === 'approved' ? 'ok' : (['cancelled','rejected','expired'].indexOf(t.status) !== -1 ? 'bad' : '');
+      return '<div class="hrow"><div class="hmain"><b class="' + amtCls + '">' + faUsd(t.creditUsd) + '</b><span>' + methodLabel(t) + (t.bonusUsd > 0 ? W(' — بونوس +', ' — bonus +') + faUsd(t.bonusUsd) : '') + '</span></div><div class="hside"><span class="hstatus ' + st.cls + '">' + st.txt + '</span><span class="hdate">' + tehranFull(t.createdAt) + '</span></div></div>';
     }).join('') : '<div class="loading">' + W('هنوز پرداختی ثبت نشده است.', 'No payments yet.') + '</div>';
     $('payHist').innerHTML = html;
   }).catch(function(e){ $('payHist').innerHTML = '<div class="loading">' + escH(e.message) + '</div>'; });
