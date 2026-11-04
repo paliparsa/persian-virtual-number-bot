@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.13.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.14.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -111,6 +111,7 @@ function auditEntryText(e) {
   if (e.action === "set") return `✏️ تنظیم «${label}» تغییر کرد\nاز: ${shortVal(e.oldV || "")} ← به: ${shortVal(e.newV || "")}`;
   if (e.action === "del") return `🗑 تنظیم «${label}» حذف شد (بود: ${shortVal(e.oldV || "")})`;
   if (e.action === "toggle") return `🔘 «${label}» ${e.newV === "1" ? "روشن شد ✅" : "خاموش شد ⚪️"}`;
+  if (e.action === "undo_apr") return `↩️ شارژ تأییدشده بازگردانده شد — ${e.extra || ""}`;
   if (e.action === "apr") return `✅ رسید شارژ تأیید و حساب کاربر شارژ شد — ${e.extra || ""}`;
   if (e.action === "rej") return `❌ رسید شارژ رد شد — ${e.extra || ""}`;
   if (e.action === "pkg_set") return `🎁 پکیج شارژ ${e.key} دلاری تنظیم شد — ${e.extra || ""}`;
@@ -755,9 +756,31 @@ async function creditTopup(env, topup, note) {
     await send(env, fresh.userId,
       `✅ <b>موجودی شما افزایش یافت</b>\n\nمبلغ ${usdText(tmn, credit)} به حساب شما اضافه شد.${bonusAmt > 0 ? `\n🎁 <b>بونوس پکیج:</b> ${usdText(tmn, bonusAmt)} هم به‌عنوان هدیه اضافه شد.` : ""}\nموجودی فعلی: ${usdText(tmn, user.balance)}`,
       mainMenuKb(env, cfg, fresh.userId));
+    await postTopupToGroup(env, fresh, tmn);
     return true;
   });
   return !!res;
+}
+
+// Group announcement for a successful top-up — same style as the purchase
+// announcements (postPurchaseToGroup): amount, bonus when any, buyer id.
+// creditTopup is the single crediting choke point, so this fires exactly
+// once per successful top-up (the status flip above already happened).
+async function postTopupToGroup(env, topup, tmn) {
+  try {
+    if (!topup || topup.groupPosted) return;
+    const cfg = await getConfig(env);
+    const gid = (cfg.GROUP_CHAT_ID || "").trim();
+    if (!gid) return;
+    const credit = topupCredit(topup);
+    const bonus = Number(topup.bonusUsd) || 0;
+    const text = `💰 <b>شارژ موفق</b>\n\n💵 مبلغ شارژ: <b>${usdText(tmn, credit)}</b>${bonus > 0 ? `\n🎁 بونوس: <b>${usdText(tmn, bonus)}</b>` : ""}\n👤 آیدی کاربر: <code>${esc(topup.userId)}</code>`;
+    const res = await tg(env, "sendMessage", { chat_id: gid, text, parse_mode: "HTML" });
+    if (res?.ok) {
+      topup.groupPosted = true;
+      await kvPut(env, `topup:${topup.id}`, topup);
+    }
+  } catch (_) { /* an announcement must never break a top-up */ }
 }
 
 // ---------- top-up packages ----------
@@ -788,9 +811,12 @@ async function showPackages(env, chatId, msgId) {
   let text = "🎁 <b>پکیج‌های شارژ</b>\n\nکاربر موقع افزایش موجودی، این پکیج‌های آماده را می‌بیند (علاوه بر مبلغ دلخواه). بونوس هر پکیج، بعد از پرداخت موفق به‌صورت خودکار به موجودی کاربر اضافه می‌شود.";
   const rows = [];
   if (!pkgs.length) text += "\n\nدر حال حاضر هیچ پکیجی تعریف نشده است.";
-  for (const p of pkgs) {
+  for (let i = 0; i < pkgs.length; i++) {
+    const p = pkgs[i];
     text += `\n\n💵 <b>${faNum(p.amount)} دلار</b> — ${p.bonus > 0 ? `🎁 بونوس: <b>${faNum(p.bonus)} دلار</b>` : "بدون بونوس"}`;
-    rows.push([btn(`🗑 حذف پکیج ${faNum(p.amount)} دلاری`, `pkgdel:${p.amount}`)]);
+  }
+  for (let i = 0; i < pkgs.length; i += 2) {
+    rows.push(pkgs.slice(i, i + 2).map((p) => btn(`🗑 ${faNum(p.amount)} دلاری`, `pkgdel:${p.amount}`)));
   }
   rows.push([btn("➕ افزودن پکیج", "pkg_new")]);
   rows.push([btn("🛠 پنل مدیریت", "admin"), btn("⬅️ منوی اصلی", "home")]);
@@ -1037,20 +1063,18 @@ async function runHealthChecks(env, webhookRes) {
 // ---------- bot UI (Persian) ----------
 function mainMenuKb(env, cfg, userId, origin, pendingCount = 0) {
   const rows = [
-    [btn("🛒 خرید شماره مجازی", "countries:0")],
+    [btn("🛒 خرید شماره", "countries:0"), btn("📱 سفارش‌های من", "orders")],
     [btn("💰 موجودی من", "balance"), btn("💳 افزایش موجودی", "topup")],
-    [btn("📱 سفارش‌های من", "orders")],
-    [btn("🎁 دعوت دوستان", "ref")],
   ];
-  if (pendingCount > 0) rows.push([btn("⏳ پرداخت‌های در انتظار (" + faDigits(pendingCount) + ")", "pays")]);
-  rows.push(origin
-    ? [urlBtn("📜 قوانین و مقررات", `${String(origin).replace(/\/+$/, "")}/terms`)]
-    : [btn("📜 قوانین و مقررات", "terms")]);
-  if (cfg?.SUPPORT_USERNAME) rows.push([urlBtn("🎧 پشتیبانی", `https://t.me/${cfg.SUPPORT_USERNAME}`)]);
-  if (isAdmin(env, userId)) {
-    rows.push([btn("🛠 پنل مدیریت", "admin")]);
-    rows.push([btn("⚙️ تنظیمات فروشگاه", "cfg")]);
-  }
+  const rowRef = [btn("🎁 دعوت دوستان", "ref")];
+  if (pendingCount > 0) rowRef.push(btn("⏳ پرداخت‌های در انتظار (" + faDigits(pendingCount) + ")", "pays"));
+  rows.push(rowRef);
+  const rowInfo = [origin
+    ? urlBtn("📜 قوانین", `${String(origin).replace(/\/+$/, "")}/terms`)
+    : btn("📜 قوانین", "terms")];
+  if (cfg?.SUPPORT_USERNAME) rowInfo.push(urlBtn("🎧 پشتیبانی", `https://t.me/${cfg.SUPPORT_USERNAME}`));
+  rows.push(rowInfo);
+  if (isAdmin(env, userId)) rows.push([btn("🛠 پنل مدیریت", "admin"), btn("⚙️ تنظیمات", "cfg")]);
   return kb(rows);
 }
 const backKb = kb([[btn("⬅️ منوی اصلی", "home")]]);
@@ -1194,8 +1218,7 @@ async function showConfirm(env, chatId, msgId, countryId, serviceId) {
   const text = `🧾 <b>تأیید خرید</b>\n\nسرویس: <b>${esc(s.name)}</b>\nقیمت: <b>${usdText(tmn, price)}</b>${tomanLine}${cpnLines}\nموجودی شما: ${usdText(tmn, user.balance)}\nموجودی لحظه‌ای: ${faInt(s.available)} شماره\n\nپس از خرید، شماره نمایش داده می‌شود و تا ${faDigits(20)} دقیقه منتظر کد پیامک می‌ماند. اگر کدی نیاید، مبلغی از موجودی کسر نخواهد شد.`;
   const rows = kb([
     [btn("✅ تأیید و خرید", `buy:${countryId}:${serviceId}`)],
-    cpnBtnRow,
-    [btn("⬅️ بازگشت", `services:${countryId}:0`)],
+    [...cpnBtnRow, btn("⬅️ بازگشت", `services:${countryId}:0`)],
   ]);
   if (msgId) return edit(env, chatId, msgId, text, rows);
   return send(env, chatId, text, rows);
@@ -1292,7 +1315,7 @@ async function doBuy(env, chatId, msgId, countryId, serviceId, cbId) {
       await answerCb(env, cbId, "موجودی کافی نیست", true);
       return edit(env, chatId, msgId,
         `❌ <b>موجودی کافی نیست.</b>\n\nقیمت: ${usdText(tmn, e.price)}\nموجودی شما: ${usdText(tmn, user.balance)}\n\nابتدا موجودی خود را افزایش دهید.`,
-        kb([[btn("💳 افزایش موجودی", "topup")], [btn("⬅️ منوی اصلی", "home")]]));
+        kb([[btn("💳 افزایش موجودی", "topup"), btn("⬅️ منوی اصلی", "home")]]));
     }
     if (e.kind === "provider") {
       const msgs = {
@@ -1328,17 +1351,17 @@ function activationText(act) {
 function activationKb(act) {
   const open = ["waitingSms", "codeReceived", "resendRequested"].includes(act.status);
   const hasCode = !!act.latestCode || act.status === "codeReceived";
-  const rows = [[btn("🔄 بررسی کد", `act:${act.id}`)]];
+  const rows = [];
   if (open && hasCode) {
     // Code delivered: Finish is the only action left — cancelling is over.
-    rows.push([btn("🏁 اتمام کار", `finish:${act.id}`)]);
+    rows.push([btn("🔄 بررسی کد", `act:${act.id}`), btn("🏁 اتمام کار", `finish:${act.id}`)]);
   } else if (open) {
-    rows.push([
-      btn("📩 پیامک مجدد", `resend:${act.id}`),
-      btn("🚫 لغو", `cancel:${act.id}`),
-    ]);
+    rows.push([btn("🔄 بررسی کد", `act:${act.id}`), btn("📩 پیامک مجدد", `resend:${act.id}`)]);
+    rows.push([btn("🚫 لغو", `cancel:${act.id}`), btn("📱 سفارش‌های من", "orders")]);
+  } else {
+    rows.push([btn("🔄 بررسی کد", `act:${act.id}`), btn("📱 سفارش‌های من", "orders")]);
   }
-  rows.push([btn("📱 سفارش‌های من", "orders"), btn("⬅️ منوی اصلی", "home")]);
+  rows.push([btn("⬅️ منوی اصلی", "home")]);
   return kb(rows);
 }
 async function showActivation(env, chatId, msgId, act, note = "") {
@@ -1516,8 +1539,7 @@ async function showTopup(env, chatId, msgId, baseUrl) {
   for (let i = 0; i < pkgs.length; i += 2) {
     rows.push(pkgs.slice(i, i + 2).map((p) => btn(`💵 ${faNum(p.amount)} دلار${p.bonus > 0 ? ` 🎁 +${faNum(p.bonus)}` : ""}`, `pkgbuy:${p.amount}`)));
   }
-  rows.push([btn("✍️ مبلغ دلخواه", "link_new")]);
-  rows.push([btn("⬅️ منوی اصلی", "home")]);
+  rows.push([btn("✍️ مبلغ دلخواه", "link_new"), btn("⬅️ منوی اصلی", "home")]);
   const pkgText = pkgs.length ? "\n\n🎁 <b>پکیج‌های آماده:</b> با انتخاب هر پکیج، لینک پرداخت همان مبلغ ساخته می‌شود و بونوسش بعد از پرداخت موفق خودکار اضافه می‌شود. یا با «مبلغ دلخواه» هر مبلغ دیگری بفرستید (بدون بونوس)." : "";
   return edit(env, chatId, msgId, topupMenuText() + pkgText, kb(rows));
 }
@@ -1542,6 +1564,24 @@ function expectedCryptoAmount(code, creditUsd, price) {
   return Number((base + tail).toFixed(c.decimals));
 }
 
+// After the admin decides on a receipt, update THAT message in place: a
+// status line is appended to its caption and its buttons are replaced
+// (approve/reject collapse into a single undo button; an undo restores
+// them). editMessageCaption covers photo/document receipts; the
+// reply-markup edit is the fallback for any other message shape.
+async function updateReceiptMsg(env, cq, statusLine, markup) {
+  try {
+    const m = cq?.message || {};
+    const chatId = m.chat?.id, messageId = m.message_id;
+    if (!chatId || !messageId) return;
+    if (typeof m.caption === "string") {
+      const base = m.caption.replace(/\n\n(✅|❌|↩️)[\s\S]*$/, "");
+      await tg(env, "editMessageCaption", { chat_id: chatId, message_id: messageId, caption: `${base}\n\n${statusLine}`, parse_mode: "HTML", reply_markup: markup });
+    }
+    await tg(env, "editMessageReplyMarkup", { chat_id: chatId, message_id: messageId, reply_markup: markup });
+  } catch (_) { /* cosmetic update — never break the decision flow */ }
+}
+
 // Caption sent to the admin with every card receipt (bot or web upload):
 // the receipt photo itself + user id + the order (payment) details, with the
 // apr:/rej: approve-reject buttons attached by the caller.
@@ -1557,7 +1597,7 @@ async function noteReceiptSeen(env, key, topupId) {
 }
 
 function receiptCaption(topup, via, dupOf) {
-  return `🧾 <b>رسید جدید</b> (${via})\nکاربر: ${faDigits(topup.userId)}\nشناسه پرداخت: <code>${esc(topup.id)}</code>\nمبلغ کارت: ${faInt(topup.amountToman)} تومان\nشارژ درخواستی: $${faNum(topupCredit(topup))}${topup.rateUsed ? ` (با نرخ تتر ${faInt(topup.rateUsed)} تومان)` : ""}${topup.receiptCount > 1 ? `\n♻️ رسید جایگزین (شماره ${faDigits(topup.receiptCount)})` : ""}${dupOf ? `\n\n🔴 <b>هشدار:</b> این رسید قبلاً برای پرداخت دیگری ارسال شده است (<code>${esc(dupOf)}</code>). قبل از تأیید، هر دو پرداخت را مقایسه کنید.` : ""}`;
+  return `🧾 <b>رسید جدید</b> (${via})\nکاربر: ${faDigits(topup.userId)}\nشناسه پرداخت: <code>${esc(topup.id)}</code>\nمبلغ کارت: ${faInt(topup.amountToman)} تومان\nشارژ درخواستی: $${faNum(topupCredit(topup))}${topup.rateUsed ? ` (با نرخ تتر ${faInt(topup.rateUsed)} تومان)` : ""}${Number(topup.pkgBonus) > 0 ? `\n🎁 بونوس پکیج: +$${faNum(Number(topup.pkgBonus))} (با تأیید شما خودکار اضافه می‌شود)` : ""}${topup.receiptCount > 1 ? `\n♻️ رسید جایگزین (شماره ${faDigits(topup.receiptCount)})` : ""}${dupOf ? `\n\n🔴 <b>هشدار:</b> این رسید قبلاً برای پرداخت دیگری ارسال شده است (<code>${esc(dupOf)}</code>). قبل از تأیید، هر دو پرداخت را مقایسه کنید.` : ""}`;
 }
 
 // Upload a user-supplied image file to a Telegram chat (multipart sendPhoto).
@@ -1691,9 +1731,9 @@ async function paySessionMessage(env, topup, baseUrl) {
   const pkgLine = Number(topup.pkgBonus) > 0 ? `\n🎁 بونوس پکیج: <b>${usdText(tmn, Number(topup.pkgBonus))}</b> — بعد از پرداخت موفق، خودکار به موجودی‌تان اضافه می‌شود.` : "";
   const text = `💵 <b>پرداخت شما ساخته شد</b>\n\nمبلغ شارژ: ${usdText(tmn, topupCredit(topup))}${inputLine}${pkgLine}\n${methodLine}\n${timeLine}\n\nاز دکمه زیر صفحه پرداخت را باز کنید:`;
   const rows = [[urlBtn("🌐 باز کردن صفحه پرداخت", `${baseUrl}/pay?t=${topup.id}`)]];
-  if (topup.method === "crypto") rows.push([btn("🔄 بررسی پرداخت", `chk:${topup.id}`)]);
-  rows.push([btn("❌ لغو این پرداخت", `ses_cancel:${topup.id}`)]);
-  rows.push([btn("⬅️ منوی اصلی", "home")]);
+  if (topup.method === "crypto") rows.push([btn("🔄 بررسی پرداخت", `chk:${topup.id}`), btn("❌ لغو پرداخت", `ses_cancel:${topup.id}`)]);
+  else rows.push([btn("❌ لغو این پرداخت", `ses_cancel:${topup.id}`), btn("⬅️ منوی اصلی", "home")]);
+  if (topup.method === "crypto") rows.push([btn("⬅️ منوی اصلی", "home")]);
   return { text, markup: kb(rows) };
 }
 
@@ -1708,14 +1748,10 @@ async function showAdmin(env, chatId, msgId) {
   } catch (e) { balText = `\n\n⚠️ خطا در دریافت موجودی تأمین‌کننده: ${esc(e.message)}`; }
   const text = `🛠 <b>پنل مدیریت</b>${balText}\n\n📌 نسخه ربات: ${faDigits(BOT_VERSION)} — اگر دکمه «تنظیمات فروشگاه» را نمی‌بینید، ورکر هنوز روی نسخه قبلی است و باید در کلودفلر دوباره دیپلوی شود.`;
   const rows = [
-    [btn("🧾 رسیدهای در انتظار تأیید", "adm_pending")],
-    [btn("🪙 پرداخت‌های کریپتوی در انتظار", "adm_crypto_pending")],
-    [btn("⚙️ تنظیمات فروشگاه", "cfg")],
-    [btn("🎟 کدهای تخفیف", "adm_coupons")],
-    [btn("🎁 پکیج‌های شارژ", "adm_pkgs")],
-    [btn("📊 آمار فروشگاه", "adm_stats")],
-    [btn("📜 سوابق تغییرات", "adm_audit")],
-    [btn("⬅️ منوی اصلی", "home")],
+    [btn("🧾 رسیدهای در انتظار", "adm_pending"), btn("🪙 کریپتوی در انتظار", "adm_crypto_pending")],
+    [btn("⚙️ تنظیمات فروشگاه", "cfg"), btn("🎟 کدهای تخفیف", "adm_coupons")],
+    [btn("🎁 پکیج‌های شارژ", "adm_pkgs"), btn("📊 آمار فروشگاه", "adm_stats")],
+    [btn("📜 سوابق تغییرات", "adm_audit"), btn("⬅️ منوی اصلی", "home")],
   ];
   if (msgId) return edit(env, chatId, msgId, text, kb(rows));
   return send(env, chatId, text, kb(rows));
@@ -1811,10 +1847,8 @@ async function showConfigOverview(env, chatId, msgId) {
   const status = (keys) => keys.some((k) => cfg[k]) ? "✅" : "⚪️";
   const text = `⚙️ <b>تنظیمات فروشگاه</b>\n\nهمه این موارد از همین‌جا قابل تغییر است و بلافاصله (بدون دیپلوی دوباره) اعمال می‌شود. مقادیر در دیتابیس فروشگاه ذخیره می‌شوند و اگر قبلاً در Cloudflare هم ست شده باشند، مقدار این پنل اولویت دارد.\n\n💳 کارت: ${status(CONFIG_GROUPS.card.keys)}\n🪙 کیف‌پول‌ها: ${faInt(CONFIG_GROUPS.wallet.keys.filter((k) => cfg[k]).length)} مورد ست شده\n🧰 عمومی: سود ${faDigits(cfg.PRICE_MARKUP_PERCENT)}٪`;
   const rows = [
-    [btn(CONFIG_GROUPS.card.title, "cfg_g:card")],
-    [btn(CONFIG_GROUPS.wallet.title, "cfg_g:wallet")],
-    [btn(CONFIG_GROUPS.general.title, "cfg_g:general")],
-    [btn(CONFIG_GROUPS.access.title, "cfg_g:access")],
+    [btn(CONFIG_GROUPS.card.title, "cfg_g:card"), btn(CONFIG_GROUPS.wallet.title, "cfg_g:wallet")],
+    [btn(CONFIG_GROUPS.general.title, "cfg_g:general"), btn(CONFIG_GROUPS.access.title, "cfg_g:access")],
     [btn("🛠 پنل مدیریت", "admin"), btn("⬅️ منوی اصلی", "home")],
   ];
   if (msgId) return edit(env, chatId, msgId, text, kb(rows));
@@ -2061,11 +2095,9 @@ function joinChannelLink(cfg) {
   return ch.startsWith("@") ? `https://t.me/${ch.slice(1)}` : null;
 }
 function joinPromptKb(cfg) {
-  const rows = [];
   const link = joinChannelLink(cfg);
-  if (link) rows.push([urlBtn("📢 عضویت در کانال", link)]);
-  rows.push([btn("✅ عضو شدم — بررسی عضویت", "joinchk")]);
-  return kb(rows);
+  if (!link) return kb([[btn("✅ عضو شدم — بررسی عضویت", "joinchk")]]);
+  return kb([[urlBtn("📢 عضویت در کانال", link), btn("✅ بررسی عضویت", "joinchk")]]);
 }
 async function isChannelMember(env, cfg, userId) {
   const ch = cfg?.FORCE_JOIN_CHANNEL;
@@ -2449,7 +2481,7 @@ async function handleCallback(env, cq, baseUrl) {
     if (data === "balance") {
       const user = await getUser(env, chatId);
       const tmn = await usdtTomanRate(env);
-      return edit(env, chatId, msgId, `💰 <b>موجودی شما:</b> ${usdText(tmn, user.balance)}\n\nموجودی به دلار است؛ معادل تومانی با نرخ لحظه‌ای تتر در صرافی والکس محاسبه می‌شود${tmn ? ` (هر تتر: ${faInt(tmn)} تومان)` : ""}.`, kb([[btn("💳 افزایش موجودی", "topup")], [btn("⬅️ منوی اصلی", "home")]]));
+      return edit(env, chatId, msgId, `💰 <b>موجودی شما:</b> ${usdText(tmn, user.balance)}\n\nموجودی به دلار است؛ معادل تومانی با نرخ لحظه‌ای تتر در صرافی والکس محاسبه می‌شود${tmn ? ` (هر تتر: ${faInt(tmn)} تومان)` : ""}.`, kb([[btn("💳 افزایش موجودی", "topup"), btn("⬅️ منوی اصلی", "home")]]));
     }
     if (data === "orders") {
       const mine = (await kvList(env, "act:")).filter((x) => x.userId === String(chatId))
@@ -2493,7 +2525,7 @@ async function handleCallback(env, cq, baseUrl) {
       }
       return edit(env, chatId, msgId,
         `💵 <b>ساخت لینک پرداخت</b>\n\nمبلغ شارژ را با کدام واحد وارد می‌کنید؟\n\n💵 <b>دلار:</b> مبلغ شارژ را مستقیم به دلار می‌نویسید.\n🇮🇷 <b>تومان:</b> مبلغ را به تومان می‌نویسید و با نرخ لحظه‌ای تتر به دلار تبدیل می‌شود.`,
-        kb([[btn("💵 مبلغ به دلار", "link_cur:USD")], [btn("🇮🇷 مبلغ به تومان", "link_cur:TMN")], [btn("⬅️ بازگشت", "topup")]]));
+        kb([[btn("💵 مبلغ به دلار", "link_cur:USD"), btn("🇮🇷 مبلغ به تومان", "link_cur:TMN")], [btn("⬅️ بازگشت", "topup")]]));
     }
     if (head === "link_cur") {
       const user = await getUser(env, chatId);
@@ -2652,14 +2684,60 @@ async function handleCallback(env, cq, baseUrl) {
         await creditTopup(env, topup, "admin-approved");
         await logAudit(env, { actor: chatId, action: "apr", key: topup.id, extra: `$${faNum(topupCredit(topup))} — کاربر ${topup.userId}` });
         await answerCb(env, cq.id, "تأیید و شارژ شد ✅");
+        // The receipt message itself is updated in place: status line in
+        // the caption and the approve/reject buttons collapse into a
+        // single undo button (a later re-review can reverse the credit).
+        if (cq.message?.photo || cq.message?.document) {
+          const credited = await kvGet(env, `topup:${topup.id}`);
+          const bns = Number(credited?.bonusUsd) || 0;
+          await updateReceiptMsg(env, cq, `✅ <b>تأیید و شارژ شد</b>${bns > 0 ? ` (با ${faNum(bns)} دلار بونوس پکیج)` : ""}`, kb([[btn("↩️ بازگردانی شارژ", `undo:${topup.id}`)]]));
+        } else return showPending(env, chatId, msgId, "card");
       } else {
         topup.status = "rejected"; topup.resolvedAt = now();
         await kvPut(env, `topup:${topup.id}`, topup);
         await logAudit(env, { actor: chatId, action: "rej", key: topup.id, extra: `$${faNum(topupCredit(topup))} — کاربر ${topup.userId}` });
         await send(env, topup.userId, "❌ درخواست افزایش موجودی شما رد شد. برای پیگیری با پشتیبانی در تماس باشید.", mainMenuKb(env, await getConfig(env), topup.userId));
         await answerCb(env, cq.id, "رد شد");
+        if (cq.message?.photo || cq.message?.document) {
+          await updateReceiptMsg(env, cq, "❌ <b>رد شد</b>", kb([[btn("↩️ بازگردانی", `undorej:${topup.id}`)]]));
+        } else return showPending(env, chatId, msgId, "card");
       }
-      return showAdmin(env, chatId, msgId);
+      return;
+    }
+    if (head === "undo" && isAdmin(env, chatId)) {
+      // Reverse an approved card top-up (e.g. the receipt turned out fake
+      // on re-review): deduct credit + bonus back and return the top-up to
+      // awaiting_receipt so it can be decided again from the same message.
+      const undone = await withKvLock(env, `topup:${a}`, async () => {
+        const t = await kvGet(env, `topup:${a}`);
+        if (!t || t.status !== "approved" || t.method !== "card") return null;
+        const total = Math.round(((Number(topupCredit(t)) || 0) + (Number(t.bonusUsd) || 0)) * 100) / 100;
+        const u = await getUser(env, t.userId);
+        u.balance = Math.round((Number(u.balance) - total) * 100) / 100;
+        await saveUser(env, u);
+        t.status = "awaiting_receipt"; t.note = "admin-undo"; delete t.bonusUsd;
+        await kvPut(env, `topup:${t.id}`, t);
+        return { total, userId: t.userId };
+      });
+      if (!undone) { await answerCb(env, cq.id, "این شارژ قابل بازگردانی نیست", true); return; }
+      await logAudit(env, { actor: chatId, action: "undo_apr", key: a, extra: `$${faNum(undone.total)} از کاربر ${undone.userId} کسر شد` });
+      await send(env, undone.userId, "❌ شارژ حساب شما پس از بازبینی توسط مدیر لغو شد و مبلغ آن از موجودی‌تان کسر شد. برای پیگیری با پشتیبانی در تماس باشید.", mainMenuKb(env, await getConfig(env), undone.userId));
+      await answerCb(env, cq.id, "شارژ بازگردانده شد ↩️");
+      if (cq.message?.photo || cq.message?.document) {
+        await updateReceiptMsg(env, cq, "↩️ <b>شارژ بازگردانده شد</b> — رسید دوباره در انتظار تصمیم است.", kb([[btn("✅ تأیید و شارژ", `apr:${a}`), btn("❌ رد رسید", `rej:${a}`)]]));
+      }
+      return;
+    }
+    if (head === "undorej" && isAdmin(env, chatId)) {
+      const t = await kvGet(env, `topup:${a}`);
+      if (!t || t.status !== "rejected" || t.method !== "card") { await answerCb(env, cq.id, "قابل بازگردانی نیست", true); return; }
+      t.status = "awaiting_receipt";
+      await kvPut(env, `topup:${t.id}`, t);
+      await answerCb(env, cq.id, "به حالت در انتظار بررسی برگشت ↩️");
+      if (cq.message?.photo || cq.message?.document) {
+        await updateReceiptMsg(env, cq, "↩️ <b>به حالت در انتظار بررسی برگشت</b>", kb([[btn("✅ تأیید و شارژ", `apr:${a}`), btn("❌ رد رسید", `rej:${a}`)]]));
+      }
+      return;
     }
   } catch (e) {
     await answerCb(env, cq.id, "خطایی رخ داد. دوباره تلاش کنید.", true);
@@ -3386,7 +3464,7 @@ async function handleApi(env, request, url) {
     }
     if (path === "/api/topups" && request.method === "GET") {
     const allT = (await kvList(env, "topup:")).filter((t) => t.userId === String(userId));
-    const mapT = (t) => ({ id: t.id, creditUsd: topupCredit(t), method: t.method, crypto: t.crypto || null, status: t.status, seen: !!t.seenAt, createdAt: t.createdAt, expiresAt: topupExpiresAt(t), amountToman: t.amountToman || null, payUrl: `${url.origin}/pay?t=${t.id}` });
+    const mapT = (t) => ({ id: t.id, creditUsd: topupCredit(t), bonusUsd: Number(t.bonusUsd) || 0, pkgBonus: Number(t.pkgBonus) || 0, method: t.method, crypto: t.crypto || null, status: t.status, seen: !!t.seenAt, createdAt: t.createdAt, expiresAt: topupExpiresAt(t), amountToman: t.amountToman || null, payUrl: `${url.origin}/pay?t=${t.id}` });
     const isOpen = (t) => t.status === "pending" && !topupIsExpired(t);
     const pending = allT.filter(isOpen).sort((a, b) => b.createdAt - a.createdAt).map(mapT);
     const history = allT.filter((t) => !isOpen(t)).sort((a, b) => b.createdAt - a.createdAt).slice(0, 50).map(mapT);
@@ -4138,7 +4216,7 @@ function tehranFull(ts){ try { var d = new Date(ts); return d.toLocaleDateString
 function openPayCard(t){
   var st = payStatusInfo(t);
   return '<div class="payc"><div class="prow1"><b>' + faUsd(t.creditUsd) + '</b><span class="pstatus">' + st.txt + '</span></div>'
-    + '<div class="pmeta">' + methodLabel(t) + '<br>مهلت پرداخت تا ساعت ' + tehranHM(t.expiresAt) + '</div>'
+    + '<div class="pmeta">' + methodLabel(t) + (t.pkgBonus > 0 ? '<br>بونوس پکیج: +' + faUsd(t.pkgBonus) + ' (بعد از پرداخت موفق اضافه می‌شود)' : '') + '<br>مهلت پرداخت تا ساعت ' + tehranHM(t.expiresAt) + '</div>'
     + '<div class="pbtns"><a class="wbtn" href="' + t.payUrl + '">ادامه پرداخت</a><button class="gbtn" data-tid="' + t.id + '" data-amt="' + faUsd(t.creditUsd) + '" onclick="cancelOpenPay(this)">لغو پرداخت</button></div></div>';
 }
 var pendingCancelId = null;
@@ -4172,7 +4250,7 @@ function loadPayHistory(){
     html += '<div class="ophead" style="margin-top:' + (open.length ? '18' : '2') + 'px">تاریخچه پرداخت‌ها</div>';
     html += hist.length ? hist.map(function(t){
       var st = payStatusInfo(t);
-      return '<div class="hrow"><div class="hmain"><b>' + faUsd(t.creditUsd) + '</b><span>' + methodLabel(t) + '</span></div><div class="hside"><span class="hstatus ' + st.cls + '">' + st.txt + '</span><span class="hdate">' + tehranFull(t.createdAt) + '</span></div></div>';
+      return '<div class="hrow"><div class="hmain"><b>' + faUsd(t.creditUsd) + '</b><span>' + methodLabel(t) + (t.bonusUsd > 0 ? ' — بونوس +' + faUsd(t.bonusUsd) : '') + '</span></div><div class="hside"><span class="hstatus ' + st.cls + '">' + st.txt + '</span><span class="hdate">' + tehranFull(t.createdAt) + '</span></div></div>';
     }).join('') : '<div class="loading">هنوز پرداختی ثبت نشده است.</div>';
     $('payHist').innerHTML = html;
   }).catch(function(e){ $('payHist').innerHTML = '<div class="loading">' + escH(e.message) + '</div>'; });
@@ -4246,11 +4324,14 @@ async function payPage(env, cfg, topup) {
 
   if (topup.status === "approved") {
     const user = await getUser(env, topup.userId);
+    const bonus = Number(topup.bonusUsd) || 0;
+    const total = Math.round((credit + bonus) * 100) / 100;
     return payShell(`${head(3)}
       <div class="state"><div class="circ fill">✓</div>
       <h1>پرداخت تأیید شد</h1>
       <p>موجودی شما با موفقیت شارژ شد. می‌توانید این صفحه را ببندید و به ربات برگردید.</p>
-      <div class="big">+$${esc(credit)}</div>
+      <div class="big">+$${esc(total)}</div>
+      ${bonus > 0 ? `<p>شارژ $${esc(credit)} + بونوس پکیج $${esc(bonus)}</p>` : ""}
       <p>موجودی فعلی: $${esc(user.balance)}</p></div>`);
   }
   if (topup.status === "expired" || topupIsExpired(topup)) {
