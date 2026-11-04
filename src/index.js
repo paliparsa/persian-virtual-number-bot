@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.17.0"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.17.1"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -4134,10 +4134,6 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
       <div id="openPays"></div>
       <div id="pkgRow" class="pkgrow"></div>
       <div class="formcard">
-      <div class="chips">
-        <button id="chipUsd" class="on" onclick="setTopupMode('usd')"><svg class="icn" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.6"/><path d="M6 12h.01"/><path d="M18 12h.01"/></svg> <span data-i="chipUsd">مبلغ به دلار</span></button>
-        <button id="chipTmn" data-i="chipTmn" onclick="setTopupMode('tmn')">مبلغ به تومان</button>
-      </div>
       <input class="amtin" id="tpAmt" inputmode="numeric" placeholder="$ مبلغ" data-ip="amtPh">
       <p class="small" id="tpHint">بعد از ساخت، به صفحه پرداخت می‌روید و روش پرداخت (رمزارز یا کارت‌به‌کارت) را آنجا انتخاب می‌کنید. هر پرداخت ۳۰ دقیقه مهلت دارد.</p>
       <button class="wbtn" style="width:100%;margin-top:16px" data-i="makeLink" onclick="doTopup()">ساخت صفحه پرداخت</button>
@@ -4230,7 +4226,7 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
 <div class="pconfirm" id="pkgConfirm" onclick="if(event.target===this)closePkgConfirm()"><div class="mbox" id="pkgConfirmBox"></div></div>
 <div class="sheet" id="sheet" role="dialog" aria-modal="true"><div class="grab"></div><div id="sheetBody"></div></div>
 <script>
-var S = { me:null, countries:[], country:null, services:[], rate:null, sel:null, act:null, poll:null, cd:null, topupMode:'usd', view:'account', lang:'fa', knownPending:null, knownApproved:null };
+var S = { me:null, countries:[], country:null, services:[], rate:null, sel:null, act:null, poll:null, cd:null, view:'account', lang:'fa', knownPending:null, knownApproved:null };
 try { S.lang = localStorage.getItem('bm_lang') || 'fa'; } catch (e) {}
 function W(fa, en){ return S.lang === 'en' ? en : fa; }
 function $(id){ return document.getElementById(id); }
@@ -4286,7 +4282,7 @@ var I18N = {
   chipUsd:['مبلغ به دلار','Amount in USD'], chipTmn:['مبلغ به تومان','Amount in Toman'], makeLink:['ساخت صفحه پرداخت','Create payment page'], tServices:['سرویس‌ها','Services'],
   installT:['نصب اپلیکیشن BlueMajazi','Install the BlueMajazi app'], installD:['بدون نصب از فروشگاه؛ مستقیم روی صفحه اصلی گوشی‌تان، مثل یک اپ واقعی.','No store needed — straight onto your home screen, like a real app.'], installB:['نصب','Install'],
   notifT:['اعلان‌های وب','Web notifications'], notifD:['وقتی کد پیامک برسد یا شارژتان تأیید شود، همین‌جا باخبر می‌شوید (تا وقتی وب‌اپ باز یا نصب‌شده و فعال است).','Get notified when an SMS code arrives or a top-up is approved (while the web app is open or installed and active).'],
-  searchCountry:['جستجوی کشور…','Search country…'], searchService:['جستجوی سرویس…','Search service…'], amtPh:['$ مبلغ','Amount $'],
+  searchCountry:['جستجوی کشور…','Search country…'], searchService:['جستجوی سرویس…','Search service…'], amtPh:['$ مبلغ به دلار','Amount in USD $'],
   loadingCountries:['در حال بارگذاری کشورها…','Loading countries…'],
   loginBig1:['شماره مجازی،','Virtual numbers,'], loginBig2:['بدون مرز','without borders'],
   loginSlogan:['خرید شماره از سراسر دنیا و دریافت آنی کد پیامک —<br>همان حساب و موجودی ربات تلگرام شما.','Buy numbers from around the world and receive SMS codes instantly —<br>the same account and balance as your Telegram bot.'],
@@ -4672,20 +4668,10 @@ function rebuyOrder(cid, sid){
     }
   }).catch(function(e){ $('svcList').innerHTML = '<div class="loading">' + escH(e.message) + '</div>'; });
 }
-function setTopupMode(m){
-  S.topupMode = m;
-  $('chipUsd').classList.toggle('on', m==='usd');
-  $('chipTmn').classList.toggle('on', m==='tmn');
-  $('tpAmt').placeholder = m==='usd' ? W('$ مبلغ به دلار', 'Amount in USD $') : W('مبلغ به تومان', 'Amount in Toman');
-  $('tpResult').innerHTML = '';
-  updTpHint();
-}
 function updTpHint(){
   var el = $('tpHint'); if (!el) return;
   var min = S.me && S.me.minTopup ? Number(S.me.minTopup) : 1;
-  el.textContent = S.topupMode === 'usd'
-    ? W('مبلغ بین ' + faUsd(min) + ' تا ' + faUsd(5000) + '. بعد از ساخت، به صفحه پرداخت می‌روید و روش پرداخت (رمزارز یا کارت‌به‌کارت) را آنجا انتخاب می‌کنید.', 'Enter an amount between ' + faUsd(min) + ' and ' + faUsd(5000) + '. You will then choose the payment method (crypto or card-to-card) on the payment page.')
-    : W('مبلغ را به تومان وارد کنید؛ معادل دلاری آن باید بین ' + faUsd(min) + ' تا ' + faUsd(5000) + ' باشد و با نرخ لحظه‌ای تتر تبدیل می‌شود.', 'Enter the amount in Toman; its dollar equivalent must be between ' + faUsd(min) + ' and ' + faUsd(5000) + ' and converts at the live USDT rate.');
+  el.textContent = W('مبلغ بین ' + faUsd(min) + ' تا ' + faUsd(5000) + '. بعد از ساخت، به صفحه پرداخت می‌روید و روش پرداخت (رمزارز یا کارت‌به‌کارت) را آنجا انتخاب می‌کنید.', 'Enter an amount between ' + faUsd(min) + ' and ' + faUsd(5000) + '. You will then choose the payment method (crypto or card-to-card) on the payment page.');
 }
 function methodLabel(t){
   if (t.method === 'crypto') return (S.lang === 'en' ? ({ USDT_TRC20: 'USDT (TRC20)', USDT_BEP20: 'USDT (BEP20)', USDT_ERC20: 'USDT (ERC20)', TRX: 'TRON (TRX)', BTC: 'Bitcoin', LTC: 'Litecoin', TON: 'Toncoin', ETH: 'Ethereum' })[t.crypto] || 'Crypto' : ({ USDT_TRC20: 'تتر (TRC20)', USDT_BEP20: 'تتر (BEP20)', USDT_ERC20: 'تتر (ERC20)', TRX: 'ترون (TRX)', BTC: 'بیت‌کوین', LTC: 'لایت‌کوین', TON: 'تون‌کوین', ETH: 'اتریوم' })[t.crypto] || 'رمزارز');
@@ -4826,8 +4812,8 @@ function doTopup(){
   var raw = String($('tpAmt').value||'').replace(/[^0-9.]/g,'');
   var val = Number(raw);
   if (!(val > 0)) { toast(W('مبلغ را وارد کنید', 'Enter an amount')); return; }
-  if (S.topupMode === 'usd' && S.me && S.me.minTopup && val < Number(S.me.minTopup)) { toast(W('حداقل مبلغ شارژ ' + faUsd(Number(S.me.minTopup)) + ' است', 'Minimum top-up is ' + faUsd(Number(S.me.minTopup)))); return; }
-  var body = S.topupMode === 'usd' ? { amountUsd: val } : { amountTmn: Math.round(val) };
+  if (S.me && S.me.minTopup && val < Number(S.me.minTopup)) { toast(W('حداقل مبلغ شارژ ' + faUsd(Number(S.me.minTopup)) + ' است', 'Minimum top-up is ' + faUsd(Number(S.me.minTopup)))); return; }
+  var body = { amountUsd: val };
   api('/api/topup', { method:'POST', body: JSON.stringify(body) }).then(function(j){
     $('tpResult').innerHTML = '<div class="confirm"><div class="row"><span>' + W('صفحه پرداخت ساخته شد', 'Payment page created') + '</span><b>' + W('۳۰ دقیقه مهلت', '30 minutes to pay') + '</b></div><a class="wbtn" style="width:100%;margin-top:10px" href="' + escH(j.payUrl) + '">' + W('رفتن به صفحه پرداخت ←', 'Go to payment page →') + '</a></div>';
   }).catch(function(e){
