@@ -10,7 +10,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-const BOT_VERSION = "2.7.4"; // shown in the admin panel and /health — check you're on the latest deploy
+const BOT_VERSION = "2.8.0"; // shown in the admin panel and /health — check you're on the latest deploy
 const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -74,7 +74,7 @@ const CONFIG_KEYS = [
   "WALLET_USDT_TRC20", "WALLET_TRX", "WALLET_BTC", "WALLET_TON",
   "WALLET_LTC", "WALLET_ETH", "WALLET_USDT_ERC20", "WALLET_USDT_BEP20",
   "SUPPORT_USERNAME", "WORKER_BASE_URL", "PRICE_MARKUP_PERCENT", "TMN_RATE_MANUAL", "GROUP_CHAT_ID", "MIN_TOPUP_USD",
-  "FORCE_JOIN_ENABLED", "FORCE_JOIN_CHANNEL", "PHONE_VERIFY_ENABLED", "ETHERSCAN_API_KEY",
+  "FORCE_JOIN_ENABLED", "FORCE_JOIN_CHANNEL", "PHONE_VERIFY_ENABLED", "ETHERSCAN_API_KEY", "LOW_BALANCE_BRL",
 ];
 async function getConfig(env) {
   const stored = (await kvGet(env, "config")) || {};
@@ -638,6 +638,56 @@ async function creditTopup(env, topup, note) {
     return true;
   });
   return !!res;
+}
+
+// ---------- provider low-balance alert ----------
+// The shop dies quietly when the SmsFull balance runs out (users pay, buys
+// fail). The admin is alerted once when the spendable balance crosses below
+// the threshold (default R$100, settable/disable-able in تنظیمات عمومی),
+// reminded at most every 6 hours while it stays low, and told once when it
+// recovers. Evaluated from the 2-minute cron (own fetch, throttled to every
+// 30 minutes) and for free whenever the admin panel fetches the balance.
+async function evaluateBalanceAlert(env, spendable, currency) {
+  try {
+    const bal = Number(spendable);
+    if (!isFinite(bal)) return;
+    const cfg = await getConfig(env);
+    const raw = cfg.LOW_BALANCE_BRL;
+    const threshold = raw === "" || raw == null ? 100 : Number(raw);
+    if (!(threshold > 0)) return; // alerts disabled
+    const st = (await kvGet(env, "sys:balAlert")) || {};
+    if (bal < threshold) {
+      if (!st.below || now() - (st.lastAlertAt || 0) > 6 * 3600 * 1000) {
+        const fx = await brlToUsdRate(env).catch(() => null);
+        await send(env, env.ADMIN_CHAT_ID,
+          `⚠️ <b>هشدار موجودی تأمین‌کننده</b>\n\nموجودی قابل‌خرید نزد SmsFull به <b>${faNum(bal)} ${esc(currency || "BRL")}</b>${fx ? ` (≈ $${faNum(bal * fx)})` : ""} رسیده که از حد هشدار (${faNum(threshold)} رئال) کمتر است.\n\nبرای جلوگیری از ناموفق شدن خرید کاربران، موجودی تأمین‌کننده را شارژ کنید.`,
+          kb([[btn("🛠 پنل مدیریت", "admin")]]));
+        st.lastAlertAt = now();
+        st.alerted = true;
+      }
+      st.below = true;
+    } else {
+      if (st.below && st.alerted) {
+        await send(env, env.ADMIN_CHAT_ID,
+          `✅ <b>موجودی تأمین‌کننده برطرف شد</b>\n\nموجودی قابل‌خرید SmsFull به <b>${faNum(bal)} ${esc(currency || "BRL")}</b> رسید و از حد هشدار (${faNum(threshold)} رئال) بالاتر رفت.`,
+          kb([[btn("🛠 پنل مدیریت", "admin")]]));
+      }
+      st.below = false;
+      st.alerted = false;
+    }
+    st.bal = bal;
+    st.at = now();
+    await kvPut(env, "sys:balAlert", st, 7 * 24 * 3600);
+  } catch (_) { /* alerting must never break the caller */ }
+}
+async function checkProviderBalance(env) {
+  try {
+    const last = (await kvGet(env, "sys:balCheck"))?.at || 0;
+    if (now() - last < 30 * 60 * 1000) return;
+    await kvPut(env, "sys:balCheck", { at: now() }, 3600);
+    const b = await smsfull(env, "/balance");
+    await evaluateBalanceAlert(env, b.spendable, b.currency);
+  } catch (_) { /* provider unreachable — outage alerting is a separate feature */ }
 }
 
 // ---------- bot UI (Persian) ----------
@@ -1256,6 +1306,7 @@ async function showAdmin(env, chatId, msgId) {
     const b = await smsfull(env, "/balance");
     const fxA = await brlToUsdRate(env);
     balText = `\n\n💼 موجودی نزد تأمین‌کننده: <b>${faNum(b.spendable)}</b> ${esc(b.currency)} (کل: ${faNum(b.balance)})${fxA ? `\n≈ قابل‌خرید به دلار: $${faNum(b.spendable * fxA)}` : ""}`;
+    await evaluateBalanceAlert(env, b.spendable, b.currency);
   } catch (e) { balText = `\n\n⚠️ خطا در دریافت موجودی تأمین‌کننده: ${esc(e.message)}`; }
   const text = `🛠 <b>پنل مدیریت</b>${balText}\n\n📌 نسخه ربات: ${faDigits(BOT_VERSION)} — اگر دکمه «تنظیمات فروشگاه» را نمی‌بینید، ورکر هنوز روی نسخه قبلی است و باید در کلودفلر دوباره دیپلوی شود.`;
   const rows = [
@@ -1293,6 +1344,7 @@ const SETTING_FIELDS = {
   TOMAN_PER_BRL: { label: "نرخ تومان (هر ۱ BRL)", hint: "فقط عدد بفرستید، مثال: 40000", numeric: true },
   PRICE_MARKUP_PERCENT: { label: "درصد سود فروشگاه", hint: "فقط عدد بفرستید، مثال: 20 یعنی ۲۰٪ روی قیمت تأمین‌کننده", numeric: true },
   MIN_TOPUP_USD: { label: "حداقل مبلغ شارژ (دلار)", hint: "فقط عدد بفرستید، مثال: 5 — شارژ کمتر از این مبلغ (دلاری یا معادل تومانی) ساخته نمی‌شود. برای برگشت به پیش‌فرض ۱ دلار، مقدار را حذف کنید.", numeric: true },
+  LOW_BALANCE_BRL: { label: "هشدار موجودی تأمین‌کننده (رئال)", hint: "فقط عدد بفرستید، مثال: 100 — وقتی موجودی قابل‌خرید SmsFull از این مبلغ (رئال برزیل) کمتر شود، به ادمین هشدار داده می‌شود. پیش‌فرض ۱۰۰ است؛ برای خاموش کردن 0 بفرستید.", numeric: true },
   SUPPORT_USERNAME: { label: "یوزرنیم پشتیبانی", hint: "بدون @ بفرستید، مثال: BlueMajaziSupport" },
   TMN_RATE_MANUAL: { label: "نرخ دستی تتر (تومان) — پشتیبان", hint: "فقط عدد بفرستید، مثال: 271000 — فقط وقتی استفاده می‌شود که نرخ زنده از والکس و اکسیر نرسد.", numeric: true },
   GROUP_CHAT_ID: { label: "آیدی گروه اعلام خرید موفق", hint: "آیدی عددی گروه را با علامت منفی بفرستید، مثال: -1001234567890 — یا ساده‌تر: ربات را در گروه اضافه کنید و همان‌جا دستور /setgroup را بفرستید تا خودکار ثبت شود." },
@@ -1318,7 +1370,7 @@ function settingHint(key) {
 const CONFIG_GROUPS = {
   card: { title: "💳 تنظیمات پرداخت کارتی", keys: ["CARD_NUMBER", "CARD_HOLDER", "CARD_BANK"] },
   wallet: { title: "🪙 کیف‌پول‌های کریپتو", keys: Object.values(CRYPTOS).map((c) => c.envKey) },
-  general: { title: "🧰 تنظیمات عمومی", keys: ["PRICE_MARKUP_PERCENT", "MIN_TOPUP_USD", "TMN_RATE_MANUAL", "GROUP_CHAT_ID", "SUPPORT_USERNAME", "WORKER_BASE_URL", "ETHERSCAN_API_KEY"] },
+  general: { title: "🧰 تنظیمات عمومی", keys: ["PRICE_MARKUP_PERCENT", "MIN_TOPUP_USD", "TMN_RATE_MANUAL", "GROUP_CHAT_ID", "SUPPORT_USERNAME", "WORKER_BASE_URL", "ETHERSCAN_API_KEY", "LOW_BALANCE_BRL"] },
   access: { title: "🔒 عضویت و احراز هویت", keys: ["FORCE_JOIN_ENABLED", "FORCE_JOIN_CHANNEL", "PHONE_VERIFY_ENABLED"] },
 };
 const groupOfKey = (key) =>
@@ -1388,6 +1440,11 @@ function validateSetting(key, raw) {
   if (key === "GROUP_CHAT_ID") {
     const v = clean.replace(/\s/g, "");
     return /^-?\d{5,20}$/.test(v) ? { value: v } : { error: "آیدی عددی گروه معتبر نیست (مثال: -1001234567890). یا ربات را در گروه اضافه کنید و آنجا /setgroup بفرستید." };
+  }
+  if (key === "LOW_BALANCE_BRL") {
+    // 0 is meaningful here (alerts off), unlike the other numeric settings.
+    return /^\d+(\.\d+)?$/.test(clean) && Number(clean) >= 0 && Number(clean) <= 1000000
+      ? { value: clean } : { error: "حد هشدار باید عددی بین ۰ تا ۱٬۰۰۰٬۰۰۰ رئال باشد (۰ یعنی خاموش)." };
   }
   if (key === "ETHERSCAN_API_KEY") {
     const v = clean.replace(/\s/g, "");
@@ -3588,6 +3645,7 @@ export default {
       for (const t of await kvList(env, "topup:")) {
         if (t.status === "pending") await settleTopupLazy(env, t);
       }
+      await checkProviderBalance(env);
     })();
     ctx.waitUntil(work);
   },
