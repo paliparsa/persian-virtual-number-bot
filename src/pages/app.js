@@ -233,6 +233,33 @@ h2.title .icn{vertical-align:-5px;margin-left:2px}
 @keyframes spb{0%{transform:translateX(118px)}100%{transform:translateX(-118px)}}
 .view{display:none}.view.on{display:block;animation:in .3s ease}
 @keyframes in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+/* v3.1: motion system, press states, staggered lists */
+:root{--eo:cubic-bezier(.22,.9,.28,1)}
+@keyframes vin{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.view.on{animation:vin .34s var(--eo)}
+@keyframes liin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+#cGrid .country,#ordList .hrow,#payHist .hrow,#openPays .payc,#pkgRow .pkgcard{animation:liin .38s var(--eo) both}
+#cGrid .country:nth-child(2), #ordList .hrow:nth-child(2), #payHist .hrow:nth-child(2), #openPays .payc:nth-child(2), #pkgRow .pkgcard:nth-child(2){animation-delay:0.03s}
+#cGrid .country:nth-child(3), #ordList .hrow:nth-child(3), #payHist .hrow:nth-child(3), #openPays .payc:nth-child(3), #pkgRow .pkgcard:nth-child(3){animation-delay:0.06s}
+#cGrid .country:nth-child(4), #ordList .hrow:nth-child(4), #payHist .hrow:nth-child(4), #openPays .payc:nth-child(4), #pkgRow .pkgcard:nth-child(4){animation-delay:0.09s}
+#cGrid .country:nth-child(5), #ordList .hrow:nth-child(5), #payHist .hrow:nth-child(5), #openPays .payc:nth-child(5), #pkgRow .pkgcard:nth-child(5){animation-delay:0.12s}
+#cGrid .country:nth-child(6), #ordList .hrow:nth-child(6), #payHist .hrow:nth-child(6), #openPays .payc:nth-child(6), #pkgRow .pkgcard:nth-child(6){animation-delay:0.15s}
+#cGrid .country:nth-child(7), #ordList .hrow:nth-child(7), #payHist .hrow:nth-child(7), #openPays .payc:nth-child(7), #pkgRow .pkgcard:nth-child(7){animation-delay:0.18s}
+#cGrid .country:nth-child(8), #ordList .hrow:nth-child(8), #payHist .hrow:nth-child(8), #openPays .payc:nth-child(8), #pkgRow .pkgcard:nth-child(8){animation-delay:0.21s}
+#cGrid .country:nth-child(9), #ordList .hrow:nth-child(9), #payHist .hrow:nth-child(9), #openPays .payc:nth-child(9), #pkgRow .pkgcard:nth-child(9){animation-delay:0.24s}
+#cGrid .country:nth-child(10), #ordList .hrow:nth-child(10), #payHist .hrow:nth-child(10), #openPays .payc:nth-child(10), #pkgRow .pkgcard:nth-child(10){animation-delay:0.27s}
+#cGrid .country:nth-child(11), #ordList .hrow:nth-child(11), #payHist .hrow:nth-child(11), #openPays .payc:nth-child(11), #pkgRow .pkgcard:nth-child(11){animation-delay:0.30s}
+#cGrid .country:nth-child(12), #ordList .hrow:nth-child(12), #payHist .hrow:nth-child(12), #openPays .payc:nth-child(12), #pkgRow .pkgcard:nth-child(12){animation-delay:0.33s}
+.hrow{transition:transform .16s var(--eo)}
+#ordList .hrow:active,#payHist .hrow:active{transform:scale(.99)}
+.wbtn,.gbtn,.balpill{transition:transform .16s var(--eo)}
+.wbtn:active,.gbtn:active,.balpill:active{transform:scale(.96)}
+.country{transition:transform .16s var(--eo)}
+.country:active{transform:scale(.97)}
+#splash{transition:opacity .38s var(--eo)}
+#splash.fade{opacity:0;pointer-events:none}
+@media (prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
 h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
 .loading{color:#8e8e93;text-align:center;padding:26px 0;font-size:14px}
 </style></head><body>
@@ -348,6 +375,10 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
         <div class="ictx"><b data-i="notifT">اعلان‌های وب</b><span data-i="notifD">وقتی کد پیامک برسد یا شارژتان تأیید شود، همین‌جا باخبر می‌شوید (تا وقتی وب‌اپ باز یا نصب‌شده و فعال است).</span></div>
         <button class="wbtn" id="notifBtn" onclick="enableNotifs()">فعال‌سازی</button>
       </div>
+      <div class="installcard" id="hapCard">
+        <div class="ictx"><b data-i="hapT">لرزش (هپتیک)</b><span data-i="hapD">با لمس دکمه‌ها و هنگام موفقیت خرید یا شارژ، لرزش کوتاهی حس می‌کنید (در iOS پشتیبانی نمی‌شود).</span></div>
+        <button class="wbtn" id="hapBtn" onclick="toggleHaptics()">روشن</button>
+      </div>
       <div class="installcard" id="installCard" style="display:none">
         <div class="ictx"><b data-i="installT">نصب اپلیکیشن BlueMajazi</b><span data-i="installD">بدون نصب از فروشگاه؛ مستقیم روی صفحه اصلی گوشی‌تان، مثل یک اپ واقعی.</span></div>
         <button class="wbtn" data-i="installB" onclick="doInstall()">نصب</button>
@@ -413,6 +444,9 @@ var ICONS = {
 function ico(n, sz){ return '<svg class="icn" width="' + (sz||19) + '" height="' + (sz||19) + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + (ICONS[n]||'') + '</svg>'; }
 var toastTimer=null;
 function toast(msg){ var t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer=setTimeout(function(){ t.classList.remove('show'); }, 3600); }
+function hap(kind){ try { if (localStorage.getItem('bm_haptics') === '0') return; var hf = window.Telegram && Telegram.WebApp && Telegram.WebApp.HapticFeedback; if (hf) { if (kind === 'ok') hf.notificationOccurred('success'); else if (kind === 'err') hf.notificationOccurred('error'); else if (kind === 'sel') hf.selectionChanged(); else hf.impactOccurred(kind === 'med' ? 'medium' : 'light'); return; } if (navigator.vibrate) { if (kind === 'ok') navigator.vibrate([12,50,12]); else if (kind === 'err') navigator.vibrate([35,50,35]); else if (kind === 'med') navigator.vibrate(22); else if (kind === 'sel') navigator.vibrate(6); else navigator.vibrate(10); } } catch (e) {} }
+function hapState(){ var b = $('hapBtn'); if (!b) return; var on = true; try { on = localStorage.getItem('bm_haptics') !== '0'; } catch (e) {} b.textContent = on ? W('روشن', 'On') : W('خاموش', 'Off'); }
+function toggleHaptics(){ var on = true; try { on = localStorage.getItem('bm_haptics') !== '0'; localStorage.setItem('bm_haptics', on ? '0' : '1'); } catch (e) {} hapState(); if (!on) hap('tap'); }
 function api(path, opts){
   opts = opts || {};
   opts.headers = { 'content-type':'application/json' };
@@ -438,7 +472,7 @@ function onTelegramAuth(user){
     })
     .catch(function(e){ $('loginErr').textContent = e.message; toast(e.message); });
 }
-function hideSplash(){ var sp = $('splash'); if (sp) sp.classList.add('off'); }
+function hideSplash(){ var sp = $('splash'); if (!sp || sp.classList.contains('off')) return; sp.classList.add('fade'); setTimeout(function(){ sp.classList.add('off'); }, 390); }
 function showLogin(){ hideSplash(); stopActTimers(); $('viewApp').style.display='none'; $('viewLogin').style.display='block'; }
 function showApp(){ hideSplash(); $('viewLogin').style.display='none'; $('viewApp').style.display='block'; showView('account'); }
 var I18N = {
@@ -450,7 +484,7 @@ var I18N = {
   refSub1:['از هر خرید موفق زیرمجموعه‌ها ','You earn '], refSub2:[' پورسانت می‌گیرید؛ پورسانت هنگام تحویل کد خرید، خودکار به موجودی‌تان می‌نشیند.',' commission on every successful purchase by your referrals — it is paid automatically to your balance when their code is delivered.'],
   chipUsd:['مبلغ به دلار','Amount in USD'], chipTmn:['مبلغ به تومان','Amount in Toman'], makeLink:['ساخت صفحه پرداخت','Create payment page'], tServices:['سرویس‌ها','Services'],
   installT:['نصب اپلیکیشن BlueMajazi','Install the BlueMajazi app'], installD:['بدون نصب از فروشگاه؛ مستقیم روی صفحه اصلی گوشی‌تان، مثل یک اپ واقعی.','No store needed — straight onto your home screen, like a real app.'], installB:['نصب','Install'],
-  notifT:['اعلان‌های وب','Web notifications'], notifD:['وقتی کد پیامک برسد یا شارژتان تأیید شود، همین‌جا باخبر می‌شوید (تا وقتی وب‌اپ باز یا نصب‌شده و فعال است).','Get notified when an SMS code arrives or a top-up is approved (while the web app is open or installed and active).'],
+  notifT:['اعلان‌های وب','Web notifications'], notifD:['وقتی کد پیامک برسد یا شارژتان تأیید شود، همین‌جا باخبر می‌شوید (تا وقتی وب‌اپ باز یا نصب‌شده و فعال است).','Get notified when an SMS code arrives or a top-up is approved (while the web app is open or installed and active).'], hapT:['لرزش (هپتیک)','Haptic feedback'], hapD:['با لمس دکمه‌ها و هنگام موفقیت خرید یا شارژ، لرزش کوتاهی حس می‌کنید (در iOS پشتیبانی نمی‌شود).','Feel a short vibration when you tap buttons and when a buy or top-up succeeds (not supported on iOS).'],
   searchCountry:['جستجوی کشور…','Search country…'], searchService:['جستجوی سرویس…','Search service…'], amtPh:['$ مبلغ به دلار','Amount in USD $'],
   loadingCountries:['در حال بارگذاری کشورها…','Loading countries…'],
   loginBig1:['شماره مجازی،','Virtual numbers,'], loginBig2:['بدون مرز','without borders'], logoTag:['دروازه‌ای امن به دنیای پرسرعت','A secure gateway to a fast world'],
@@ -471,7 +505,7 @@ function applyLang(){
   document.querySelectorAll('[data-ip]').forEach(function(el){ el.setAttribute('placeholder', L(el.getAttribute('data-ip'))); });
   notifState();
 }
-function toggleLang(){
+function toggleLang(){ hap('sel');
   S.lang = S.lang === 'en' ? 'fa' : 'en';
   try { localStorage.setItem('bm_lang', S.lang); } catch (e) {}
   applyLang();
@@ -540,7 +574,7 @@ function renderMe(){
     } else rc.style.display = 'none';
   }
   renderPkgs();
-  notifState();
+  notifState(); hapState();
   updBlockedBar();
 }
 function copyRef(){ if (S.me && S.me.refLink) copyTxt(S.me.refLink); }
@@ -548,6 +582,7 @@ function refreshMe(){ return api('/api/me').then(function(me){ S.me = me; render
 function updBlockedBar(){ var bb = $('blockedBar'); if (!bb) return; if (S.me && S.me.blocked) { bb.style.display = 'block'; bb.textContent = W('حساب شما توسط مدیر مسدود شده است؛ خرید و شارژ غیرفعال است. برای پیگیری با پشتیبانی در تماس باشید.', 'Your account is blocked by the admin; buying and top-ups are disabled. Please contact support.'); } else bb.style.display = 'none'; }
 function logout(){ try { sessionStorage.removeItem('bg_tok'); } catch (e) {} api('/api/auth/logout', { method:'POST' }).then(function(){ location.reload(); }); }
 function showView(name){
+  if (S.view && S.view !== name) hap('sel');
   S.view = name;
   closeSheet();
   stopStockTimer();
@@ -652,7 +687,7 @@ function renderCountries(q){
   $('cGrid').innerHTML = html || '<div class="loading">' + W('کشوری پیدا نشد', 'No country found') + '</div>';
 }
 $('cSearch').addEventListener('input', function(){ renderCountries(this.value); });
-function openSheet(html){ $('sheetBody').innerHTML = html; $('sheetWrap').classList.add('open'); $('sheet').classList.add('open'); }
+function openSheet(html){ $('sheetBody').innerHTML = html; $('sheetWrap').classList.add('open'); $('sheet').classList.add('open'); hap('sel'); }
 function closeSheet(){ var w = $('sheetWrap'), s = $('sheet'); if (w) w.classList.remove('open'); if (s) s.classList.remove('open'); }
 function sheetBtns(okLabel, okFn){
   return '<div class="sbtns"><button class="wbtn" onclick="' + okFn + '">' + okLabel + '</button><button class="gbtn" onclick="closeSheet()">' + W('لغو', 'Cancel') + '</button></div>';
@@ -790,8 +825,8 @@ function apiErr(e){
 function doBuy(){
   if (!S.country || !S.sel) return;
   api('/api/buy', { method:'POST', body: JSON.stringify({ countryId: S.country.id, serviceId: S.sel.id, coupon: S.couponData ? S.couponData.code : undefined }) })
-    .then(function(j){ S.couponData = null; S.couponInput = ''; refreshMe(); openAct(j.activation); })
-    .catch(function(e){ if (!apiErr(e)) toast(e.message); });
+    .then(function(j){ hap('ok'); S.couponData = null; S.couponInput = ''; refreshMe(); openAct(j.activation); })
+    .catch(function(e){ hap('err'); if (!apiErr(e)) toast(e.message); });
 }
 var STATUS_FA = { waitingSms:'در انتظار پیامک', resendRequested:'درخواست پیامک مجدد ثبت شد', codeReceived:'کد دریافت شد', finished:'پایان‌یافته', cancelled:'لغو شده', expired:'منقضی شده', refunded:'برگشت‌وجه‌شده' };
 var STATUS_EN = { waitingSms: 'Waiting for SMS', codeReceived: 'Code received', resendRequested: 'Resend requested', finished: 'Finished', cancelled: 'Cancelled', expired: 'Expired', refunded: 'Refunded', rejected: 'Rejected' };
@@ -836,7 +871,7 @@ function pollAct(){
   if (!S.act) return;
   api('/api/activation?id=' + encodeURIComponent(S.act.id)).then(function(j){
     var had = S.act.code; S.act = j.activation; renderAct();
-    if (!had && j.activation.code) { refreshMe(); fireNotif(W('کد پیامک رسید', 'Your SMS code arrived'), (j.activation.phone || '') + ' — ' + W('کد: ', 'Code: ') + j.activation.code); }
+    if (!had && j.activation.code) { hap('ok'); refreshMe(); fireNotif(W('کد پیامک رسید', 'Your SMS code arrived'), (j.activation.phone || '') + ' — ' + W('کد: ', 'Code: ') + j.activation.code); }
     if (['finished','cancelled','expired','refunded'].indexOf(j.activation.status) !== -1) { stopActTimers(); refreshMe(); }
   }).catch(function(){});
 }
@@ -876,7 +911,7 @@ function actDo(action){
     .catch(function(e){ toast(e.message); pollAct(); });
 }
 function copyTxt(txt, el){
-  function done(){ toast(W('کپی شد ✓', 'Copied ✓')); }
+  function done(){ hap('tap'); toast(W('کپی شد ✓', 'Copied ✓')); }
   if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(done).catch(done);
   else {
     var ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta); ta.select();
@@ -1153,7 +1188,7 @@ function confirmPkgTopup(btn){
   var amount = pendingPkg.amount;
   btn.disabled = true; btn.textContent = W('در حال ساخت…', 'Creating…');
   api('/api/topup', { method:'POST', body: JSON.stringify({ pkgAmount: amount }) }).then(function(j){
-    closePkgConfirm();
+    hap('ok'); closePkgConfirm();
     $('tpResult').innerHTML = '<div class="confirm"><div class="row"><span>' + W('صفحه پرداخت ساخته شد', 'Payment page created') + '</span><b>' + W('۳۰ دقیقه مهلت', '30 minutes to pay') + '</b></div><a class="wbtn" style="width:100%;margin-top:10px" href="' + escH(j.payUrl) + '">' + W('رفتن به صفحه پرداخت ←', 'Go to payment page →') + '</a></div>';
   }).catch(function(e){
     closePkgConfirm();
@@ -1169,9 +1204,9 @@ function doTopup(){
   if (!(val > 0)) { toast(W('مبلغ را وارد کنید', 'Enter an amount')); return; }
   if (S.me && S.me.minTopup && val < Number(S.me.minTopup)) { toast(W('حداقل مبلغ شارژ ' + faUsd(Number(S.me.minTopup)) + ' است', 'Minimum top-up is ' + faUsd(Number(S.me.minTopup)))); return; }
   var body = { amountUsd: val };
-  api('/api/topup', { method:'POST', body: JSON.stringify(body) }).then(function(j){
+  api('/api/topup', { method:'POST', body: JSON.stringify(body) }).then(function(j){ hap('ok');
     $('tpResult').innerHTML = '<div class="confirm"><div class="row"><span>' + W('صفحه پرداخت ساخته شد', 'Payment page created') + '</span><b>' + W('۳۰ دقیقه مهلت', '30 minutes to pay') + '</b></div><a class="wbtn" style="width:100%;margin-top:10px" href="' + escH(j.payUrl) + '">' + W('رفتن به صفحه پرداخت ←', 'Go to payment page →') + '</a></div>';
-  }).catch(function(e){
+  }).catch(function(e){ hap('err');
     if (apiErr(e)) return;
     if (e.data && e.data.payUrl) {
       $('tpResult').innerHTML = '<div class="confirm"><div class="row"><span>' + escH(e.message) + '</span></div><a class="wbtn" style="width:100%;margin-top:10px" href="' + escH(e.data.payUrl) + '">' + W('ادامه پرداخت قبلی ←', 'Continue previous payment →') + '</a></div>';
