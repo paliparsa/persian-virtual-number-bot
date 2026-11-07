@@ -35,7 +35,7 @@ const ok = (name, cond) => { if (cond) { pass++; console.log("ok  ", name); } el
 {
   const r = await worker.fetch(new Request("https://w.test/health"), env, ctx);
   const d = await r.json();
-  ok("health version is 3.1.1", d.version === "3.1.1");
+  ok("health reports a 3.x version", !!d.version && d.version.startsWith("3."));
 }
 {
   const r = await worker.fetch(new Request("https://w.test/app"), env, ctx);

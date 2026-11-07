@@ -11,7 +11,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 export const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-export const BOT_VERSION = "3.1.1"; // shown in the admin panel and /health — check you're on the latest deploy
+export const BOT_VERSION = "3.1.2"; // shown in the admin panel and /health — check you're on the latest deploy
 export const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 export const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
