@@ -342,7 +342,7 @@ footer a{color:#a3a3a3}
 <body><main>
 <header class="brand"><div class="mark">B</div><div><b>BlueMajazi</b><span>${en ? "Payment gateway" : "درگاه پرداخت"}</span></div><div class="secure">${en ? "Secure payment" : "پرداخت امن"}</div><button class="secure" style="background:none;cursor:pointer;font-family:inherit;display:inline-flex;align-items:center" title="Language / زبان" onclick="flipPayLang()"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></button></header>
 ${body}
-<footer>${en ? "Double-check the amount and address before sending. Every payment has a 30-minute window; after that, the request closes automatically." : "مبلغ و آدرس را پیش از واریز یک‌بار دیگر بررسی کنید. هر پرداخت ۳۰ دقیقه مهلت دارد؛ پس از آن، درخواست به‌صورت خودکار بسته می‌شود."}</footer>
+<footer>${en ? "Double-check the amount and address before sending. Every payment has a 30-minute window; after that, the request closes automatically." : "مبلغ و آدرس را پیش از واریز یک‌بار دیگر بررسی کنید. هر پرداخت ۳۰ دقیقه مهلت دارد؛ پس از آن، درخواست به‌صورت خودکار بسته می‌شود."}<div style="text-align:center;margin-top:14px;font-size:11px;opacity:.7">A service by BlueGate®</div></footer>
 </main>
 <div id="toast"></div>
 <script>
@@ -406,7 +406,11 @@ export async function payPage(env, cfg, topup, lang = "fa", langSrc = "user") {
   }
   const credit = topupCredit(topup);
   const tmn = await usdtTomanRate(env);
-  const tomanText = tmn ? `≈ ${fInt(Math.round(credit * tmn))} ${P("تومان", "Toman")}` : "";
+  // A TMN package session shows its exact Toman amount (the card charge
+  // is fixed at creation); everything else shows the live equivalent.
+  const tomanText = topup.pkgCurrency === "tmn" && topup.pkgAmountTmn
+    ? `${fInt(topup.pkgAmountTmn)} ${P("تومان", "Toman")}`
+    : tmn ? `≈ ${fInt(Math.round(credit * tmn))} ${P("تومان", "Toman")}` : "";
   const summary = `<div class="summary"><div class="sum-main"><div class="k">${P("مبلغ شارژ", "Top-up amount")}</div><div class="v">$${esc(credit)}</div><div class="vt tmnFill">${tomanText}</div></div>
     <div class="timer"><div class="cd">30:00</div><div class="k">${P("مهلت باقی‌مانده", "Time left")}</div></div></div><div class="timebar"><i id="timebar"></i></div>`;
   const summaryCalm = `<div class="summary"><div class="sum-main"><div class="k">${P("مبلغ شارژ", "Top-up amount")}</div><div class="v">$${esc(credit)}</div><div class="vt tmnFill">${tomanText}</div></div></div>`;
@@ -501,7 +505,7 @@ export async function payPage(env, cfg, topup, lang = "fa", langSrc = "user") {
       rows.push(`<button class="method" onclick="selectMethod('CARD')">
         <span class="tick">${P("کارت", "CARD")}</span>
         <span class="inf"><span class="nm">${P("کارت به کارت", "Card-to-card")}</span></span>
-        <span class="ap">${tmn ? esc(fInt(Math.round(credit * tmn))) + " " + P("تومان", "Toman") : "—"}</span><span class="ch">‹</span></button>`);
+        <span class="ap">${tmn ? esc(fInt(topup.amountTomanFixed > 0 ? Math.round(Number(topup.amountTomanFixed)) : Math.round(credit * tmn))) + " " + P("تومان", "Toman") : "—"}</span><span class="ch">‹</span></button>`);
     }
     return shell(`${head(1)}
       <h1>${P("روش پرداخت را انتخاب کنید", "Choose a payment method")}</h1>

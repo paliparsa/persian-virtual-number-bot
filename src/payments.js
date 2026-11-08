@@ -64,12 +64,19 @@ export async function postTopupToGroup(env, topup, tmn) {
 }
 
 // ---------- top-up packages ----------
-// Admin-defined preset top-up packages: a fixed USD amount with a fixed
-// USD bonus (possibly 0), managed from the admin panel («🎁 پکیج‌های شارژ»)
-// and stored as one array in KV (topup_pkgs). Picking a package stamps the
-// bonus onto the payment session (topup.pkgBonus) at creation time, and
-// creditTopup credits exactly that snapshot — the bonus always comes from
-// this server-side list, never from anything the client sends. A manual
+// Admin-defined preset top-up packages: a fixed amount with a fixed
+// bonus (possibly 0), managed from the admin panel («🎁 پکیج‌های شارژ»)
+// and stored as one array in KV (topup_pkgs). Since v3.2.0 a package
+// also carries a currency ("usd" | "tmn", ported from BG-3x-ui-sell):
+// amount and bonus are denominated in that currency; packages stored
+// before v3.2.0 have no currency and default to "usd". Picking a package
+// stamps the bonus onto the payment session (topup.pkgBonus) at creation
+// time, and creditTopup credits exactly that snapshot — the bonus always
+// comes from this server-side list, never from anything the client
+// sends. For a TMN package the caller snapshots the USD credit/bonus at
+// the live rate (creditUsd / pkgBonus stay USD on the session) and the
+// session also carries pkgAmountTmn/pkgBonusTmn + amountTomanFixed so
+// card selection charges exactly the package's Toman amount. A manual
 // (custom-amount) top-up carries no bonus.
 export const DEFAULT_PKGS = [
   { amount: 10, bonus: 0 },
@@ -77,15 +84,21 @@ export const DEFAULT_PKGS = [
   { amount: 50, bonus: 4 },
   { amount: 100, bonus: 10 },
 ];
+export const normalizePkg = (p) => ({
+  amount: Number(p?.amount),
+  bonus: Math.max(0, Number(p?.bonus) || 0),
+  currency: p?.currency === "tmn" ? "tmn" : "usd",
+});
 export async function getTopupPkgs(env) {
   const stored = await kvGet(env, "topup_pkgs");
   const list = Array.isArray(stored) ? stored : DEFAULT_PKGS;
   return list
-    .map((p) => ({ amount: Number(p.amount), bonus: Math.max(0, Number(p.bonus) || 0) }))
-    .filter((p) => Number.isFinite(p.amount) && p.amount > 0 && p.amount <= 5000)
+    .map(normalizePkg)
+    .filter((p) => Number.isFinite(p.amount) && p.amount > 0 && (p.currency === "tmn" ? p.amount <= 1000000000 : p.amount <= 5000))
     .sort((a, b) => a.amount - b.amount);
 }
-export const findPkg = (pkgs, amount) => pkgs.find((p) => Math.abs(p.amount - Number(amount)) < 0.001);
+export const findPkg = (pkgs, amount, currency) =>
+  pkgs.find((p) => Math.abs(p.amount - Number(amount)) < 0.001 && (currency ? p.currency === currency : true));
 
 // ---------- discount coupons ----------
 // coupon:<CODE> = { code, type: "percent"|"fixed", value, maxUses (0 = ∞),
@@ -245,7 +258,7 @@ export async function noteReceiptSeen(env, key, topupId) {
 }
 
 export function receiptCaption(topup, via, dupOf) {
-  return `🧾 <b>رسید جدید</b> (${via})\nکاربر: ${faDigits(topup.userId)}\nشناسه پرداخت: <code>${esc(topup.id)}</code>\nمبلغ کارت: ${faInt(topup.amountToman)} تومان\nشارژ درخواستی: $${faNum(topupCredit(topup))}${topup.rateUsed ? ` (با نرخ تتر ${faInt(topup.rateUsed)} تومان)` : ""}${Number(topup.pkgBonus) > 0 ? `\n🎁 بونوس پکیج: +$${faNum(Number(topup.pkgBonus))} (با تأیید شما خودکار اضافه می‌شود)` : ""}${topup.receiptCount > 1 ? `\n♻️ رسید جایگزین (شماره ${faDigits(topup.receiptCount)})` : ""}${dupOf ? `\n\n🔴 <b>هشدار:</b> این رسید قبلاً برای پرداخت دیگری ارسال شده است (<code>${esc(dupOf)}</code>). قبل از تأیید، هر دو پرداخت را مقایسه کنید.` : ""}`;
+  return `🧾 <b>رسید جدید</b> (${via})\nکاربر: ${faDigits(topup.userId)}\nشناسه پرداخت: <code>${esc(topup.id)}</code>\nمبلغ کارت: ${faInt(topup.amountToman)} تومان\nشارژ درخواستی: $${faNum(topupCredit(topup))}${topup.rateUsed ? ` (با نرخ تتر ${faInt(topup.rateUsed)} تومان)` : ""}${topup.pkgCurrency === "tmn" && Number(topup.pkgBonusTmn) > 0 ? `\n🎁 بونوس پکیج: +${faInt(topup.pkgBonusTmn)} تومان (با تأیید شما خودکار اضافه می‌شود)` : Number(topup.pkgBonus) > 0 ? `\n🎁 بونوس پکیج: +$${faNum(Number(topup.pkgBonus))} (با تأیید شما خودکار اضافه می‌شود)` : ""}${topup.receiptCount > 1 ? `\n♻️ رسید جایگزین (شماره ${faDigits(topup.receiptCount)})` : ""}${dupOf ? `\n\n🔴 <b>هشدار:</b> این رسید قبلاً برای پرداخت دیگری ارسال شده است (<code>${esc(dupOf)}</code>). قبل از تأیید، هر دو پرداخت را مقایسه کنید.` : ""}`;
 }
 
 // Upload a user-supplied image file to a Telegram chat (multipart sendPhoto).
@@ -352,7 +365,10 @@ export async function applyPayMethod(env, topup, method) {
     if (!rate) throw new Error("نرخ تتر در دسترس نیست؛ چند دقیقه دیگر تلاش کنید");
     topup.method = "card";
     delete topup.crypto; delete topup.expectedCrypto; delete topup.walletAddress; delete topup.receiptFileId; delete topup.receiptAt; delete topup.adminMsgId;
-    topup.amountToman = Math.round(topupCredit(topup) * rate);
+    // A TMN package session carries amountTomanFixed: the card charge is
+    // EXACTLY the package's Toman amount, not a re-conversion of the USD
+    // credit snapshot (which would drift with rounding/rate).
+    topup.amountToman = topup.amountTomanFixed > 0 ? Math.round(Number(topup.amountTomanFixed)) : Math.round(topupCredit(topup) * rate);
     topup.rateUsed = rate; topup.selectedAt = now();
     user.state = "await_card_receipt"; user.stateData = topup.id; await saveUser(env, user);
   } else {
@@ -402,10 +418,13 @@ export async function paySessionMessage(env, topup, baseUrl) {
   if (topup.method === "card") methodLine = tr(user, `روش پرداخت: کارت‌به‌کارت — مبلغ: ${faInt(topup.amountToman)} تومان. رسید را همین‌جا در ربات بفرستید.`, `Payment method: card-to-card — amount: ${enInt(topup.amountToman)} Toman. Send the receipt right here in the bot.`);
   if (topup.method === "card_verify") methodLine = tr(user, "روش پرداخت: کارت‌به‌کارت — اول باید شماره موبایلتان را احراز کنید؛ از صفحه پرداخت شروع کنید.", "Payment method: card-to-card — first verify your mobile number; start from the payment page.");
   const inputLine = topup.inputToman ? tr(user, `\nمبلغ واردشده: ${faInt(topup.inputToman)} تومان ≈ $${faNum(topupCredit(topup))} (با نرخ تتر ${faInt(topup.inputRate)} تومان)`, `\nEntered amount: ${enInt(topup.inputToman)} Toman ≈ $${topupCredit(topup)} (at ${enInt(topup.inputRate)} Toman per USDT)`) : "";
-  const pkgLine = Number(topup.pkgBonus) > 0 ? tr(user, `\n🎁 بونوس پکیج: <b>${usdText(tmn, Number(topup.pkgBonus))}</b> — بعد از پرداخت موفق، خودکار به موجودی‌تان اضافه می‌شود.`, `\n🎁 Package bonus: <b>${usdL(user, tmn, Number(topup.pkgBonus))}</b> — added automatically after a successful payment.`) : "";
+  const pkgTmnLine = topup.pkgCurrency === "tmn" && topup.pkgAmountTmn ? tr(user, `\nمبلغ پکیج: ${faInt(topup.pkgAmountTmn)} تومان`, `\nPackage amount: ${enInt(topup.pkgAmountTmn)} Toman`) : "";
+  const pkgLine = topup.pkgCurrency === "tmn" && Number(topup.pkgBonusTmn) > 0
+    ? tr(user, `\n🎁 بونوس پکیج: <b>${faInt(topup.pkgBonusTmn)} تومان</b> — بعد از پرداخت موفق، خودکار به موجودی‌تان اضافه می‌شود.`, `\n🎁 Package bonus: <b>${enInt(topup.pkgBonusTmn)} Toman</b> — added automatically after a successful payment.`)
+    : Number(topup.pkgBonus) > 0 ? tr(user, `\n🎁 بونوس پکیج: <b>${usdText(tmn, Number(topup.pkgBonus))}</b> — بعد از پرداخت موفق، خودکار به موجودی‌تان اضافه می‌شود.`, `\n🎁 Package bonus: <b>${usdL(user, tmn, Number(topup.pkgBonus))}</b> — added automatically after a successful payment.`) : "";
   const text = tr(user,
-    `💵 <b>پرداخت شما ساخته شد</b>\n\nمبلغ شارژ: ${usdText(tmn, topupCredit(topup))}${inputLine}${pkgLine}\n${methodLine}\n${timeLine}\n\nاز دکمه زیر صفحه پرداخت را باز کنید:`,
-    `💵 <b>Your payment is ready</b>\n\nTop-up amount: ${usdL(user, tmn, topupCredit(topup))}${inputLine}${pkgLine}\n${methodLine}\n${timeLine}\n\nOpen the payment page with the button below:`);
+    `💵 <b>پرداخت شما ساخته شد</b>\n\nمبلغ شارژ: ${usdText(tmn, topupCredit(topup))}${inputLine}${pkgTmnLine}${pkgLine}\n${methodLine}\n${timeLine}\n\nاز دکمه زیر صفحه پرداخت را باز کنید:`,
+    `💵 <b>Your payment is ready</b>\n\nTop-up amount: ${usdL(user, tmn, topupCredit(topup))}${inputLine}${pkgTmnLine}${pkgLine}\n${methodLine}\n${timeLine}\n\nOpen the payment page with the button below:`);
   const rows = [[urlBtn(tr(user, "🌐 باز کردن صفحه پرداخت", "🌐 Open payment page"), `${baseUrl}/pay?t=${topup.id}`)]];
   if (topup.method === "crypto") rows.push([btn(tr(user, "🔄 بررسی پرداخت", "🔄 Check payment"), `chk:${topup.id}`), btn(tr(user, "❌ لغو پرداخت", "❌ Cancel"), `ses_cancel:${topup.id}`)]);
   else rows.push([btn(tr(user, "❌ لغو این پرداخت", "❌ Cancel payment"), `ses_cancel:${topup.id}`), btn(tr(user, "⬅️ منوی اصلی", "⬅️ Main menu"), "home")]);

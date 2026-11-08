@@ -11,7 +11,8 @@ refunded automatically (the provider only charges on a finished activation with 
 
 ## How the money works
 
-- **Shop currency is USD.** Provider (SmsFull) prices arrive in BRL and are converted
+- **Shop currency is USD** (or Toman-native — see the v3.2.0 pricing mode below).
+  Provider (SmsFull) prices arrive in BRL and are converted
   automatically (daily FX rate from open.er-api.com), then sold at
   `USD price × (1 + markup/100)`. User balances are kept in USD in Cloudflare KV.
 - **Every dollar amount is also shown in Toman**, converted automatically with the
@@ -23,6 +24,7 @@ refunded automatically (the provider only charges on a finished activation with 
   awaits admin approval.
   The Toman → USD credit conversion is automatic using the Wallex USDT rate
   (the rate used is stored on each top-up and shown to the admin).
+- **Backup, dual pricing mode, display currency + dual-currency packages (v3.2.0):** four features ported from the sister shop (BG-3x-ui-sell). (1) **Backup:** a new «💾 بکاپ» section in the admin panel downloads a JSON backup of the whole shop state — config, top-up packages, coupons, users and activations — as a Telegram document, and restores one the same way: the file is strictly validated (≤ 5 MB, this shop's envelope, record/key identity), a summary asks for explicit confirmation, a safety backup of the current state is sent to the admin before anything is overwritten (a failed send aborts the restore), and the restore **replaces** the covered keyspaces (`config`, `topup_pkgs`, `coupon:*`, `user:*`, `act:*`) instead of merging. Payment sessions, web sessions, locks, rate caches and the audit log are deliberately excluded; the SmsFull key is a Cloudflare secret and is never in a backup — but the config inside does hold the card details, wallets and Etherscan key, so the file itself is sensitive. Both download and restore are audit-logged. (2) **Dual pricing mode:** a new admin toggle «💱 حالت قیمت‌گذاری» (`PRICE_MODE`, audited) switches the shop between the classic **USD mode** (unchanged: BRL → USD → markup) and a **Toman-native mode** where the Toman price is the price of record, computed directly in Toman — `BRL × TOMAN_PER_BRL` when that setting is set, otherwise `BRL × BRL/USD × USDT-Toman` — with the shop markup, rounded **up** to the nearest 100 Toman; the USD balance charge is then derived from that Toman price at the live rate at purchase time and the paid Toman price is stored on the order (`priceTmn`). Coupons work the same in both modes (percent on the USD charge, fixed stays USD), and if the needed rates are unavailable the purchase fails with the existing «نرخ تبدیل ارز» error before anything is reserved or charged. The «نرخ تبدیل رئال به تومان» setting (`TOMAN_PER_BRL`) now sits in the general settings group. (3) **Display currency follows the language:** Persian users see money **in Toman** and English users **in USD** — bot home/balance, service labels and confirm screens, order amounts, payment lists, referral earnings and top-up screens, plus the web app (new `tmnRate` on `/api/me`; render-only conversion at the live rate with a USD fallback when the rate is down — the ledger always stays USD). Top-up **packages are now dual-currency**: the admin package editor starts by choosing دلاری/تومانی, amounts and bonuses are kept in that currency, bot and web show the display currency's packages first (falling back to the other set), and buying a Toman package snapshots its USD credit/bonus at the live rate at creation (rate required) while card payment charges **exactly** the package's Toman amount (`amountTomanFixed`). A new «حداقل شارژ تومانی» setting (`MIN_TOPUP_TMN`, default ۱۰٬۰۰۰ تومان) is enforced on manual Toman top-ups in the bot and the web API, and the manual top-up entry defaults to the display currency (FA → Toman first in the bot; the web top-up form gains Toman/USD chips — entry currency follows the language, reversing the v2.17.1 USD-only choice). (4) **Tagline:** the exact line `A service by BlueGate®` now appears under the web login form and at the bottom of the Account view, in the /pay and /terms footers (both languages — the line itself stays English), and as the final line of the bot's home message. Verified by a new suite (`tests/test_v320.mjs`, 48 checks: both pricing modes + no-rate failure, Toman buy charging derived USD, FA/EN display rendering, Toman-package session math + exact card amount, minimum enforcement, backup roundtrip/invalid/gate/pre-restore, tagline presence, and absence of any other sister-shop features) plus the full battery.
 - **Pay page design v2 (v1.8.0):** still minimal black/white — matte-black premium bank card, hero summary amount, filled-white success check, inline copied-feedback on copy buttons; orange is reserved for pending states and the under-5-minutes countdown, red only for rejected/expired states (including a dedicated rejected view).
 - **App stability fixes (v3.1.4):** found by driving the real web app in an iPhone emulator and capturing runtime errors — (1) `hapState()` was called by renderMe/toggleHaptics but never defined (missing since v3.1.0), so every account render threw; it is defined now and the haptics toggle label updates again. (2) A late boot retry could re-run `showApp()` seconds after login and yank the user back to the Account view at the top — boot is now single-flight and `showApp()` only force-navigates on its first show. (3) The v3.1.3 scroll jail is removed; the iOS haptic switch is `position:absolute` and re-synced to the current scroll offset before every tick, so iOS focusing it cannot move the page.
 - **iOS haptic side-effect fix (v3.1.3):** toggling the hidden iOS switch also focuses it, and iOS scrolls to the focused control — the page felt stuck and the scroll snapped back. The iOS trigger now only fires within 800ms of a real user gesture, holds the scroll position with a rAF "scroll jail" while its ticks land, and blurs the switch afterwards.
@@ -97,6 +99,7 @@ src/
     clients.js    outside world — Telegram webhook setup, SmsFull API, exchange rates, bot identity
     chains.js     on-chain payment detection (BTC/LTC/TRX/TON/EVM) and settlement
     referral.js   referral capture + commission
+    backup.js     admin backup/restore (config, packages, coupons, users, activations)
     ops.js        provider low-balance alerts + automated health monitoring
   pages/
     app.js        the /app web application page
@@ -209,6 +212,11 @@ still running an older deploy; check the latest deployment in Cloudflare and red
 
 Tap a field → send the new value as a message → it's validated and saved to KV
 instantly. The 🗑 button next to a field clears it.
+
+The admin home also has **💱 حالت قیمت‌گذاری** (switch USD ↔ Toman-native pricing,
+see v3.2.0 above) and **💾 بکاپ** (download a full shop backup as a JSON document,
+or upload one to restore — confirmation required, and a safety backup of the
+current state is sent first).
 
 ## Known limits of v1
 

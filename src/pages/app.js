@@ -48,6 +48,10 @@ body{background:#000;color:#fff;font-family:'Yekan Bakh',Tahoma,sans-serif;min-h
 .feats div:last-child{border-bottom:none}
 .foot{margin-top:26px;color:#6d6d75;font-size:12px;text-align:center;line-height:1.9}
 .foot a,.linklike{color:#9a9aa2}
+.tagline{color:#6d6d75;font-size:11px;text-align:center;letter-spacing:.3px;opacity:.75;margin-top:14px}
+.segrow{display:flex;gap:8px;margin-bottom:12px}
+.segbtn{flex:1;background:transparent;color:#d6d6da;border:1px solid #2c2c31;border-radius:11px;padding:10px;font-family:inherit;font-size:13.5px;cursor:pointer}
+.segbtn.on{background:#fff;color:#000;border-color:#fff;font-weight:700}
 .balcard{border:1px solid #26262b;border-radius:18px;padding:16px;margin-bottom:16px;background:linear-gradient(180deg,#101012,#0a0a0b)}
 .balcard .lbl{color:#8e8e93;font-size:12.5px}
 .balcard .amt{font-size:27px;font-weight:800;margin:2px 0}
@@ -282,6 +286,7 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
       </div>
     </div>
     <p class="foot" data-ih="loginFoot">با ورود، <a href="/terms">قوانین و مقررات</a> BlueMajazi را می‌پذیرید.</p>
+    <p class="tagline">A service by BlueGate®</p>
   </div>
 
   <div id="viewApp" style="display:none">
@@ -326,6 +331,7 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
       <div id="openPays"></div>
       <div id="pkgRow" class="pkgrow"></div>
       <div class="formcard">
+      <div class="segrow"><button class="segbtn" id="chipTmn" onclick="setTopupMode('tmn')">تومان</button><button class="segbtn" id="chipUsd" onclick="setTopupMode('usd')">$ USD</button></div>
       <input class="amtin" id="tpAmt" inputmode="numeric" placeholder="$ مبلغ" data-ip="amtPh">
       <p class="small" id="tpHint">بعد از ساخت، به صفحه پرداخت می‌روید و روش پرداخت (رمزارز یا کارت‌به‌کارت) را آنجا انتخاب می‌کنید. هر پرداخت ۳۰ دقیقه مهلت دارد.</p>
       <button class="wbtn" style="width:100%;margin-top:16px" data-i="makeLink" onclick="doTopup()">ساخت صفحه پرداخت</button>
@@ -384,6 +390,7 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
         <button class="wbtn" data-i="installB" onclick="doInstall()">نصب</button>
         <button class="ix" onclick="dismissInstall()" aria-label="بستن">✕</button>
       </div>
+      <p class="tagline" style="margin-bottom:10px">A service by BlueGate®</p>
     </section>
 
     <nav class="nav">
@@ -424,13 +431,20 @@ h2.title{font-size:19px;font-weight:800;margin-bottom:12px}
 <div class="pconfirm" id="pkgConfirm" onclick="if(event.target===this)closePkgConfirm()"><div class="mbox" id="pkgConfirmBox"></div></div>
 <div class="sheet" id="sheet" role="dialog" aria-modal="true"><div class="grab"></div><div id="sheetBody"></div></div>
 <script>
-var S = { me:null, countries:[], country:null, services:[], rate:null, sel:null, act:null, poll:null, cd:null, view:'account', lang:'fa', knownPending:null, knownApproved:null, ordPage:1, ordFilter:'all', ordersAll:null, payPage:1, payFilter:'all', payData:null };
+var S = { me:null, countries:[], country:null, services:[], rate:null, sel:null, act:null, poll:null, cd:null, view:'account', lang:'fa', knownPending:null, knownApproved:null, ordPage:1, ordFilter:'all', ordersAll:null, payPage:1, payFilter:'all', payData:null, topupMode:null };
 try { S.lang = localStorage.getItem('bm_lang') || 'fa'; } catch (e) {}
 function W(fa, en){ return S.lang === 'en' ? en : fa; }
 function $(id){ return document.getElementById(id); }
 function faDigits(s){ if (S.lang === 'en') return String(s); return String(s).replace(/[0-9]/g, function(d){ return '۰۱۲۳۴۵۶۷۸۹'[Number(d)]; }); }
 function faUsd(v){ return '$' + Number(v||0).toLocaleString(S.lang === 'en' ? 'en-US' : 'fa-IR',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 function faTmn(v){ return Math.round(Number(v||0)).toLocaleString(S.lang === 'en' ? 'en-US' : 'fa-IR') + W(' تومان', ' Toman'); }
+// Display currency (v3.2.0): Persian users see Toman, English users USD.
+// Render-only — the ledger and all charges stay USD. Falls back to USD
+// when the Toman rate is unavailable.
+function tmnRate(){ return S.me ? (S.me.tmnRate || S.me.rate) : null; }
+function dispCur(){ return S.lang === 'en' ? 'usd' : (tmnRate() ? 'tmn' : 'usd'); }
+function money(usd){ if (usd == null) return '—'; return dispCur() === 'tmn' ? faTmn(Number(usd) * tmnRate()) : faUsd(usd); }
+function moneyNative(usd, tmn){ if (tmn != null) return faTmn(tmn); return money(usd); }
 function faN(v){ return Number(v||0).toLocaleString(S.lang === 'en' ? 'en-US' : 'fa-IR'); }
 function escH(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 var ICONS = {
@@ -561,9 +575,9 @@ function boot(tries){
 }
 function renderMe(){
   if (!S.me) return;
-  $('hdrBal').innerHTML = ico('wallet', 14) + ' ' + faUsd(S.me.balance);
-  $('balAmt').textContent = faUsd(S.me.balance);
-  $('balTmn').textContent = S.me.rate ? '≈ ' + faTmn(S.me.balance * S.me.rate) : '';
+  $('hdrBal').innerHTML = ico('wallet', 14) + ' ' + money(S.me.balance);
+  $('balAmt').textContent = money(S.me.balance);
+  $('balTmn').textContent = dispCur() === 'tmn' ? '≈ ' + faUsd(S.me.balance) : (S.me.rate ? '≈ ' + faTmn(S.me.balance * S.me.rate) : '');
   var ava = $('hdrAva');
   ava.title = W('حساب کاربری', 'Account');
   if (S.me.photoUrl) ava.innerHTML = '<img src="' + escH(S.me.photoUrl) + '" alt="">';
@@ -580,7 +594,7 @@ function renderMe(){
       $('refPct').textContent = faN(S.me.refPercent) + (S.lang === 'en' ? '%' : '٪');
       $('refLinkTxt').textContent = S.me.refLink;
       $('refCount').textContent = faN(S.me.refCount);
-      $('refEarned').textContent = faUsd(S.me.refEarned);
+      $('refEarned').textContent = money(S.me.refEarned);
     } else rc.style.display = 'none';
   }
   renderPkgs();
@@ -733,8 +747,15 @@ function renderServices(q){
   var html = '';
   S.services.forEach(function(s){
     if (q && s.name.toLowerCase().indexOf(q) === -1) return;
-    var tmn = (S.rate && s.priceUsd != null) ? '<div class="tmn">≈ ' + faTmn(s.priceUsd * S.rate) + '</div>' : '';
-    html += '<button class="svc' + (S.sel && S.sel.id === s.id ? ' sel' : '') + '" onclick="pickService(' + s.id + ')"><span><span class="nm">' + escH(s.name) + '</span><div class="st">' + W('موجود: ', 'Stock: ') + faN(s.available) + W(' شماره', '') + '</div></span><span class="pr"><div class="usd">' + (s.priceUsd != null ? faUsd(s.priceUsd) : '—') + '</div>' + tmn + '</span></button>';
+    var prHtml;
+    if (s.priceTmn != null) {
+      // TMN pricing mode: the Toman price of record leads; the USD
+      // deduction rides along as the secondary line.
+      prHtml = '<div class="usd">' + faTmn(s.priceTmn) + '</div>' + (s.priceUsd != null ? '<div class="tmn">≈ ' + faUsd(s.priceUsd) + '</div>' : '');
+    } else if (s.priceUsd != null) {
+      prHtml = '<div class="usd">' + money(s.priceUsd) + '</div>' + (dispCur() === 'tmn' ? '<div class="tmn">≈ ' + faUsd(s.priceUsd) + '</div>' : (S.rate ? '<div class="tmn">≈ ' + faTmn(s.priceUsd * S.rate) + '</div>' : ''));
+    } else prHtml = '<div class="usd">—</div>';
+    html += '<button class="svc' + (S.sel && S.sel.id === s.id ? ' sel' : '') + '" onclick="pickService(' + s.id + ')"><span><span class="nm">' + escH(s.name) + '</span><div class="st">' + W('موجود: ', 'Stock: ') + faN(s.available) + W(' شماره', '') + '</div></span><span class="pr">' + prHtml + '</span></button>';
   });
   $('svcList').innerHTML = html || '<div class="loading">' + W('سرویسی موجود نیست', 'No service available') + '</div>';
 }
@@ -752,16 +773,18 @@ function serviceSheetHtml(){
   var price = Number(s.priceUsd || 0);
   var disc = S.couponData ? Number(S.couponData.discount) : 0;
   var fin = Math.round((price - disc) * 100) / 100;
-  var tmnRow = (S.rate && s.priceUsd != null) ? '<div class="srow"><span>' + W('معادل تومانی', 'In Toman') + '</span><b>' + faTmn(s.priceUsd * S.rate) + '</b></div>' : '';
+  var tmnRow = s.priceTmn != null
+    ? (s.priceUsd != null ? '<div class="srow"><span>' + W('مبلغ کسر از موجودی', 'Deducted from balance') + '</span><b>' + faUsd(s.priceUsd) + '</b></div>' : '')
+    : (S.rate && s.priceUsd != null ? '<div class="srow"><span>' + (dispCur() === 'tmn' ? W('به دلار', 'In USD') : W('معادل تومانی', 'In Toman')) + '</span><b>' + (dispCur() === 'tmn' ? faUsd(s.priceUsd) : faTmn(s.priceUsd * S.rate)) + '</b></div>' : '');
   var cpnRows = '<div class="srow"><span>' + W('کد تخفیف', 'Discount code') + '</span><span class="cpnrow"><input id="cpnIn" placeholder="' + W('کد تخفیف', 'Discount code') + '" value="' + escH(S.couponInput || '') + '"><button class="mini" onclick="applyCoupon()">' + W('اعمال', 'Apply') + '</button></span></div>'
-    + (S.couponData ? '<div class="srow"><span>' + W('تخفیف', 'Discount') + ' (' + escH(S.couponData.code) + ')</span><b>−' + faUsd(disc) + '</b></div><div class="srow"><span>' + W('مبلغ نهایی', 'Final amount') + '</span><b>' + faUsd(fin) + '</b></div>' : '');
+    + (S.couponData ? '<div class="srow"><span>' + W('تخفیف', 'Discount') + ' (' + escH(S.couponData.code) + ')</span><b>−' + money(disc) + '</b></div><div class="srow"><span>' + W('مبلغ نهایی', 'Final amount') + '</span><b>' + money(fin) + '</b></div>' : '');
   var rows = '<div class="srow"><span>' + W('سرویس', 'Service') + '</span><b>' + escH(s.name) + '</b></div>'
     + '<div class="srow"><span>' + W('کشور', 'Country') + '</span><b>' + escH(S.country.emoji + ' ' + S.country.name) + '</b></div>'
     + '<div class="srow"><span>' + W('موجودی', 'Stock') + '</span><b>' + faN(s.available) + W(' شماره', '') + '</b></div>'
-    + '<div class="srow"><span>' + W('مبلغ خرید', 'Price') + '</span><b>' + (s.priceUsd != null ? faUsd(s.priceUsd) : '—') + '</b></div>'
+    + '<div class="srow"><span>' + W('مبلغ خرید', 'Price') + '</span><b>' + moneyNative(s.priceUsd, s.priceTmn) + '</b></div>'
     + tmnRow + cpnRows
-    + '<div class="srow"><span>' + W('موجودی شما', 'Your balance') + '</span><b>' + faUsd(bal) + '</b></div>'
-    + '<div class="srow"><span>' + W('موجودی بعد از خرید', 'Balance after purchase') + '</span><b>' + faUsd(bal - fin) + '</b></div>';
+    + '<div class="srow"><span>' + W('موجودی شما', 'Your balance') + '</span><b>' + money(bal) + '</b></div>'
+    + '<div class="srow"><span>' + W('موجودی بعد از خرید', 'Balance after purchase') + '</span><b>' + money(bal - fin) + '</b></div>';
   var note = '<div class="snote">' + W('با تأیید خرید، مبلغ از موجودی‌تان کسر و شماره بلافاصله تحویل داده می‌شود. اگر پیامک کد نرسد و به‌موقع لغو کنید، مبلغ کامل به موجودی‌تان برمی‌گردد.', 'Confirming deducts the amount from your balance and delivers the number immediately. If the SMS code never arrives and you cancel in time, the full amount returns to your balance.') + '</div>';
   var btns;
   if (s.priceUsd != null && bal < fin) {
@@ -1056,8 +1079,26 @@ function rebuyOrder(cid, sid){
     }
   }).catch(function(e){ $('svcList').innerHTML = '<div class="loading">' + escH(e.message) + '</div>'; });
 }
+// Manual top-up entry currency: defaults to the display language
+// (Persian → Toman, English → USD); the chips let the user switch.
+function topupMode(){ return S.topupMode || (S.lang === 'en' ? 'usd' : 'tmn'); }
+function setTopupMode(m){ S.topupMode = m === 'tmn' ? 'tmn' : 'usd'; hap('sel'); renderTpMode(); updTpHint(); }
+function renderTpMode(){
+  var mode = topupMode();
+  var ct = $('chipTmn'), cu = $('chipUsd');
+  if (ct) ct.classList.toggle('on', mode === 'tmn');
+  if (cu) cu.classList.toggle('on', mode === 'usd');
+  var inp = $('tpAmt');
+  if (inp) inp.placeholder = mode === 'tmn' ? W('مبلغ به تومان', 'Amount in Toman') : W('$ مبلغ', '$ Amount');
+}
 function updTpHint(){
+  renderTpMode();
   var el = $('tpHint'); if (!el) return;
+  if (topupMode() === 'tmn') {
+    var minT = S.me && S.me.minTopupTmn ? Number(S.me.minTopupTmn) : 10000;
+    el.textContent = W('مبلغ را به تومان وارد کنید (حداقل ' + faTmn(minT) + ')؛ با نرخ لحظه‌ای تتر به دلار تبدیل می‌شود. بعد از ساخت، به صفحه پرداخت می‌روید و روش پرداخت (رمزارز یا کارت‌به‌کارت) را آنجا انتخاب می‌کنید.', 'Enter the amount in Toman (minimum ' + faTmn(minT) + '); it converts to USD at the live USDT rate. You will then choose the payment method (crypto or card-to-card) on the payment page.');
+    return;
+  }
   var min = S.me && S.me.minTopup ? Number(S.me.minTopup) : 1;
   el.textContent = W('مبلغ بین ' + faUsd(min) + ' تا ' + faUsd(5000) + '. بعد از ساخت، به صفحه پرداخت می‌روید و روش پرداخت (رمزارز یا کارت‌به‌کارت) را آنجا انتخاب می‌کنید.', 'Enter an amount between ' + faUsd(min) + ' and ' + faUsd(5000) + '. You will then choose the payment method (crypto or card-to-card) on the payment page.');
 }
@@ -1079,9 +1120,9 @@ function tehranHM(ts){ try { return new Date(ts).toLocaleTimeString(S.lang === '
 function tehranFull(ts){ try { var d = new Date(ts); return d.toLocaleDateString(S.lang === 'en' ? 'en-GB' : 'fa-IR', { timeZone: 'Asia/Tehran' }) + ' — ' + tehranHM(ts); } catch(e) { return ''; } }
 function openPayCard(t){
   var st = payStatusInfo(t);
-  return '<div class="payc"><div class="prow1"><b>' + faUsd(t.creditUsd) + '</b><span class="pstatus">' + st.txt + '</span></div>'
-    + '<div class="pmeta">' + methodLabel(t) + (t.pkgBonus > 0 ? '<br>' + W('بونوس پکیج: ', 'Package bonus: ') + '+' + faUsd(t.pkgBonus) + W(' (بعد از پرداخت موفق اضافه می‌شود)', ' (added after successful payment)') : '') + '<br>' + (t.status === 'awaiting_receipt' ? W('رسید در حال بررسی مجدد توسط مدیر است', 'Your receipt is being reviewed again by the admin') : W('مهلت پرداخت تا ساعت ', 'Pay before ') + tehranHM(t.expiresAt)) + '</div>'
-    + '<div class="pbtns"><a class="wbtn" href="' + t.payUrl + '">' + W('ادامه پرداخت', 'Continue payment') + '</a><button class="gbtn" data-tid="' + t.id + '" data-amt="' + faUsd(t.creditUsd) + '" onclick="cancelOpenPay(this)">' + W('لغو پرداخت', 'Cancel payment') + '</button></div></div>';
+  return '<div class="payc"><div class="prow1"><b>' + money(t.creditUsd) + '</b><span class="pstatus">' + st.txt + '</span></div>'
+    + '<div class="pmeta">' + methodLabel(t) + (t.pkgBonus > 0 ? '<br>' + W('بونوس پکیج: ', 'Package bonus: ') + '+' + money(t.pkgBonus) + W(' (بعد از پرداخت موفق اضافه می‌شود)', ' (added after successful payment)') : '') + '<br>' + (t.status === 'awaiting_receipt' ? W('رسید در حال بررسی مجدد توسط مدیر است', 'Your receipt is being reviewed again by the admin') : W('مهلت پرداخت تا ساعت ', 'Pay before ') + tehranHM(t.expiresAt)) + '</div>'
+    + '<div class="pbtns"><a class="wbtn" href="' + t.payUrl + '">' + W('ادامه پرداخت', 'Continue payment') + '</a><button class="gbtn" data-tid="' + t.id + '" data-amt="' + money(t.creditUsd) + '" onclick="cancelOpenPay(this)">' + W('لغو پرداخت', 'Cancel payment') + '</button></div></div>';
 }
 var pendingCancelId = null;
 function cancelOpenPay(btn){
@@ -1129,7 +1170,7 @@ function watchTopups(d){
   if (S.knownPending) {
     (d.history || []).forEach(function(t){
       if (S.knownPending[t.id] && t.status === 'approved' && !(S.knownApproved && S.knownApproved[t.id])) {
-        fireNotif(W('شارژ حساب انجام شد', 'Top-up approved'), faUsd(t.creditUsd) + (t.bonusUsd > 0 ? ' + ' + W('بونوس ', 'bonus ') + faUsd(t.bonusUsd) : '') + W(' به موجودی‌تان اضافه شد.', ' was added to your balance.'));
+        fireNotif(W('شارژ حساب انجام شد', 'Top-up approved'), money(t.creditUsd) + (t.bonusUsd > 0 ? ' + ' + W('بونوس ', 'bonus ') + money(t.bonusUsd) : '') + W(' به موجودی‌تان اضافه شد.', ' was added to your balance.'));
       }
     });
   }
@@ -1146,7 +1187,7 @@ function loadOpenPays(){
 function payHistRow(t){
   var st = payStatusInfo(t);
   var amtCls = t.status === 'approved' ? 'ok' : (['cancelled','rejected','expired'].indexOf(t.status) !== -1 ? 'bad' : '');
-  return '<div class="hrow"><div class="hmain"><b class="' + amtCls + '">' + faUsd(t.creditUsd) + '</b><span>' + methodLabel(t) + (t.bonusUsd > 0 ? W(' — بونوس +', ' — bonus +') + faUsd(t.bonusUsd) : '') + '</span></div><div class="hside"><span class="hstatus ' + st.cls + '">' + st.txt + '</span><span class="hdate">' + tehranFull(t.createdAt) + '</span></div></div>';
+  return '<div class="hrow"><div class="hmain"><b class="' + amtCls + '">' + money(t.creditUsd) + '</b><span>' + methodLabel(t) + (t.bonusUsd > 0 ? W(' — بونوس +', ' — bonus +') + money(t.bonusUsd) : '') + '</span></div><div class="hside"><span class="hstatus ' + st.cls + '">' + st.txt + '</span><span class="hdate">' + tehranFull(t.createdAt) + '</span></div></div>';
 }
 function loadPayHistory(){
   api('/api/topups').then(function(d){
@@ -1170,24 +1211,42 @@ function renderPays(){
 }
 function renderPkgs(){
   var row = $('pkgRow'); if (!row) return;
-  var pkgs = (S.me && S.me.pkgs) || [];
-  if (!pkgs.length) { row.innerHTML = ''; return; }
+  var all = (S.me && S.me.pkgs) || [];
+  if (!all.length) { row.innerHTML = ''; return; }
+  // Show the display currency's packages; fall back to the other set
+  // when none exist in it (same rule as the bot).
+  var cur = dispCur();
+  var pkgs = all.filter(function(p){ return (p.currency || 'usd') === cur; });
+  if (!pkgs.length) pkgs = all;
   var gift = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12v10H4V12"/><path d="M2 7h20v5H2z"/><path d="M12 22V7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg>';
   row.innerHTML = pkgs.map(function(p){
-    return '<button class="pkgcard" onclick="doTopupPkg(' + p.amount + ')"><span class="pk-amt">' + faUsd(p.amount) + '</span><span class="pk-bonus">' + (p.bonus > 0 ? gift + ' +' + faUsd(p.bonus) + W(' بونوس', ' bonus') : W('بدون بونوس', 'No bonus')) + '</span></button>';
+    var pc = p.currency || 'usd';
+    var amt = pc === 'tmn' ? faTmn(p.amount) : faUsd(p.amount);
+    var bns = pc === 'tmn' ? faTmn(p.bonus) : faUsd(p.bonus);
+    return '<button class="pkgcard" data-amt="' + p.amount + '" data-cur="' + pc + '" onclick="doTopupPkgEl(this)"><span class="pk-amt">' + amt + '</span><span class="pk-bonus">' + (p.bonus > 0 ? gift + ' +' + bns + W(' بونوس', ' bonus') : W('بدون بونوس', 'No bonus')) + '</span></button>';
   }).join('');
 }
+function doTopupPkgEl(el){ doTopupPkg(Number(el.getAttribute('data-amt')), el.getAttribute('data-cur')); }
 var pendingPkg = null;
-function doTopupPkg(amount){
+function doTopupPkg(amount, currency){
   var pkg = null;
-  ((S.me && S.me.pkgs) || []).forEach(function(p){ if (Number(p.amount) === Number(amount)) pkg = p; });
+  ((S.me && S.me.pkgs) || []).forEach(function(p){ if (Number(p.amount) === Number(amount) && (p.currency || 'usd') === (currency || 'usd')) pkg = p; });
   if (!pkg) { toast(W('این پکیج دیگر موجود نیست', 'This package is no longer available')); return; }
   pendingPkg = pkg;
-  var tmnRow = S.rate ? '<div class="srow"><span>' + W('معادل تومانی', 'In Toman') + '</span><b>' + faTmn(pkg.amount * S.rate) + '</b></div>' : '';
+  var pc = pkg.currency || 'usd';
+  var amtTxt = pc === 'tmn' ? faTmn(pkg.amount) : faUsd(pkg.amount);
+  var bnsTxt = pc === 'tmn' ? faTmn(pkg.bonus) : faUsd(pkg.bonus);
+  var rate = tmnRate();
+  var midRow = pc === 'tmn'
+    ? (rate ? '<div class="srow"><span>' + W('اعتبار دلاری پکیج', 'Package credit (USD)') + '</span><b>' + faUsd(Math.round((pkg.amount / rate) * 100) / 100) + '</b></div>' : '')
+    : (S.rate ? '<div class="srow"><span>' + W('معادل تومانی', 'In Toman') + '</span><b>' + faTmn(pkg.amount * S.rate) + '</b></div>' : '');
+  var recvTxt = pc === 'tmn'
+    ? (rate ? '≈ ' + faUsd(Math.round(((Number(pkg.amount) + Number(pkg.bonus || 0)) / rate) * 100) / 100) : '—')
+    : faUsd(Number(pkg.amount) + Number(pkg.bonus || 0));
   $('pkgConfirmBox').innerHTML = '<h3 style="margin:2px 0 4px">' + W('تأیید شارژ پکیج', 'Confirm package top-up') + '</h3><p class="ssub">' + W('قبل از ساخت پرداخت، مشخصات پکیج را تأیید کنید', 'Review the package before creating the payment') + '</p>'
-    + '<div class="srow"><span>' + W('مبلغ پکیج', 'Package amount') + '</span><b>' + faUsd(pkg.amount) + '</b></div>' + tmnRow
-    + '<div class="srow"><span>' + W('بونوس پکیج', 'Package bonus') + '</span><b>' + (pkg.bonus > 0 ? '+' + faUsd(pkg.bonus) : '—') + '</b></div>'
-    + '<div class="srow"><span>' + W('اعتبار دریافتی', 'You receive') + '</span><b>' + faUsd(Number(pkg.amount) + Number(pkg.bonus || 0)) + '</b></div>'
+    + '<div class="srow"><span>' + W('مبلغ پکیج', 'Package amount') + '</span><b>' + amtTxt + '</b></div>' + midRow
+    + '<div class="srow"><span>' + W('بونوس پکیج', 'Package bonus') + '</span><b>' + (pkg.bonus > 0 ? '+' + bnsTxt : '—') + '</b></div>'
+    + '<div class="srow"><span>' + W('اعتبار دریافتی', 'You receive') + '</span><b>' + recvTxt + '</b></div>'
     + '<div class="snote">' + W('با تأیید، صفحه پرداخت ساخته می‌شود و ۳۰ دقیقه برای پرداخت فرصت دارید. بونوس بلافاصله بعد از پرداخت موفق به موجودی‌تان اضافه می‌شود.', 'Confirming creates the payment page; you have 30 minutes to pay. The bonus is added to your balance right after a successful payment.') + '</div>'
     + '<div class="sbtns"><button class="wbtn" onclick="confirmPkgTopup(this)">' + W('تأیید و ساخت پرداخت', 'Confirm and create payment') + '</button><button class="gbtn" onclick="closePkgConfirm()">' + W('انصراف', 'Cancel') + '</button></div>';
   $('pkgConfirm').classList.add('on');
@@ -1196,8 +1255,9 @@ function closePkgConfirm(){ var m = $('pkgConfirm'); if (m) m.classList.remove('
 function confirmPkgTopup(btn){
   if (!pendingPkg) return;
   var amount = pendingPkg.amount;
+  var currency = pendingPkg.currency || 'usd';
   btn.disabled = true; btn.textContent = W('در حال ساخت…', 'Creating…');
-  api('/api/topup', { method:'POST', body: JSON.stringify({ pkgAmount: amount }) }).then(function(j){
+  api('/api/topup', { method:'POST', body: JSON.stringify({ pkgAmount: amount, pkgCurrency: currency }) }).then(function(j){
     hap('ok'); closePkgConfirm();
     $('tpResult').innerHTML = '<div class="confirm"><div class="row"><span>' + W('صفحه پرداخت ساخته شد', 'Payment page created') + '</span><b>' + W('۳۰ دقیقه مهلت', '30 minutes to pay') + '</b></div><a class="wbtn" style="width:100%;margin-top:10px" href="' + escH(j.payUrl) + '">' + W('رفتن به صفحه پرداخت ←', 'Go to payment page →') + '</a></div>';
   }).catch(function(e){
@@ -1212,8 +1272,15 @@ function doTopup(){
   var raw = String($('tpAmt').value||'').replace(/[^0-9.]/g,'');
   var val = Number(raw);
   if (!(val > 0)) { toast(W('مبلغ را وارد کنید', 'Enter an amount')); return; }
-  if (S.me && S.me.minTopup && val < Number(S.me.minTopup)) { toast(W('حداقل مبلغ شارژ ' + faUsd(Number(S.me.minTopup)) + ' است', 'Minimum top-up is ' + faUsd(Number(S.me.minTopup)))); return; }
-  var body = { amountUsd: val };
+  var body;
+  if (topupMode() === 'tmn') {
+    var minT = S.me && S.me.minTopupTmn ? Number(S.me.minTopupTmn) : 10000;
+    if (val < minT) { toast(W('حداقل مبلغ شارژ ' + faTmn(minT) + ' است', 'Minimum top-up is ' + faTmn(minT))); return; }
+    body = { amountTmn: Math.round(val) };
+  } else {
+    if (S.me && S.me.minTopup && val < Number(S.me.minTopup)) { toast(W('حداقل مبلغ شارژ ' + faUsd(Number(S.me.minTopup)) + ' است', 'Minimum top-up is ' + faUsd(Number(S.me.minTopup)))); return; }
+    body = { amountUsd: val };
+  }
   api('/api/topup', { method:'POST', body: JSON.stringify(body) }).then(function(j){ hap('ok');
     $('tpResult').innerHTML = '<div class="confirm"><div class="row"><span>' + W('صفحه پرداخت ساخته شد', 'Payment page created') + '</span><b>' + W('۳۰ دقیقه مهلت', '30 minutes to pay') + '</b></div><a class="wbtn" style="width:100%;margin-top:10px" href="' + escH(j.payUrl) + '">' + W('رفتن به صفحه پرداخت ←', 'Go to payment page →') + '</a></div>';
   }).catch(function(e){ hap('err');

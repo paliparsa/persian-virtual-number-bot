@@ -11,7 +11,7 @@
 //   WALLET_ETH, WALLET_USDT_ERC20, ETHERSCAN_API_KEY, SUPPORT_CHAT_ID/USERNAME
 
 export const SMSFULL_BASE = "https://core.smsfullbot.com/api/v1";
-export const BOT_VERSION = "3.1.4"; // shown in the admin panel and /health — check you're on the latest deploy
+export const BOT_VERSION = "3.2.0"; // shown in the admin panel and /health — check you're on the latest deploy
 export const USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t";
 // USDT on BNB Smart Chain (BEP20). NOTE: 18 decimals on BSC, unlike TRC20/ERC20 (6).
 export const USDT_BSC_CONTRACT = "0x55d398326f99059fF775485246999027B3197955";
@@ -36,6 +36,19 @@ export const minTopupUsd = (cfg) => {
   return Number.isFinite(v) && v > 0 ? Math.min(v, 5000) : 1;
 };
 export const sellPrice = (cfg, providerPrice) => Math.ceil(providerPrice * markup(cfg) * 100) / 100;
+// Admin-set minimum for a MANUAL Toman top-up (v3.2.0). Defaults to
+// 10,000 Toman when unset/invalid.
+export const minTopupTmn = (cfg) => {
+  const raw = cfg?.MIN_TOPUP_TMN;
+  if (raw === undefined || raw === null || raw === "") return 10000;
+  const v = Number(raw);
+  return Number.isFinite(v) && v > 0 ? Math.round(v) : 10000;
+};
+// Pricing mode (v3.2.0): "usd" (default) — service prices are computed in
+// USD from the provider's BRL price, exactly as before. "tmn" — the Toman
+// price is the price of record (computed directly in Toman by
+// shop.servicePricing) and the USD ledger charge is derived from it.
+export const priceMode = (cfg) => (cfg?.PRICE_MODE === "tmn" ? "tmn" : "usd");
 export const isAdmin = (env, chatId) => String(chatId) === String(env.ADMIN_CHAT_ID || "");
 
 // ---------- KV storage ----------
@@ -78,6 +91,7 @@ export const CONFIG_KEYS = [
   "WALLET_LTC", "WALLET_ETH", "WALLET_USDT_ERC20", "WALLET_USDT_BEP20",
   "SUPPORT_USERNAME", "WORKER_BASE_URL", "PRICE_MARKUP_PERCENT", "TMN_RATE_MANUAL", "GROUP_CHAT_ID", "MIN_TOPUP_USD",
   "FORCE_JOIN_ENABLED", "FORCE_JOIN_CHANNEL", "PHONE_VERIFY_ENABLED", "ETHERSCAN_API_KEY", "LOW_BALANCE_BRL", "REFERRAL_PERCENT",
+  "PRICE_MODE", "MIN_TOPUP_TMN",
 ];
 export async function getConfig(env) {
   const stored = (await kvGet(env, "config")) || {};
@@ -120,8 +134,11 @@ export function auditEntryText(e) {
   if (e.action === "undo_apr") return `↩️ شارژ تأییدشده بازگردانده شد — ${e.extra || ""}`;
   if (e.action === "apr") return `✅ رسید شارژ تأیید و حساب کاربر شارژ شد — ${e.extra || ""}`;
   if (e.action === "rej") return `❌ رسید شارژ رد شد — ${e.extra || ""}`;
-  if (e.action === "pkg_set") return `🎁 پکیج شارژ ${e.key} دلاری تنظیم شد — ${e.extra || ""}`;
-  if (e.action === "pkg_del") return `🗑 پکیج شارژ ${e.key} دلاری حذف شد`;
+  if (e.action === "pkg_set") return `🎁 پکیج شارژ تنظیم شد: ${e.key} — ${e.extra || ""}`;
+  if (e.action === "pkg_del") return `🗑 پکیج شارژ حذف شد: ${e.key}`;
+  if (e.action === "cfgmode") return `💱 حالت قیمت‌گذاری تغییر کرد — ${e.extra || ""}`;
+  if (e.action === "backup_dl") return `💾 بکاپ فروشگاه دانلود شد — ${e.extra || ""}`;
+  if (e.action === "restore") return `♻️ بکاپ فروشگاه ریستور شد — ${e.extra || ""}`;
   if (e.action === "coupon_new") return `🎟 کد تخفیف «${e.key}» ساخته شد — ${e.extra || ""}`;
   if (e.action === "coupon_del") return `🗑 کد تخفیف «${e.key}» حذف شد`;
   if (e.action === "coupon_tgl") return `🎟 کد تخفیف «${e.key}» ${e.newV === "1" ? "فعال شد" : "غیرفعال شد"}`;
@@ -177,6 +194,14 @@ export const usdL = (u, tmnRate, usd) => {
   const t = tomanOfUsd(tmnRate, usd);
   return `$${(Number(usd) || 0).toFixed(2)}${t ? ` ≈ ${enInt(t)} Toman` : ""}`;
 };
+// ---------- display currency (v3.2.0, semantics ported from BG-3x-ui-sell) ----------
+// The currency a user SEES follows their language: Persian → Toman,
+// English → USD. This is render-only — the ledger is always USD and the
+// amount actually charged never depends on the display currency. When
+// the Toman rate is unavailable, Persian falls back to USD.
+export const dispCur = (user, rate) => (isEn(user) ? "usd" : (rate > 0 ? "tmn" : "usd"));
+export const moneyText = (rate, usd) => (rate > 0 ? `${faNum(Math.round(Number(usd) * rate), 0)} تومان` : `$${faNum(usd)}`);
+export const moneyL = (user, usd, rate) => (dispCur(user, rate) === "tmn" ? moneyText(rate, usd) : `$${numL(user, usd)}`);
 export function langPickerKb() {
   return kb([[btn("🇮🇷 فارسی", "lang:fa"), btn("🇬🇧 English", "lang:en")]]);
 }
@@ -300,3 +325,21 @@ export async function forceJoinGate(env, cfg, userId) {
 }
 export const bytesToHex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 export async function kvDel(env, key) { if (env.STORE) await env.STORE.delete(key); }
+// Lists every key under a prefix (names only). Used by lib/backup.js to
+// enumerate a whole record keyspace (coupon:*, user:*, act:*).
+export async function kvKeys(env, prefix) {
+  if (!env.STORE) return [];
+  const out = [];
+  let cursor;
+  do {
+    const page = await env.STORE.list({ prefix, cursor, limit: 1000 });
+    for (const k of page.keys) out.push(k.name);
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+  return out;
+}
+// Deletes every key under a prefix. Backup restore uses it to REPLACE a
+// keyspace (delete-then-write) instead of merging into stale records.
+export async function kvDeletePrefix(env, prefix) {
+  for (const key of await kvKeys(env, prefix)) await kvDel(env, key);
+}

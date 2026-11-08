@@ -60,7 +60,7 @@ export function termsPage(cfg, initialLang = "fa") {
 <p class="intro">${t.intro}</p>
 <hr>
 ${secs}
-<p class="foot">BlueGate — ${t.slogan}<br><a href="/app">${t.home}</a></p>`;
+<p class="foot">BlueGate — ${t.slogan}<br><a href="/app">${t.home}</a><br><span class="tagline">A service by BlueGate®</span></p>`;
   };
   return `<!doctype html>
 <html lang="fa" dir="rtl"><head><meta charset="utf-8">
@@ -86,6 +86,7 @@ ul{padding-right:18px}
 html[dir="ltr"] ul{padding-right:0;padding-left:18px}
 a{color:#fff}
 .foot{color:#8e8e93;font-size:13px;margin-top:22px}
+.tagline{color:#6d6d75;font-size:11px;letter-spacing:.3px;opacity:.75}
 .backbtn{display:inline-flex;align-items:center;gap:6px;background:transparent;color:#d6d6da;border:1px solid #2c2c31;border-radius:11px;padding:8px 14px;font-family:inherit;font-size:13.5px;cursor:pointer;margin-bottom:16px}
 </style></head><body><div class="wrap">
 <div class="brand">BlueGate<button class="langbtn" title="Language / زبان" onclick="flipTermsLang()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></button></div>

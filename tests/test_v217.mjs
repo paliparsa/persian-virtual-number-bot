@@ -87,7 +87,10 @@ put("act:9001", { id: 9001, userId: "555", countryId: 1, serviceId: 10, price: 6
   check("payment amount colors wired", client.includes("amtCls") && html.includes(".hmain b.ok") && html.includes(".hmain b.bad"));
   check("green delivered pill", html.includes(".pill.ok{border-color:#1d3a24;color:#30d158"));
   check("topup form card + button spacing", html.includes('class="formcard"') && html.includes("margin-top:16px"));
-  check("web top-up is USD-only (v2.17.1)", !html.includes('id="chipTmn"') && !client.includes("setTopupMode") && !client.includes("amountTmn") && client.includes("var body = { amountUsd: val };"));
+  // v3.2.0 supersedes the v2.17.1 USD-only web top-up: the manual entry
+  // currency now follows the display language (FA → Toman default,
+  // EN → USD), switchable via chips; the server still accepts both.
+  check("web top-up entry currency follows language (v3.2.0)", html.includes('id="chipTmn"') && html.includes('id="chipUsd"') && client.includes("function setTopupMode") && client.includes("amountTmn") && client.includes("amountUsd: val") && client.includes("topupMode()"));
   // masking mirrors the bot's group style: +5511*****999
   const d = "5511999999999"; const head = d.slice(0, 4), tail = d.slice(-3);
   check("mask shape sanity", ("+" + head + "*****" + tail) === "+5511*****999");
