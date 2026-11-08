@@ -445,10 +445,10 @@ function ico(n, sz){ return '<svg class="icn" width="' + (sz||19) + '" height="'
 var toastTimer=null;
 function toast(msg){ var t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer=setTimeout(function(){ t.classList.remove('show'); }, 3600); }
 function hap(kind){ try { if (localStorage.getItem('bm_haptics') === '0') return; var _nt = Date.now(); if (hap._t && hap._t[kind] && _nt - hap._t[kind] < 250) return; (hap._t = hap._t || {})[kind] = _nt; var hf = window.Telegram && Telegram.WebApp && Telegram.WebApp.HapticFeedback; if (hf) { if (kind === 'ok') hf.notificationOccurred('success'); else if (kind === 'err') hf.notificationOccurred('error'); else if (kind === 'sel') hf.selectionChanged(); else hf.impactOccurred(kind === 'med' ? 'medium' : 'light'); return; } if (navigator.vibrate) { if (kind === 'ok') navigator.vibrate([12,50,12]); else if (kind === 'err') navigator.vibrate([35,50,35]); else if (kind === 'med') navigator.vibrate(22); else if (kind === 'sel') navigator.vibrate(6); else navigator.vibrate(10); return; } if (/iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) iosHap(kind); } catch (e) {} }
-var _iosLab = null, _iosInp = null, _lastGest = 0, _jailY = 0, _jailUntil = 0, _jailOn = false;
-function _jailStep(){ if (Date.now() < _jailUntil) { if (window.scrollY !== _jailY) window.scrollTo(0, _jailY); requestAnimationFrame(_jailStep); } else { _jailOn = false; if (_iosInp && document.activeElement === _iosInp) _iosInp.blur(); } }
-function _jailArm(){ _jailY = window.scrollY; _jailUntil = Date.now() + 450; if (!_jailOn) { _jailOn = true; requestAnimationFrame(_jailStep); } }
-function iosHap(kind){ try { if (Date.now() - _lastGest > 800) return; if (!_iosLab) { var lab = document.createElement('label'); lab.setAttribute('aria-hidden', 'true'); lab.style.cssText = 'position:fixed;left:0;top:0;width:44px;height:26px;opacity:.02;pointer-events:none'; var inp = document.createElement('input'); inp.type = 'checkbox'; inp.setAttribute('switch', ''); inp.tabIndex = -1; inp.setAttribute('aria-hidden', 'true'); inp.style.cssText = 'width:44px;height:26px;opacity:.02;pointer-events:none;margin:0'; lab.appendChild(inp); document.body.appendChild(lab); _iosLab = lab; _iosInp = inp; } var n = kind === 'ok' ? 2 : kind === 'err' ? 3 : kind === 'med' ? 2 : 1; var gap = kind === 'ok' ? 120 : 75; _jailArm(); _iosLab.click(); for (var i = 1; i < n; i++) (function(k){ setTimeout(function(){ try { _jailArm(); _iosLab.click(); } catch (e) {} }, k * gap); })(i); } catch (e) {} }
+var _iosLab = null, _iosInp = null, _lastGest = 0;
+function _iosSync(){ if (_iosLab) _iosLab.style.top = (window.scrollY + 8) + 'px'; }
+function iosHap(kind){ try { if (Date.now() - _lastGest > 800) return; if (!_iosLab) { var lab = document.createElement('label'); lab.setAttribute('aria-hidden', 'true'); lab.style.cssText = 'position:absolute;left:0;top:0;width:44px;height:26px;opacity:.02;pointer-events:none'; var inp = document.createElement('input'); inp.type = 'checkbox'; inp.setAttribute('switch', ''); inp.tabIndex = -1; inp.setAttribute('aria-hidden', 'true'); inp.style.cssText = 'width:44px;height:26px;opacity:.02;pointer-events:none;margin:0'; lab.appendChild(inp); document.body.appendChild(lab); _iosLab = lab; _iosInp = inp; } var n = kind === 'ok' ? 2 : kind === 'err' ? 3 : kind === 'med' ? 2 : 1; var gap = kind === 'ok' ? 120 : 75; _iosSync(); _iosLab.click(); for (var i = 1; i < n; i++) (function(k){ setTimeout(function(){ try { _iosSync(); _iosLab.click(); } catch (e) {} }, k * gap); })(i); setTimeout(function(){ if (_iosInp && document.activeElement === _iosInp) _iosInp.blur(); }, (n - 1) * gap + 80); } catch (e) {} }
+function hapState(){ var b = $('hapBtn'); if (!b) return; var on = true; try { on = localStorage.getItem('bm_haptics') !== '0'; } catch (e) {} b.textContent = on ? W('روشن','On') : W('خاموش','Off'); b.classList.toggle('off', !on); }
 function toggleHaptics(){ var on = true; try { on = localStorage.getItem('bm_haptics') !== '0'; localStorage.setItem('bm_haptics', on ? '0' : '1'); } catch (e) {} hapState(); if (!on) hap('tap'); }
 document.addEventListener('pointerdown', function(e){ _lastGest = Date.now(); var t = e.target; if (t && t.closest && t.closest('button, a')) hap('sel'); }, true);
 document.addEventListener('click', function(){ _lastGest = Date.now(); }, true);
@@ -479,7 +479,7 @@ function onTelegramAuth(user){
 }
 function hideSplash(){ var sp = $('splash'); if (!sp || sp.classList.contains('off')) return; sp.classList.add('fade'); setTimeout(function(){ sp.classList.add('off'); }, 390); }
 function showLogin(){ hideSplash(); stopActTimers(); $('viewApp').style.display='none'; $('viewLogin').style.display='block'; }
-function showApp(){ hideSplash(); $('viewLogin').style.display='none'; $('viewApp').style.display='block'; showView('account'); }
+function showApp(){ hideSplash(); $('viewLogin').style.display='none'; var firstShow = $('viewApp').style.display !== 'block'; $('viewApp').style.display='block'; if (firstShow) showView('account'); }
 var I18N = {
   navShop:['فروشگاه','Shop'], navOrders:['سفارش‌ها','Orders'], navPays:['پرداخت‌ها','Payments'], navTopup:['شارژ','Top up'], navAccount:['حساب','Account'], navTerms:['قوانین','Terms'],
   tOrders:['سفارش‌های من','My orders'], tPays:['پرداخت‌ها','Payments'], tTopup:['افزایش موجودی','Top up balance'], tAccount:['حساب من','My account'],
@@ -522,8 +522,11 @@ function toggleLang(){ hap('sel');
   if (S.view === 'topup') { updTpHint(); loadOpenPays(); }
   toast(W('زبان فارسی شد', 'Language: English'));
 }
+var _booting = false;
 function boot(tries){
   tries = tries || 0;
+  if (_booting && !tries) return;
+  _booting = true;
   if (!tries) {
     applyLang();
     // Watchdog: if the session check hangs (flaky network), the splash must
@@ -543,6 +546,7 @@ function boot(tries){
     updateInstallCard();
   }
   api('/api/me').then(function(me){
+    _booting = false;
     S.me = me; showApp(); renderMe(); loadCountries();
   }).catch(function(){
     // KV is eventually consistent: a just-created session can take a few
@@ -550,6 +554,7 @@ function boot(tries){
     var hasTok = false;
     try { hasTok = !!sessionStorage.getItem('bg_tok'); } catch (e) {}
     if (hasTok && tries < 4) { setTimeout(function(){ boot(tries + 1); }, 1500); return; }
+    _booting = false;
     try { sessionStorage.removeItem('bg_tok'); } catch (e) {}
     showLogin();
   });
